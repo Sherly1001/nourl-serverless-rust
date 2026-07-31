@@ -1,0 +1,26 @@
+@import "tailwindcss";
+@plugin "@iconify/tailwind4" {
+  prefixes: tabler;
+}
+@plugin "flyonui" {
+  themes:
+    light --default,
+    dark --prefersdark,
+    black,
+    claude,
+    corporate,
+    ghibli,
+    gourmet,
+    luxury,
+    mintlify,
+    pastel,
+    perplexity,
+    shadcn,
+    slack,
+    soft,
+    spotify,
+    valorant,
+    vscode;
+}
+@source "../src/**/*.rs";
+@source "../index.html";

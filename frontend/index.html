@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>NoUrl</title>
+    <link rel="icon" type="image/png" sizes="200x200" href="/favicon.png" />
+    <link rel="icon" sizes="any" href="/favicon.ico" />
+    <link rel="apple-touch-icon" href="/apple-touch-icon.png" />
+    <link data-trunk rel="css" href="style/output.css" />
+    <link data-trunk rel="copy-file" href="favicon.ico" />
+    <link data-trunk rel="copy-file" href="favicon.png" />
+    <link data-trunk rel="copy-file" href="apple-touch-icon.png" />
+    <link data-trunk rel="copy-file" href="robots.txt" />
+    <link
+      data-trunk
+      rel="rust"
+      data-wasm-opt="z"
+      data-wasm-opt-params="--enable-bulk-memory --enable-nontrapping-float-to-int"
+    />
+    <script>
+      // Applied before wasm loads so the first paint is not the wrong theme.
+      (() => {
+        const stored = localStorage.getItem("nourl-theme");
+        const dark = matchMedia("(prefers-color-scheme: dark)").matches;
+        document.documentElement.dataset.theme =
+          !stored || stored === "system" ? (dark ? "dark" : "light") : stored;
+      })();
+    </script>
+  </head>
+  <body class="bg-base-100 text-base-content min-h-screen"></body>
+</html>

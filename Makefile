@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check mongo-up mongo-down dev-backend test
+.PHONY: fmt fmt-check mongo-up mongo-down dev-backend dev-frontend build-frontend test
 
 fmt:
 	cargo fmt --all
@@ -16,6 +16,16 @@ fmt-check:
 
 dev-backend: mongo-up
 	cargo run -p backend
+
+dev-frontend: frontend/node_modules
+	cd frontend && trunk serve --open
+
+build-frontend: frontend/node_modules
+	cd frontend && trunk build --release
+
+frontend/node_modules: frontend/package.json
+	cd frontend && pnpm install
+	touch $@
 
 test: mongo-up
 	cargo test --workspace
