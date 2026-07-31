@@ -1,0 +1,4 @@
+[package]
+name = "backend"
+edition.workspace = true
+version.workspace = true

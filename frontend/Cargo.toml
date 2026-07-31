@@ -1,0 +1,4 @@
+[package]
+name = "frontend"
+edition.workspace = true
+version.workspace = true
