@@ -1,11 +1,8 @@
-use futures::TryStreamExt;
-use mongodb::bson::doc;
+mod helpers;
 
-async fn test_db() -> mongodb::Database {
-    let url = std::env::var("MONGO_URL").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into());
-    let name = format!("nourl_test_{}", uuid::Uuid::new_v4().simple());
-    backend::db::connect(&url, &name).await.unwrap()
-}
+use futures::TryStreamExt;
+use helpers::test_db;
+use mongodb::bson::doc;
 
 #[tokio::test]
 async fn creates_indexes() {
