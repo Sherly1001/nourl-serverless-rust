@@ -72,6 +72,40 @@ async fn create_rejects_invalid_input() {
 }
 
 #[tokio::test]
+async fn malformed_body_returns_json_validation_error() {
+    let (app, db) = test_app().await;
+    // missing `url` field
+    let resp = app
+        .clone()
+        .oneshot(req(
+            Method::POST,
+            "/api/urls",
+            Some(json!({"code": "lmao"})),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"]["code"], "validation");
+    // invalid json body
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(Method::POST)
+                .uri("/api/urls")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from("{not json"))
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
+    let v = body_json(resp).await;
+    assert_eq!(v["error"]["code"], "validation");
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
 async fn put_renames_code() {
     let (app, db) = test_app().await;
     db.collection("urls")

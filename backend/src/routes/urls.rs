@@ -7,6 +7,7 @@ use shared::{DeleteResponse, UrlEntry, UrlUpsertRequest, validate_code, validate
 use crate::app::AppState;
 use crate::db::url_aggregate_pipeline;
 use crate::error::AppError;
+use crate::extract::AppJson;
 
 fn parse_expiry(raw: Option<&str>) -> Result<Option<bson::DateTime>, AppError> {
     let Some(raw) = raw else { return Ok(None) };
@@ -78,7 +79,7 @@ async fn upsert(
 
 pub async fn create_url(
     State(state): State<AppState>,
-    Json(body): Json<UrlUpsertRequest>,
+    AppJson(body): AppJson<UrlUpsertRequest>,
 ) -> Result<Json<UrlEntry>, AppError> {
     let code = body.code.clone();
     upsert(&state, &code, &body).await
@@ -87,7 +88,7 @@ pub async fn create_url(
 pub async fn update_url(
     State(state): State<AppState>,
     Path(code): Path<String>,
-    Json(body): Json<UrlUpsertRequest>,
+    AppJson(body): AppJson<UrlUpsertRequest>,
 ) -> Result<Json<UrlEntry>, AppError> {
     upsert(&state, &code, &body).await
 }

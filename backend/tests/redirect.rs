@@ -95,3 +95,35 @@ async fn multi_segment_path_falls_back_and_api_404s() {
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn unknown_api_route_returns_json_error_shape() {
+    let (app, db) = test_app().await;
+    let resp = app.oneshot(get("/api/does/not/exist")).await.unwrap();
+    assert_eq!(resp.status(), StatusCode::NOT_FOUND);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error"]["code"], "not_found");
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn wrong_method_returns_json_405() {
+    let (app, db) = test_app().await;
+    // DELETE /api/urls has no handler (only POST/GET on that path)
+    let resp = app
+        .oneshot(
+            Request::builder()
+                .method(axum::http::Method::DELETE)
+                .uri("/api/urls")
+                .body(Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(resp.status(), StatusCode::METHOD_NOT_ALLOWED);
+    let bytes = axum::body::to_bytes(resp.into_body(), 1024).await.unwrap();
+    let v: serde_json::Value = serde_json::from_slice(&bytes).unwrap();
+    assert_eq!(v["error"]["code"], "method_not_allowed");
+    db.drop().await.unwrap();
+}

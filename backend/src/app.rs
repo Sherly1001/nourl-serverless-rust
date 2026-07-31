@@ -23,6 +23,13 @@ pub fn build_app(state: AppState) -> Router {
         .route("/", get(|| async { found("/index.html") }))
         .route("/{code}", get(redirect))
         .fallback(fallback)
+        .method_not_allowed_fallback(|| async {
+            AppError {
+                status: axum::http::StatusCode::METHOD_NOT_ALLOWED,
+                code: "method_not_allowed",
+                message: "method not allowed for this route".into(),
+            }
+        })
         .with_state(state)
 }
 

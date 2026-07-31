@@ -9,10 +9,11 @@ pub struct Config {
 }
 
 impl Config {
-    pub fn from_env() -> Self {
+    pub fn from_env() -> Result<Self, String> {
         let _ = dotenvy::dotenv();
-        Self {
-            mongo_url: std::env::var("MONGO_URL").expect("MONGO_URL is required"),
+        Ok(Self {
+            mongo_url: std::env::var("MONGO_URL")
+                .map_err(|_| "MONGO_URL environment variable is required".to_string())?,
             db_name: std::env::var("MONGO_DB").unwrap_or_else(|_| "nourl".into()),
             port: std::env::var("PORT")
                 .ok()
@@ -21,6 +22,6 @@ impl Config {
             notfound_fallback_url: std::env::var("NOTFOUND_FALLBACK_URL")
                 .ok()
                 .filter(|v| !v.is_empty()),
-        }
+        })
     }
 }

@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check mongo-up mongo-down
+.PHONY: fmt fmt-check mongo-up mongo-down dev-backend test
 
 fmt:
 	cargo fmt --all
@@ -13,6 +13,12 @@ fmt-check:
 	rustywind --check-formatted frontend/src
 	prettier --check "**/*.{html,css,json,yaml,md}" --log-level warn
 	terraform fmt -check -recursive infra 2>/dev/null || true
+
+dev-backend: mongo-up
+	cargo run -p backend
+
+test: mongo-up
+	cargo test --workspace
 
 mongo-up:
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo -p 27017:27017 mongo:7

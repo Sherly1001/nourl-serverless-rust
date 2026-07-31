@@ -3,8 +3,14 @@ use mongodb::options::IndexOptions;
 use mongodb::{Client, Database, IndexModel};
 
 pub async fn connect(mongo_url: &str, db_name: &str) -> mongodb::error::Result<Database> {
-    let client = Client::with_uri_str(mongo_url).await?;
-    Ok(client.database(db_name))
+    let mut options = mongodb::options::ClientOptions::parse(mongo_url).await?;
+    options.server_selection_timeout = Some(std::time::Duration::from_secs(5));
+    let client = Client::with_options(options)?;
+    let db = client.database(db_name);
+    // The driver is lazy — force a real roundtrip so startup fails fast
+    // when the database is unreachable.
+    db.run_command(doc! {"ping": 1}).await?;
+    Ok(db)
 }
 
 pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
