@@ -22,6 +22,12 @@ importers:
       tailwindcss:
         specifier: ^4
         version: 4.3.3
+      tailwindcss-intersect:
+        specifier: ^2.2.0
+        version: 2.2.0(tailwindcss@4.3.3)
+      tailwindcss-motion:
+        specifier: ^1.1.1
+        version: 1.1.1(tailwindcss@4.3.3)
 
 packages:
   "@antfu/install-pkg@1.1.0":
@@ -760,6 +766,22 @@ packages:
     engines: { node: ">=16" }
     hasBin: true
 
+  tailwindcss-intersect@2.2.0:
+    resolution:
+      {
+        integrity: sha512-LnOQ/iU44jNQ8k3OExa7Ccv/y5NlzAN574jjDnX5gLCdlqoeUT5ADtTznF92oAdon3NZA69b+JLknahbwsqxDA==,
+      }
+    peerDependencies:
+      tailwindcss: ">=3.2.0 || >=4.0.0"
+
+  tailwindcss-motion@1.1.1:
+    resolution:
+      {
+        integrity: sha512-CeeQAc5o31BuEPMyWdq/786X7QWNeifa+8khfu74Fs8lGkgEwjNYv6dGv+lRFS8FWXV5dp7F3AU9JjBXjiaQfw==,
+      }
+    peerDependencies:
+      tailwindcss: ">=3.0.0 || insiders"
+
   tailwindcss@4.3.3:
     resolution:
       {
@@ -1166,6 +1188,14 @@ snapshots:
       csso: 5.0.5
       picocolors: 1.1.1
       sax: 1.6.1
+
+  tailwindcss-intersect@2.2.0(tailwindcss@4.3.3):
+    dependencies:
+      tailwindcss: 4.3.3
+
+  tailwindcss-motion@1.1.1(tailwindcss@4.3.3):
+    dependencies:
+      tailwindcss: 4.3.3
 
   tailwindcss@4.3.3: {}
 

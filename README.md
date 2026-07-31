@@ -17,6 +17,12 @@ make fmt                 # rustfmt + leptosfmt + rustywind + prettier + terrafor
 The backend binary auto-detects Lambda (`AWS_LAMBDA_RUNTIME_API` env) and
 otherwise runs as a plain TCP server on `PORT` (default 9669).
 
+Dev-only note: the short link shown after creating one points at the Trunk
+origin (`localhost:8080/<code>`), but Trunk only proxies `/api` to the
+backend, so following it serves the SPA instead of redirecting. Test
+redirects directly against the backend: `curl -i localhost:9669/<code>`. In
+production both live on the same origin, so the link works.
+
 Frontend assets are served from the root path in both dev and prod: Trunk
 keeps its default `public_url`, and `frontend/dist/` maps 1:1 onto the S3
 bucket root. CloudFront routes `/`, `/index.html`, `/favicon.ico`,

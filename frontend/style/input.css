@@ -1,4 +1,6 @@
 @import "tailwindcss";
+@plugin "tailwindcss-motion";
+@plugin "tailwindcss-intersect";
 @plugin "@iconify/tailwind4" {
   prefixes: tabler;
 }
@@ -24,3 +26,37 @@
 }
 @source "../src/**/*.rs";
 @source "../index.html";
+
+/* The theme colour must sit on <html>; leaving it on <body> alone lets a
+   translucent browser window show the desktop through the page.
+*/
+@layer base {
+  html {
+    background-color: var(--color-base-100);
+    color: var(--color-base-content);
+  }
+
+  /* Colour/size changes (theme swaps, focus rings, invalid borders, hovers)
+     ease instead of snapping. */
+  a,
+  button,
+  input,
+  .card,
+  .navbar,
+  .alert {
+    transition-property:
+      color, background-color, border-color, box-shadow, transform, opacity;
+    transition-duration: 180ms;
+    transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+  }
+}

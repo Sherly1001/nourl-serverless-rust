@@ -1,5 +1,6 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::Closure;
 
 const STORAGE_KEY: &str = "nourl-theme";
 
@@ -82,8 +83,38 @@ pub fn ThemePicker() -> impl IntoView {
         set_open.set(false);
     };
 
+    // Dismiss on a click anywhere outside the picker, or on Escape. Listeners
+    // sit on the document because clicks elsewhere never reach this subtree.
+    let root: NodeRef<leptos::html::Div> = NodeRef::new();
+    let pointer = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
+        let Some(container) = root.get_untracked() else {
+            return;
+        };
+        let inside = ev
+            .target()
+            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
+            .is_some_and(|node| container.contains(Some(&node)));
+        if !inside {
+            set_open.set(false);
+        }
+    });
+    let keydown =
+        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
+            if ev.key() == "Escape" {
+                set_open.set(false);
+            }
+        });
+    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
+        let _ = document
+            .add_event_listener_with_callback("pointerdown", pointer.as_ref().unchecked_ref());
+        let _ =
+            document.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
+    }
+    pointer.forget();
+    keydown.forget();
+
     view! {
-        <div class="relative">
+        <div class="relative" node_ref=root>
             <button
                 class="gap-2 btn btn-text"
                 aria-haspopup="menu"
@@ -97,7 +128,7 @@ pub fn ThemePicker() -> impl IntoView {
 
             <Show when=move || open.get()>
                 <ul
-                    class="overflow-y-auto absolute right-0 z-10 p-2 mt-2 space-y-1 w-48 max-h-80 rounded-lg border shadow-lg bg-base-100 border-base-content/10"
+                    class="overflow-y-auto absolute right-0 z-10 p-2 mt-2 space-y-1 w-48 max-h-80 rounded-lg border shadow-lg bg-base-100 border-base-content/10 motion-preset-slide-down motion-duration-200"
                     role="menu"
                 >
                     <li>
