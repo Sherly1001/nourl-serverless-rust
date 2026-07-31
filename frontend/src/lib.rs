@@ -1,4 +1,6 @@
+pub mod api;
 pub mod app;
+pub mod router;
 pub mod theme;
 
 use leptos::prelude::*;
