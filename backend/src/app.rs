@@ -2,12 +2,13 @@ use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
 use axum::response::{IntoResponse, Response};
-use axum::routing::get;
+use axum::routing::{get, post, put};
 use mongodb::Database;
 
 use crate::config::Config;
 use crate::error::AppError;
 use crate::routes::redirect::{fallback_url, found, redirect};
+use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -17,6 +18,8 @@ pub struct AppState {
 
 pub fn build_app(state: AppState) -> Router {
     Router::new()
+        .route("/api/urls", post(create_url).get(list_urls))
+        .route("/api/urls/{code}", put(update_url).delete(delete_url))
         .route("/", get(|| async { found("/index.html") }))
         .route("/{code}", get(redirect))
         .fallback(fallback)
