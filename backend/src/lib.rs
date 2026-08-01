@@ -5,4 +5,5 @@ pub mod db;
 pub mod error;
 pub mod extract;
 pub mod routes;
+pub mod settings;
 pub mod users;
