@@ -30,6 +30,46 @@ bucket root. CloudFront routes `/`, `/index.html`, `/favicon.ico`,
 the Lambda. Short codes can never contain a dot, so the extension patterns
 cannot shadow a redirect.
 
+## Infra
+
+Terraform lives in `infra/`. Environments are **workspaces**, not directories:
+`dev` and `prod` share one config and pick up their differences from
+`infra/envs/<workspace>.tfvars`. State is in `s3://nourl-tfstate-664185729291`
+(versioned, public access blocked) with S3-native locking.
+
+```sh
+make build-lambda        # cargo lambda build --release --arm64 -p backend
+make tf-plan-dev         # builds the lambda, then plans the dev workspace
+```
+
+Terraform reads neither credential source on its own. AWS session credentials
+live under `~/.aws/login/` behind a `login_session` key the AWS Go SDK
+ignores, so it falls through to EC2 IMDS and times out even while `aws sts
+get-caller-identity` works; `CLOUDFLARE_API_TOKEN` sits in `.env`, which only
+the backend loads. The `TF` variable in the `Makefile` exports both. Run raw
+commands the same way:
+
+```sh
+cd infra
+set -a; . ../.env; set +a
+eval "$(aws configure export-credentials --format env)"
+terraform workspace select dev
+terraform plan -var-file=envs/dev.tfvars
+```
+
+The Cloudflare token needs `Zone:DNS:Edit` on nourl.space; put it in `.env`
+(gitignored) as `CLOUDFLARE_API_TOKEN`.
+
+`MONGO_URL` is read from SSM (`/nourl-dev/mongo-url`, `/nourl/mongo-url`),
+which are created out of band and land in Terraform state — accepted because
+the state bucket is private.
+
+Both environments have a real hostname — dev is `dev.nourl.space`, prod is
+`nourl.space` — so both get an ACM certificate validated through Cloudflare
+DNS and a proxied CNAME to CloudFront. They share one zone, so the zone id is
+a default in `variables.tf` rather than a per-env tfvar. Leaving `domain_name`
+empty is still supported and serves from the raw CloudFront URL.
+
 ## Layout
 
 - `shared/` — DTOs + validation used by backend and frontend

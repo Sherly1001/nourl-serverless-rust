@@ -6,3 +6,4 @@ frontend/style/output.css
 .terraform/
 *.tfplan
 crash.log
+infra/.build/
