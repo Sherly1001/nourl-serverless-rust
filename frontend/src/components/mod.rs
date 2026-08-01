@@ -5,3 +5,4 @@ pub mod login;
 pub mod my_urls;
 pub mod shorten;
 pub mod toasts;
+pub mod tooltip;
