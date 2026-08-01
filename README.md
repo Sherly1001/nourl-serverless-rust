@@ -81,6 +81,12 @@ terraform plan -var-file=envs/dev.tfvars
 which are created out of band and land in Terraform state — accepted because
 the state bucket is private.
 
+Those two parameters are currently **identical**: same Atlas cluster, same
+path. What separates the environments is the `mongo_db` tfvar, which becomes
+`MONGO_DB` — `nourl-dev` for dev, `nourl` for prod. The backend selects the
+database with `client.database(db_name)` and ignores the path in the
+connection string, so changing the URL alone would not isolate anything.
+
 Both environments have a real hostname — dev is `dev.nourl.space`, prod is
 `nourl.space` — so both get an ACM certificate (issued in us-east-1, the only
 region CloudFront accepts) validated through Cloudflare DNS, plus a proxied

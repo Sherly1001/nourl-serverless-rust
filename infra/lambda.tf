@@ -39,6 +39,7 @@ resource "aws_lambda_function" "api" {
   environment {
     variables = {
       MONGO_URL             = data.aws_ssm_parameter.mongo_url.value
+      MONGO_DB              = var.mongo_db
       NOTFOUND_FALLBACK_URL = var.notfound_fallback_url
     }
   }
