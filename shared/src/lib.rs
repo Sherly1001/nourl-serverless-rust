@@ -97,7 +97,15 @@ pub fn validate_password(password: &str) -> Result<(), String> {
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserInfo {
     pub id: String,
+    /// Login handle. Legacy accounts have none, so this falls back to the
+    /// display name and then the id — it is for showing, not for matching.
     pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
     pub is_admin: bool,
 }
 

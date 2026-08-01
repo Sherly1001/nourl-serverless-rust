@@ -8,7 +8,7 @@ pub struct Claims {
     /// User id (the `users.id` uuid string, not the Mongo `_id`).
     pub sub: String,
     /// Snapshot of the user's `token_version` when the token was minted.
-    pub ver: i32,
+    pub ver: i64,
     pub exp: i64,
 }
 
@@ -18,7 +18,7 @@ pub struct Claims {
 pub fn encode(
     secret: &str,
     user_id: &str,
-    token_version: i32,
+    token_version: i64,
     session_days: i64,
 ) -> Result<String, AppError> {
     let claims = Claims {

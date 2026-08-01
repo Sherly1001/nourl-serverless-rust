@@ -35,6 +35,29 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
             .build(),
     )
     .await?;
+
+    // Every unique index here is *partial*, restricted to documents where the
+    // field is actually a string. Accounts predating this phase have no
+    // `username` at all and store `null` in every provider id, and a plain
+    // unique index — sparse or not — treats those as equal values and rejects
+    // the second one. Sparse is not enough: it skips missing fields, not
+    // explicit nulls.
+    let users = db.collection::<Document>("users");
+    for field in ["id", "username", "github_id", "google_id", "facebook_id"] {
+        users
+            .create_index(
+                IndexModel::builder()
+                    .keys(doc! {field: 1})
+                    .options(
+                        IndexOptions::builder()
+                            .unique(true)
+                            .partial_filter_expression(doc! {field: {"$type": "string"}})
+                            .build(),
+                    )
+                    .build(),
+            )
+            .await?;
+    }
     Ok(())
 }
 
