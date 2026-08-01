@@ -89,6 +89,15 @@ pub fn authed_request(
         .unwrap()
 }
 
+/// An anonymous request with no body — GET, or a DELETE that carries none.
+pub fn request(method: &str, uri: &str) -> axum::http::Request<axum::body::Body> {
+    axum::http::Request::builder()
+        .method(method)
+        .uri(uri)
+        .body(axum::body::Body::empty())
+        .unwrap()
+}
+
 /// A GET carrying a session cookie.
 pub fn authed_get(uri: &str, cookie: &str) -> axum::http::Request<axum::body::Body> {
     axum::http::Request::builder()

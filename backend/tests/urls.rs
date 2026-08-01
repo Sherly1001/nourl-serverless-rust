@@ -1,37 +1,22 @@
 mod helpers;
 
 use axum::body::Body;
-use axum::http::{Method, Request, StatusCode, header};
-use helpers::test_app;
-use http_body_util::BodyExt;
+use axum::http::{Request, StatusCode, header};
+use helpers::{
+    authed_get, authed_request, body_json, json_request, request, session_cookie, test_app,
+};
 use mongodb::bson::doc;
-use serde_json::{Value, json};
+use serde_json::json;
 use tower::ServiceExt;
-
-fn req(method: Method, uri: &str, body: Option<Value>) -> Request<Body> {
-    let builder = Request::builder().method(method).uri(uri);
-    match body {
-        Some(v) => builder
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(v.to_string()))
-            .unwrap(),
-        None => builder.body(Body::empty()).unwrap(),
-    }
-}
-
-async fn body_json(resp: axum::response::Response) -> Value {
-    let bytes = resp.into_body().collect().await.unwrap().to_bytes();
-    serde_json::from_slice(&bytes).unwrap()
-}
 
 #[tokio::test]
 async fn create_roundtrip() {
     let (app, db) = test_app().await;
     let resp = app
-        .oneshot(req(
-            Method::POST,
+        .oneshot(json_request(
+            "POST",
             "/api/urls",
-            Some(json!({"code": "hi", "url": "https://a.com"})),
+            json!({"code": "hi", "url": "https://a.com"}),
         ))
         .await
         .unwrap();
@@ -61,7 +46,7 @@ async fn create_rejects_invalid_input() {
     ] {
         let resp = app
             .clone()
-            .oneshot(req(Method::POST, "/api/urls", Some(bad)))
+            .oneshot(json_request("POST", "/api/urls", bad))
             .await
             .unwrap();
         assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -77,11 +62,7 @@ async fn malformed_body_returns_json_validation_error() {
     // missing `url` field
     let resp = app
         .clone()
-        .oneshot(req(
-            Method::POST,
-            "/api/urls",
-            Some(json!({"code": "lmao"})),
-        ))
+        .oneshot(json_request("POST", "/api/urls", json!({"code": "lmao"})))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
@@ -91,7 +72,7 @@ async fn malformed_body_returns_json_validation_error() {
     let resp = app
         .oneshot(
             Request::builder()
-                .method(Method::POST)
+                .method("POST")
                 .uri("/api/urls")
                 .header(header::CONTENT_TYPE, "application/json")
                 .body(Body::from("{not json"))
@@ -113,10 +94,10 @@ async fn put_renames_code() {
         .await
         .unwrap();
     let resp = app
-        .oneshot(req(
-            Method::PUT,
+        .oneshot(json_request(
+            "PUT",
             "/api/urls/a",
-            Some(json!({"code": "b", "url": "https://b.com"})),
+            json!({"code": "b", "url": "https://b.com"}),
         ))
         .await
         .unwrap();
@@ -134,17 +115,17 @@ async fn owned_urls_are_protected() {
         .await
         .unwrap();
     for r in [
-        req(
-            Method::POST,
+        json_request(
+            "POST",
             "/api/urls",
-            Some(json!({"code": "own", "url": "https://x.com"})),
+            json!({"code": "own", "url": "https://x.com"}),
         ),
-        req(
-            Method::PUT,
+        json_request(
+            "PUT",
             "/api/urls/own",
-            Some(json!({"code": "own", "url": "https://x.com"})),
+            json!({"code": "own", "url": "https://x.com"}),
         ),
-        req(Method::DELETE, "/api/urls/own", None),
+        request("DELETE", "/api/urls/own"),
     ] {
         let resp = app.clone().oneshot(r).await.unwrap();
         assert_eq!(resp.status(), StatusCode::FORBIDDEN);
@@ -167,14 +148,14 @@ async fn delete_removes_and_404s_on_missing() {
         .unwrap();
     let resp = app
         .clone()
-        .oneshot(req(Method::DELETE, "/api/urls/gone", None))
+        .oneshot(request("DELETE", "/api/urls/gone"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::OK);
     let v = body_json(resp).await;
     assert_eq!(v, json!({"code": "gone", "deleted": true}));
     let resp = app
-        .oneshot(req(Method::DELETE, "/api/urls/gone", None))
+        .oneshot(request("DELETE", "/api/urls/gone"))
         .await
         .unwrap();
     assert_eq!(resp.status(), StatusCode::NOT_FOUND);
@@ -185,14 +166,14 @@ async fn delete_removes_and_404s_on_missing() {
 async fn account(app: &axum::Router, username: &str) -> String {
     let response = app
         .clone()
-        .oneshot(helpers::json_request(
+        .oneshot(json_request(
             "POST",
             "/api/auth/register",
             json!({"username": username, "password": "hunter2hunter2"}),
         ))
         .await
         .unwrap();
-    helpers::session_cookie(&response).unwrap()
+    session_cookie(&response).unwrap()
 }
 
 #[tokio::test]
@@ -201,7 +182,7 @@ async fn creating_while_logged_in_takes_ownership() {
     let cookie = account(&app, "owner1").await;
 
     let created = app
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &cookie,
@@ -220,7 +201,7 @@ async fn recreating_your_own_code_is_a_409_that_reveals_the_url() {
     let (app, db) = test_app().await;
     let cookie = account(&app, "owner2").await;
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &cookie,
@@ -230,7 +211,7 @@ async fn recreating_your_own_code_is_a_409_that_reveals_the_url() {
         .unwrap();
 
     let again = app
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &cookie,
@@ -254,7 +235,7 @@ async fn other_peoples_codes_are_403_without_leaking_the_url() {
     let owner = account(&app, "owner3").await;
     let other = account(&app, "other3").await;
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &owner,
@@ -264,12 +245,12 @@ async fn other_peoples_codes_are_403_without_leaking_the_url() {
         .unwrap();
 
     let attempt = json!({"code": "theirs", "url": "https://x.example"});
-    for request in [
-        helpers::authed_request("POST", "/api/urls", &other, attempt.clone()),
-        helpers::authed_request("PUT", "/api/urls/theirs", &other, attempt.clone()),
-        helpers::authed_request("DELETE", "/api/urls/theirs", &other, json!({})),
+    for attempt_request in [
+        authed_request("POST", "/api/urls", &other, attempt.clone()),
+        authed_request("PUT", "/api/urls/theirs", &other, attempt.clone()),
+        authed_request("DELETE", "/api/urls/theirs", &other, json!({})),
     ] {
-        let response = app.clone().oneshot(request).await.unwrap();
+        let response = app.clone().oneshot(attempt_request).await.unwrap();
         assert_eq!(response.status(), StatusCode::FORBIDDEN);
         let message = body_json(response).await["error"]["message"].to_string();
         assert!(
@@ -286,7 +267,7 @@ async fn owners_may_edit_and_delete_their_own_links() {
     let (app, db) = test_app().await;
     let cookie = account(&app, "owner4").await;
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &cookie,
@@ -297,7 +278,7 @@ async fn owners_may_edit_and_delete_their_own_links() {
 
     let edited = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/editable",
             &cookie,
@@ -316,7 +297,7 @@ async fn owners_may_edit_and_delete_their_own_links() {
     // Renaming the code carries the link — and its ownership — across.
     let renamed = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/editable",
             &cookie,
@@ -332,13 +313,13 @@ async fn owners_may_edit_and_delete_their_own_links() {
     // The old code is gone rather than duplicated.
     let old_code = app
         .clone()
-        .oneshot(req(Method::DELETE, "/api/urls/editable", None))
+        .oneshot(request("DELETE", "/api/urls/editable"))
         .await
         .unwrap();
     assert_eq!(old_code.status(), StatusCode::NOT_FOUND);
 
     let removed = app
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "DELETE",
             "/api/urls/renamed",
             &cookie,
@@ -363,7 +344,7 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
         (&other, "occupied", "https://theirs.example"),
     ] {
         app.clone()
-            .oneshot(helpers::authed_request(
+            .oneshot(authed_request(
                 "POST",
                 "/api/urls",
                 cookie,
@@ -380,7 +361,7 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
     // Someone else's code: 403, and still no url leak.
     let onto_theirs = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/movable",
             &mover,
@@ -395,7 +376,7 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
     // Your own code: the same answer as re-creating it, rather than silently
     // destroying the other link.
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &mover,
@@ -405,7 +386,7 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
         .unwrap();
     let onto_own = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/movable",
             &mover,
@@ -436,7 +417,7 @@ async fn a_rename_takes_over_an_unowned_code() {
     let (app, db) = test_app().await;
     let mover = account(&app, "mover8").await;
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &mover,
@@ -451,7 +432,7 @@ async fn a_rename_takes_over_an_unowned_code() {
 
     let moved = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/movable",
             &mover,
@@ -501,7 +482,7 @@ async fn admins_may_edit_anyones_link() {
         .unwrap();
 
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &owner,
@@ -512,7 +493,7 @@ async fn admins_may_edit_anyones_link() {
 
     let edited = app
         .clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/adminedit",
             &admin,
@@ -530,7 +511,7 @@ async fn admins_may_edit_anyones_link() {
     // Editing someone's link in place is allowed; moving another link on top of
     // it — which would delete it — is not. Admins get the same 403 as anyone.
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &admin,
@@ -539,7 +520,7 @@ async fn admins_may_edit_anyones_link() {
         .await
         .unwrap();
     let onto_theirs = app
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "PUT",
             "/api/urls/adminown",
             &admin,
@@ -559,7 +540,7 @@ async fn a_revoked_session_is_rejected_rather_than_downgraded() {
     let (app, db) = test_app().await;
     let cookie = account(&app, "revoked6").await;
     app.clone()
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/auth/logout",
             &cookie,
@@ -569,7 +550,7 @@ async fn a_revoked_session_is_rejected_rather_than_downgraded() {
         .unwrap();
 
     let response = app
-        .oneshot(helpers::authed_request(
+        .oneshot(authed_request(
             "POST",
             "/api/urls",
             &cookie,
@@ -583,12 +564,179 @@ async fn a_revoked_session_is_rejected_rather_than_downgraded() {
 }
 
 #[tokio::test]
-async fn list_returns_501_in_phase_1() {
+async fn list_requires_auth_and_shows_only_your_own() {
     let (app, db) = test_app().await;
-    let resp = app
-        .oneshot(req(Method::GET, "/api/urls", None))
+    let mine = account(&app, "lister1").await;
+    let theirs = account(&app, "lister2").await;
+
+    let anonymous = app
+        .clone()
+        .oneshot(request("GET", "/api/urls"))
         .await
         .unwrap();
-    assert_eq!(resp.status(), StatusCode::NOT_IMPLEMENTED);
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    for (cookie, code) in [(&mine, "mine-a"), (&mine, "mine-b"), (&theirs, "theirs-a")] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://example.com"}),
+            ))
+            .await
+            .unwrap();
+    }
+    // An unowned link belongs to nobody's list.
+    db.collection("urls")
+        .insert_one(doc! {"code": "orphan", "url": "https://example.com"})
+        .await
+        .unwrap();
+
+    let listed = app.oneshot(authed_get("/api/urls", &mine)).await.unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+    let body = body_json(listed).await;
+    assert_eq!(body["total"], 2);
+    let codes: Vec<&str> = body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["code"].as_str().unwrap())
+        .collect();
+    assert!(codes.contains(&"mine-a"));
+    assert!(codes.contains(&"mine-b"));
+    assert!(!codes.contains(&"theirs-a"));
+    assert!(!codes.contains(&"orphan"));
+    assert_eq!(body["items"][0]["owner"]["username"], "lister1");
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn admins_see_everything_and_search_narrows_it() {
+    let (app, db) = test_app().await;
+    let user = account(&app, "listed").await;
+    let admin = account(&app, "listadmin").await;
+    db.collection::<mongodb::bson::Document>("users")
+        .update_one(
+            doc! {"username": "listadmin"},
+            doc! {"$set": {"is_admin": true}},
+        )
+        .await
+        .unwrap();
+
+    for code in ["alpha", "beta"] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &user,
+                json!({"code": code, "url": "https://example.com"}),
+            ))
+            .await
+            .unwrap();
+    }
+    // Anonymous links have no owner to scope by, so only the unscoped admin
+    // view can reach them at all.
+    db.collection("urls")
+        .insert_one(doc! {"code": "orphan", "url": "https://example.com"})
+        .await
+        .unwrap();
+
+    let all = app
+        .clone()
+        .oneshot(authed_get("/api/urls?sort=code,1", &admin))
+        .await
+        .unwrap();
+    let all = body_json(all).await;
+    assert_eq!(all["total"], 3);
+    let codes: Vec<&str> = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|i| i["code"].as_str().unwrap())
+        .collect();
+    assert_eq!(codes, ["alpha", "beta", "orphan"]);
+    assert!(
+        all["items"][2]["owner"].is_null(),
+        "an unowned link lists with a null owner rather than being skipped"
+    );
+
+    // The admin's own list is not special-cased: they own nothing here.
+    let owned_by_admin = all["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .filter(|i| i["owner"]["username"] == "listadmin")
+        .count();
+    assert_eq!(owned_by_admin, 0);
+
+    let searched = app
+        .clone()
+        .oneshot(authed_get("/api/urls?q=alph", &admin))
+        .await
+        .unwrap();
+    let body = body_json(searched).await;
+    assert_eq!(body["total"], 1);
+    assert_eq!(body["items"][0]["code"], "alpha");
+
+    // A rejected sort field must not reach Mongo.
+    let bad_sort = app
+        .oneshot(authed_get("/api/urls?sort=hash_passwd,1", &admin))
+        .await
+        .unwrap();
+    assert_eq!(bad_sort.status(), StatusCode::BAD_REQUEST);
+
+    db.drop().await.unwrap();
+}
+
+/// `total` counts everything matching the filter, not just the page, or the UI
+/// cannot render pagination.
+#[tokio::test]
+async fn paging_and_sorting_walk_the_whole_set() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "pager").await;
+    for code in ["a", "b", "c"] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &cookie,
+                json!({"code": code, "url": "https://example.com"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let first = app
+        .clone()
+        .oneshot(authed_get("/api/urls?sort=code,1&limit=2&skip=0", &cookie))
+        .await
+        .unwrap();
+    let first = body_json(first).await;
+    assert_eq!(
+        first["total"], 3,
+        "total spans the whole match, not the page"
+    );
+    assert_eq!(first["items"].as_array().unwrap().len(), 2);
+    assert_eq!(first["items"][0]["code"], "a");
+    assert_eq!(first["items"][1]["code"], "b");
+
+    let second = app
+        .clone()
+        .oneshot(authed_get("/api/urls?sort=code,1&limit=2&skip=2", &cookie))
+        .await
+        .unwrap();
+    let second = body_json(second).await;
+    assert_eq!(second["total"], 3);
+    assert_eq!(second["items"].as_array().unwrap().len(), 1);
+    assert_eq!(second["items"][0]["code"], "c");
+
+    let descending = app
+        .oneshot(authed_get("/api/urls?sort=code,-1", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(body_json(descending).await["items"][0]["code"], "c");
+
     db.drop().await.unwrap();
 }

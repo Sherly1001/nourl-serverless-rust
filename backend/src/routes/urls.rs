@@ -1,14 +1,17 @@
 use axum::Json;
-use axum::extract::{Path, State};
+use axum::extract::{Path, Query, State};
 use futures::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
-use shared::{DeleteResponse, UrlEntry, UrlUpsertRequest, validate_code, validate_url};
+use shared::{
+    DeleteResponse, UrlEntry, UrlListResponse, UrlUpsertRequest, validate_code, validate_url,
+};
 
 use crate::app::AppState;
-use crate::auth::extract::OptionalUser;
+use crate::auth::extract::{CurrentUser, OptionalUser};
 use crate::db::url_aggregate_pipeline;
 use crate::error::AppError;
 use crate::extract::AppJson;
+use crate::query::ListParams;
 use crate::users::User;
 
 fn parse_expiry(raw: Option<&str>) -> Result<Option<bson::DateTime>, AppError> {
@@ -185,8 +188,34 @@ pub async fn delete_url(
     }))
 }
 
-pub async fn list_urls() -> AppError {
-    AppError::not_implemented()
+pub async fn list_urls(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Query(params): Query<std::collections::HashMap<String, String>>,
+) -> Result<Json<UrlListResponse>, AppError> {
+    let parsed = ListParams::from_query(&params)?;
+    // Admins see every link; everyone else sees only their own.
+    let owner = (!user.is_admin).then_some(user.id.as_str());
+    let filter = parsed.filter(owner);
+
+    let urls = state.db.collection::<Document>("urls");
+    let total = urls.count_documents(filter.clone()).await?;
+    let rows: Vec<Document> = urls
+        .aggregate(url_aggregate_pipeline(
+            filter,
+            parsed.limit,
+            parsed.skip,
+            parsed.sort,
+        ))
+        .await?
+        .try_collect()
+        .await?;
+    let items = rows
+        .into_iter()
+        .map(|doc| bson::from_document(doc).map_err(AppError::internal))
+        .collect::<Result<Vec<UrlEntry>, AppError>>()?;
+
+    Ok(Json(UrlListResponse { items, total }))
 }
 
 #[cfg(test)]

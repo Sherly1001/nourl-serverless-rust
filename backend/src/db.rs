@@ -72,6 +72,9 @@ pub fn url_aggregate_pipeline(
     let mut sort_doc = sort;
     sort_doc.insert("_id", -1);
     vec![
+        // Filter before the join, so `owner` is still the raw id string rather
+        // than the joined object, and so the index on `code` can be used.
+        doc! {"$match": filter},
         doc! {"$lookup": {"from": "users", "localField": "owner", "foreignField": "id", "as": "owner"}},
         doc! {"$set": {"owner": {"$ifNull": [{"$first": "$owner"}, null]}}},
         doc! {"$unset": [
@@ -79,7 +82,6 @@ pub fn url_aggregate_pipeline(
             "owner.facebook_id", "owner.google_id", "owner.hash_passwd",
             "owner.token_version"
         ]},
-        doc! {"$match": filter},
         doc! {"$sort": sort_doc},
         doc! {"$skip": skip},
         doc! {"$limit": limit},
