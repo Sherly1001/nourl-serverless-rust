@@ -16,6 +16,7 @@ const SORTABLE: &[&str] = &[
     "last_hit_at",
     "expires_at",
     "created_at",
+    "updated_at",
 ];
 
 pub struct ListParams {
@@ -46,7 +47,10 @@ impl ListParams {
         }
 
         let sort = match params.get("sort") {
-            None => doc! {"created_at": -1},
+            // Most recently touched first. Links written before `updated_at`
+            // existed have none, and Mongo sorts a missing field last under
+            // `-1`, so legacy rows settle at the bottom rather than the top.
+            None => doc! {"updated_at": -1},
             Some(raw) => {
                 let fields: Vec<&str> = raw.split(',').collect();
                 if fields.is_empty() || !fields.len().is_multiple_of(2) {
@@ -124,7 +128,7 @@ mod tests {
         let parsed = ListParams::from_query(&params(&[])).unwrap();
         assert_eq!(parsed.limit, 20);
         assert_eq!(parsed.skip, 0);
-        assert_eq!(parsed.sort, doc! {"created_at": -1});
+        assert_eq!(parsed.sort, doc! {"updated_at": -1});
         assert!(parsed.q.is_none());
     }
 

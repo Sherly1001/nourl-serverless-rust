@@ -799,3 +799,76 @@ async fn creating_over_an_unowned_code_claims_it() {
 
     db.drop().await.unwrap();
 }
+
+/// Mongo stores these as BSON datetimes but `UrlEntry` holds strings, so
+/// without a conversion in the pipeline the whole response fails to
+/// deserialize — creating a link with an expiry used to be a 500.
+#[tokio::test]
+async fn dates_come_back_as_rfc3339_strings() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "dater").await;
+    let expiry = (chrono::Utc::now() + chrono::Duration::days(7)).to_rfc3339();
+
+    let created = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "dated", "url": "https://example.com", "expires_at": expiry}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let body = body_json(created).await;
+    for field in ["created_at", "expires_at"] {
+        let value = body[field]
+            .as_str()
+            .unwrap_or_else(|| panic!("{field}: {body}"));
+        assert!(value.ends_with('Z'), "{field} is not RFC3339: {value}");
+        chrono::DateTime::parse_from_rfc3339(value)
+            .unwrap_or_else(|e| panic!("{field} unparseable: {value} ({e})"));
+    }
+    assert!(body["last_hit_at"].is_null(), "never hit yet");
+    let first_write = body["updated_at"]
+        .as_str()
+        .expect("stamped on create")
+        .to_string();
+
+    // An edit moves updated_at without disturbing created_at.
+    let edited = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/dated",
+            &cookie,
+            json!({"code": "dated", "url": "https://elsewhere.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), StatusCode::OK);
+    let edited = body_json(edited).await;
+    assert_eq!(
+        edited["created_at"], body["created_at"],
+        "creation is fixed"
+    );
+    assert_ne!(
+        edited["updated_at"].as_str().unwrap(),
+        first_write,
+        "an edit must move updated_at"
+    );
+
+    // A legacy document whose created_at is already a string must survive the
+    // same pipeline rather than aborting the aggregation.
+    db.collection("urls")
+        .insert_one(doc! {"code": "legacy", "url": "https://old.example", "created_at": "2020-01-01T00:00:00Z"})
+        .await
+        .unwrap();
+    let listed = app
+        .oneshot(authed_get("/api/urls?q=legacy", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(listed.status(), StatusCode::OK);
+
+    db.drop().await.unwrap();
+}

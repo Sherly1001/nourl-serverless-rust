@@ -8,10 +8,16 @@ pub struct UrlUpsertRequest {
     pub expires_at: Option<String>,
 }
 
+/// The public face of a link's owner. Never carries an email or a provider id:
+/// the aggregate pipeline strips those before this is built.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerInfo {
     #[serde(default)]
     pub username: Option<String>,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -26,6 +32,13 @@ pub struct UrlEntry {
     pub last_hit_at: Option<String>,
     #[serde(default)]
     pub expires_at: Option<String>,
+    /// RFC3339. Absent on links created before this field existed.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// RFC3339, rewritten on every edit. Absent until a link is next written,
+    /// so it is not backfilled for existing rows.
+    #[serde(default)]
+    pub updated_at: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

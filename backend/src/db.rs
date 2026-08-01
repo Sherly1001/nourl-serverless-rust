@@ -61,6 +61,20 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
     Ok(())
 }
 
+/// Renders a BSON date as an RFC3339 string, because `UrlEntry`'s date fields
+/// are `Option<String>` and a raw BSON datetime fails to deserialize into one.
+/// Anything that is not a date passes through untouched — legacy documents may
+/// already hold a string, and `$dateToString` would abort the whole pipeline on
+/// one.
+fn as_iso_string(field: &str) -> Document {
+    let path = format!("${field}");
+    doc! {"$cond": [
+        {"$eq": [{"$type": &path}, "date"]},
+        {"$dateToString": {"date": &path, "format": "%Y-%m-%dT%H:%M:%S.%LZ"}},
+        &path,
+    ]}
+}
+
 /// Mirrors urlAggregatePipeline from the Node.js implementation, plus
 /// stripping `token_version` (new field) and `_id`s for clean serde.
 pub fn url_aggregate_pipeline(
@@ -80,8 +94,16 @@ pub fn url_aggregate_pipeline(
         doc! {"$unset": [
             "_id", "id", "owner._id", "owner.id", "owner.github_id",
             "owner.facebook_id", "owner.google_id", "owner.hash_passwd",
-            "owner.token_version"
+            "owner.token_version", "owner.email", "owner.created_at"
         ]},
+        // Before the sort, so ordering by a date orders these strings — the
+        // format is fixed-width UTC, so lexicographic is chronological.
+        doc! {"$set": {
+            "created_at": as_iso_string("created_at"),
+            "updated_at": as_iso_string("updated_at"),
+            "last_hit_at": as_iso_string("last_hit_at"),
+            "expires_at": as_iso_string("expires_at"),
+        }},
         doc! {"$sort": sort_doc},
         doc! {"$skip": skip},
         doc! {"$limit": limit},

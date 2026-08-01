@@ -138,7 +138,13 @@ async fn upsert(
         }
     }
 
-    let mut set = doc! {"code": &body.code, "url": &body.url};
+    // Stamped on every write, including the one that creates the link, so an
+    // edit is always distinguishable from the original.
+    let mut set = doc! {
+        "code": &body.code,
+        "url": &body.url,
+        "updated_at": bson::DateTime::now(),
+    };
     if let Some(expires) = expires {
         set.insert("expires_at", expires);
     }
