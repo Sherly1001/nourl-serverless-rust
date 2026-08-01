@@ -40,35 +40,63 @@ Terraform lives in `infra/`. Environments are **workspaces**, not directories:
 ```sh
 make build-lambda        # cargo lambda build --release --arm64 -p backend
 make tf-plan-dev         # builds the lambda, then plans the dev workspace
+make deploy ENV=dev      # build both, terraform apply, upload dist/, invalidate
+make sync-static ENV=dev # re-upload the frontend only (no terraform)
+make tf-output ENV=dev   # site_url, bucket, distribution id, api endpoint
 ```
 
-Terraform reads neither credential source on its own. AWS session credentials
-live under `~/.aws/login/` behind a `login_session` key the AWS Go SDK
-ignores, so it falls through to EC2 IMDS and times out even while `aws sts
-get-caller-identity` works; `CLOUDFLARE_API_TOKEN` sits in `.env`, which only
-the backend loads. The `TF` variable in the `Makefile` exports both. Run raw
-commands the same way:
+`make deploy` is the whole pipeline: `cargo lambda build` → `trunk build
+--release` → `terraform apply` (interactive, shows the plan) → `aws s3 sync` of
+`frontend/dist` → CloudFront invalidation. `index.html` is uploaded separately
+with `no-cache` because its asset hashes change on every build.
+
+### Credentials
+
+Two things need setting up once:
+
+- **AWS** — `aws login`. Sessions are short-lived, so re-run it if an apply
+  fails partway; terraform resumes from state with no cleanup needed.
+- **Cloudflare** — an API token with `Zone:DNS:Edit` on nourl.space, in `.env`
+  (gitignored) as `CLOUDFLARE_API_TOKEN`.
+
+Neither reaches Terraform by itself. `aws login` keeps AWS session credentials
+under `~/.aws/login/` behind a `login_session` key the AWS Go SDK ignores, so
+it falls through to EC2 IMDS and times out even while `aws sts
+get-caller-identity` works; `.env` is only loaded by the backend. The
+`Makefile` exports both before every terraform and `aws` call, and strips any
+`AWS_*` inherited from the shell first — stale ones outrank every other source
+and produce a confusing `ExpiredToken` that surviving `aws login` does not fix.
+If you run commands by hand, do the same:
 
 ```sh
 cd infra
 set -a; . ../.env; set +a
-eval "$(aws configure export-credentials --format env)"
+eval "$(env -u AWS_ACCESS_KEY_ID -u AWS_SECRET_ACCESS_KEY -u AWS_SESSION_TOKEN \
+  -u AWS_CREDENTIAL_EXPIRATION aws configure export-credentials --format env)"
 terraform workspace select dev
 terraform plan -var-file=envs/dev.tfvars
 ```
-
-The Cloudflare token needs `Zone:DNS:Edit` on nourl.space; put it in `.env`
-(gitignored) as `CLOUDFLARE_API_TOKEN`.
 
 `MONGO_URL` is read from SSM (`/nourl-dev/mongo-url`, `/nourl/mongo-url`),
 which are created out of band and land in Terraform state — accepted because
 the state bucket is private.
 
 Both environments have a real hostname — dev is `dev.nourl.space`, prod is
-`nourl.space` — so both get an ACM certificate validated through Cloudflare
-DNS and a proxied CNAME to CloudFront. They share one zone, so the zone id is
-a default in `variables.tf` rather than a per-env tfvar. Leaving `domain_name`
-empty is still supported and serves from the raw CloudFront URL.
+`nourl.space` — so both get an ACM certificate (issued in us-east-1, the only
+region CloudFront accepts) validated through Cloudflare DNS, plus a proxied
+CNAME to the distribution. They share one zone, so the zone id is a default in
+`variables.tf` rather than a per-env tfvar. Leaving `domain_name` empty is
+still supported and serves from the raw CloudFront URL.
+
+The zone's SSL/TLS mode must be **Full** or **Full (strict)**. Flexible would
+loop forever against CloudFront's `redirect-to-https`.
+
+CloudFront serves `/` from S3 via `default_root_object`, since S3 answers an
+empty key with AccessDenied rather than the index. Named static files are
+matched by the `ordered_cache_behavior` patterns; everything else falls
+through to the Lambda, which is what makes `GET /{code}` redirects work. A
+request for a static file that does not exist returns 403, not 404 — that is
+S3 through OAC declining to confirm the key is missing.
 
 ## Layout
 
