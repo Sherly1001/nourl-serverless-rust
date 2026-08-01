@@ -106,10 +106,15 @@ pub fn Shorten() -> impl IntoView {
     };
 
     let code_input: NodeRef<leptos::html::Input> = NodeRef::new();
+    // `reset` re-enables the inputs, but the DOM still carries `disabled` at
+    // the moment the click handler runs, and focusing a disabled input does
+    // nothing. Waiting a frame lets the attribute clear first.
     let focus_code = move || {
-        if let Some(input) = code_input.get_untracked() {
-            let _ = input.focus();
-        }
+        request_animation_frame(move || {
+            if let Some(input) = code_input.get_untracked() {
+                let _ = input.focus();
+            }
+        });
     };
     Effect::new(move |_| {
         if let Some(input) = code_input.get() {

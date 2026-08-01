@@ -4,6 +4,7 @@ use shared::{ApiErrorBody, LoginRequest, RegisterRequest, validate_password, val
 
 use crate::api;
 use crate::auth::use_auth;
+use crate::toast::use_toasts;
 use crate::ui::input_class;
 
 /// Sends the browser to `#/urls`, the page a signed-in user came here for.
@@ -74,13 +75,14 @@ pub fn Login() -> impl IntoView {
             .flatten()
             .or_else(|| error_for(&server_error.get(), "password").map(String::from))
     });
-    // Only what could not be pinned to a field: a failed login, a disabled
-    // method, a network fault.
-    let banner_error = Memo::new(move |_| {
-        server_error
-            .get()
-            .filter(|e| e.field.is_none())
-            .map(|e| e.message)
+    // Whatever could not be pinned to a field — a failed login, a disabled
+    // method, a network fault — is a system-level message, so it goes to the
+    // toast stack rather than growing the form.
+    let toasts = use_toasts();
+    Effect::new(move |_| {
+        if let Some(err) = server_error.get().filter(|e| e.field.is_none()) {
+            toasts.error(err.message);
+        }
     });
     let can_submit = Memo::new(move |_| {
         !busy.get()
@@ -195,13 +197,6 @@ pub fn Login() -> impl IntoView {
                             {move || password_error.get().unwrap_or_default()}
                         </p>
                     </div>
-
-                    <Show when=move || banner_error.get().is_some()>
-                        <div class="flex gap-2 items-center alert alert-error motion-preset-slide-down motion-duration-200">
-                            <span class="icon-[tabler--alert-circle] size-5 shrink-0"></span>
-                            <span>{move || banner_error.get().unwrap_or_default()}</span>
-                        </div>
-                    </Show>
 
                     <button
                         class="h-14 text-xl font-semibold btn btn-primary active:scale-[.98]"

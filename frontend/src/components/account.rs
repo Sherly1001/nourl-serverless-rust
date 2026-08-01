@@ -4,6 +4,7 @@ use shared::UserInfo;
 
 use crate::api;
 use crate::auth::use_auth;
+use crate::components::avatar::{Avatar, usable_url};
 use crate::dropdown::dismiss_on_outside_click;
 
 /// What to call the user on screen. `display_name` is optional and may have
@@ -16,51 +17,6 @@ fn display_name(user: &UserInfo) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(&user.username)
         .to_string()
-}
-
-/// Single character for the fallback avatar. Skips leading punctuation so a
-/// name like `_sher` still shows an `S`.
-fn initial(name: &str) -> String {
-    name.chars()
-        .find(|c| c.is_alphanumeric())
-        .map(|c| c.to_uppercase().to_string())
-        .unwrap_or_else(|| "?".into())
-}
-
-const AVATAR_IMG: &str = "object-cover rounded-full size-8 shrink-0 bg-base-300";
-const AVATAR_INITIAL: &str = "flex justify-center items-center text-sm font-semibold rounded-full size-8 shrink-0 bg-primary text-primary-content";
-
-#[component]
-fn Avatar(user: UserInfo) -> impl IntoView {
-    let letter = initial(&display_name(&user));
-    let url = user
-        .avatar_url
-        .as_deref()
-        .map(str::trim)
-        .filter(|u| !u.is_empty())
-        .map(String::from);
-
-    let Some(url) = url else {
-        return view! { <span class=AVATAR_INITIAL>{letter}</span> }.into_any();
-    };
-
-    // A stored avatar_url can 404, expire, or point at something that is not an
-    // image — the browser paints its broken-image glyph for all three. Fall
-    // back to the initial instead. A fresh `Avatar` is built whenever the user
-    // changes, so this resets itself when the avatar does.
-    let (broken, set_broken) = signal(false);
-    let fallback_letter = letter.clone();
-    view! {
-        <Show
-            when=move || !broken.get()
-            fallback=move || {
-                view! { <span class=AVATAR_INITIAL>{fallback_letter.clone()}</span> }
-            }
-        >
-            <img src=url.clone() alt="" class=AVATAR_IMG on:error=move |_| set_broken.set(true) />
-        </Show>
-    }
-    .into_any()
 }
 
 /// Signed out: a sign-in link. Signed in: the display name and avatar, which
@@ -108,7 +64,18 @@ pub fn AccountMenu() -> impl IntoView {
                     <span class="hidden text-sm sm:inline">
                         {move || auth.user.get().map(|u| display_name(&u)).unwrap_or_default()}
                     </span>
-                    {move || auth.user.get().map(|user| view! { <Avatar user=user /> })}
+                    {move || {
+                        auth.user
+                            .get()
+                            .map(|user| {
+                                view! {
+                                    <Avatar
+                                        url=usable_url(user.avatar_url.as_deref())
+                                        name=display_name(&user)
+                                    />
+                                }
+                            })
+                    }}
                 </button>
 
                 <Show when=move || open.get()>
@@ -165,14 +132,5 @@ mod tests {
         assert_eq!(display_name(&user(None, None)), "sher");
         // A profile edit can leave this blank; blank must not render as empty.
         assert_eq!(display_name(&user(Some("   "), None)), "sher");
-    }
-
-    #[test]
-    fn initial_skips_leading_punctuation() {
-        assert_eq!(initial("Sher Ly"), "S");
-        assert_eq!(initial("_sher"), "S");
-        assert_eq!(initial("9lives"), "9");
-        assert_eq!(initial("___"), "?");
-        assert_eq!(initial(""), "?");
     }
 }

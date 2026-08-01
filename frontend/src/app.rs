@@ -5,13 +5,16 @@ use crate::components::account::AccountMenu;
 use crate::components::login::Login;
 use crate::components::my_urls::MyUrls;
 use crate::components::shorten::Shorten;
+use crate::components::toasts::ToastStack;
 use crate::router::{Route, use_hash_route};
 use crate::theme::ThemePicker;
+use crate::toast::provide_toasts;
 
 #[component]
 pub fn App() -> impl IntoView {
     let route = use_hash_route();
     let auth = provide_auth();
+    provide_toasts();
 
     view! {
         <div class="border-b shadow-sm navbar bg-base-200 border-base-content/10">
@@ -33,7 +36,15 @@ pub fn App() -> impl IntoView {
             </div>
         </div>
 
-        <main class="container py-10 px-4 mx-auto max-w-2xl">
+        // The table needs room; a form reads better narrow, so the width
+        // follows the route rather than being one compromise for both.
+        <main class=move || {
+            let width = match route.get() {
+                Route::MyUrls => "max-w-6xl",
+                _ => "max-w-2xl",
+            };
+            format!("container py-10 px-4 mx-auto {width}")
+        }>
             {move || match route.get() {
                 Route::Shorten => view! { <Shorten /> }.into_any(),
                 Route::Login => view! { <Login /> }.into_any(),
@@ -41,6 +52,8 @@ pub fn App() -> impl IntoView {
                 Route::NotFound => view! { <NotFound /> }.into_any(),
             }}
         </main>
+
+        <ToastStack />
     }
 }
 

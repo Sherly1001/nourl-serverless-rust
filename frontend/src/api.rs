@@ -73,8 +73,20 @@ pub async fn delete_url(code: &str) -> Result<(), ApiErrorBody> {
 }
 
 /// `query` is the already-encoded query string, without the leading `?`.
-pub async fn list_urls(query: &str) -> Result<UrlListResponse, ApiErrorBody> {
-    get_json(&format!("/api/urls?{query}")).await
+///
+/// Takes an abort signal because the search box refires on every pause in
+/// typing: without one, a slow early request can land after a later one and
+/// overwrite the newer results.
+pub async fn list_urls(
+    query: &str,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<UrlListResponse, ApiErrorBody> {
+    let resp = Request::get(&format!("/api/urls?{query}"))
+        .abort_signal(signal)
+        .send()
+        .await
+        .map_err(net_err)?;
+    read(resp).await
 }
 
 pub async fn register(body: &RegisterRequest) -> Result<UserInfo, ApiErrorBody> {
