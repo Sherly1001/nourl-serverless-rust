@@ -2,9 +2,12 @@ use axum::Json;
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
-use shared::{LoginRequest, RegisterRequest, validate_password, validate_username};
+use shared::{
+    AuthMethods, LoginRequest, RegisterRequest, UserInfo, validate_password, validate_username,
+};
 
 use crate::app::AppState;
+use crate::auth::extract::CurrentUser;
 use crate::auth::{cookie, jwt, password};
 use crate::error::AppError;
 use crate::extract::AppJson;
@@ -71,4 +74,27 @@ pub async fn login(
     }
 
     logged_in(&state, jar, &user)
+}
+
+pub async fn me(CurrentUser(user): CurrentUser) -> Json<UserInfo> {
+    Json(user.to_info())
+}
+
+/// Clears the cookie *and* bumps `token_version`, so tokens already handed out
+/// — on other devices, or copied out of a browser — stop working too. With a
+/// 60-day expiry, clearing the cookie alone would revoke nothing.
+pub async fn logout(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+) -> Result<Response, AppError> {
+    users::bump_token_version(&state.db, &user.id).await?;
+    let jar = jar.add(cookie::cleared(&state.config));
+    Ok((jar, Json(serde_json::json!({"logged_out": true}))).into_response())
+}
+
+/// Public: the login page needs to know which buttons to render before anyone
+/// is authenticated.
+pub async fn methods(State(state): State<AppState>) -> Result<Json<AuthMethods>, AppError> {
+    Ok(Json(settings::load(&state.db).await?.methods()))
 }

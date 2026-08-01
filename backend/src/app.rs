@@ -7,7 +7,7 @@ use mongodb::Database;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::routes::auth::{login, register};
+use crate::routes::auth::{login, logout, me, methods, register};
 use crate::routes::redirect::{fallback_url, found, redirect};
 use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
 
@@ -21,6 +21,9 @@ pub fn build_app(state: AppState) -> Router {
     Router::new()
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
+        .route("/api/auth/logout", post(logout))
+        .route("/api/auth/me", get(me))
+        .route("/api/auth/methods", get(methods))
         .route("/api/urls", post(create_url).get(list_urls))
         .route("/api/urls/{code}", put(update_url).delete(delete_url))
         .route("/", get(|| async { found("/index.html") }))

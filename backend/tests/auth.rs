@@ -123,3 +123,105 @@ async fn login_accepts_the_right_password_only() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn me_requires_a_session_and_returns_the_account() {
+    let (app, db) = test_app().await;
+
+    let anonymous = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/auth/me")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "carol", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+
+    let me = app
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(me.status(), StatusCode::OK);
+    let body = body_json(me).await;
+    assert_eq!(body["username"], "carol");
+    assert_eq!(body["display_name"], "carol");
+    assert!(body.get("hash_passwd").is_none());
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn logout_revokes_every_outstanding_token() {
+    let (app, db) = test_app().await;
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "dave", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+
+    let logout = app
+        .clone()
+        .oneshot(
+            axum::http::Request::builder()
+                .method("POST")
+                .uri("/api/auth/logout")
+                .header("cookie", &cookie)
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(logout.status(), StatusCode::OK);
+
+    // The very same token must now be dead — this is the token_version bump,
+    // not merely the cookie being cleared in the browser.
+    let reused = app
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(reused.status(), StatusCode::UNAUTHORIZED);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn methods_is_public_and_reports_password_only_by_default() {
+    let (app, db) = test_app().await;
+
+    let response = app
+        .oneshot(
+            axum::http::Request::builder()
+                .uri("/api/auth/methods")
+                .body(axum::body::Body::empty())
+                .unwrap(),
+        )
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["password"], true);
+    assert_eq!(body["github"], false);
+    assert_eq!(body["google"], false);
+    assert_eq!(body["facebook"], false);
+
+    db.drop().await.unwrap();
+}
