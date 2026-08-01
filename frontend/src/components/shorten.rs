@@ -1,25 +1,10 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
 use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
-use wasm_bindgen_futures::JsFuture;
 
 use crate::api;
+use crate::clipboard::{copy, origin};
 use crate::ui::input_class;
-
-fn origin() -> String {
-    web_sys::window()
-        .and_then(|w| w.location().origin().ok())
-        .unwrap_or_default()
-}
-
-fn copy_to_clipboard(text: String) {
-    if let Some(window) = web_sys::window() {
-        let clipboard = window.navigator().clipboard();
-        spawn_local(async move {
-            let _ = JsFuture::from(clipboard.write_text(&text)).await;
-        });
-    }
-}
 
 fn check_code(value: &str) -> Option<String> {
     if value.trim().is_empty() {
@@ -241,7 +226,7 @@ pub fn Shorten() -> impl IntoView {
                                     <button
                                         class="active:scale-95 btn btn-sm btn-outline shrink-0 text-success-content border-success-content/40 hover:bg-success-content/10"
                                         on:click=move |_| {
-                                            copy_to_clipboard(to_copy.clone());
+                                            copy(to_copy.clone());
                                             set_copied.set(true);
                                         }
                                     >
