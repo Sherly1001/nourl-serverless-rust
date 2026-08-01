@@ -16,4 +16,12 @@ data "aws_caller_identity" "current" {}
 locals {
   prefix     = "nourl-${terraform.workspace}"
   has_domain = var.domain_name != ""
+
+  # Unknown codes land back on the environment's own front page, so dev never
+  # bounces visitors into prod. A domainless environment has no front page of
+  # its own worth naming, so it falls back to the production site.
+  notfound_fallback_url = coalesce(
+    var.notfound_fallback_url,
+    local.has_domain ? "https://${var.domain_name}" : "https://nourl.space",
+  )
 }

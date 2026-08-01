@@ -29,7 +29,11 @@ variable "mongo_db" {
   default = "nourl"
 }
 
+# Empty means "this environment's own site" — see local.notfound_fallback_url.
+# Leaving it unset in the Lambda is not an option: the backend would fall back
+# to x-forwarded-host (needs a CloudFront Function we do not deploy) and then
+# to host, which API Gateway has already rewritten to its own domain.
 variable "notfound_fallback_url" {
   type    = string
-  default = "https://nourl.space"
+  default = ""
 }
