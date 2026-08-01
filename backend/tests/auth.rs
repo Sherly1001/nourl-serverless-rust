@@ -225,3 +225,192 @@ async fn methods_is_public_and_reports_password_only_by_default() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn changing_password_requires_the_current_one() {
+    let (app, db) = test_app().await;
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "rotator", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+
+    let wrong = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/password",
+            &cookie,
+            json!({"current_password": "not-it", "new_password": "brandnewpass"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(wrong.status(), StatusCode::UNAUTHORIZED);
+
+    let short = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/password",
+            &cookie,
+            json!({"current_password": "hunter2hunter2", "new_password": "short"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(short.status(), StatusCode::BAD_REQUEST);
+
+    // Neither failure may have changed anything.
+    let still_works = app
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "rotator", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(still_works.status(), StatusCode::OK);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn changing_password_logs_out_every_other_session() {
+    let (app, db) = test_app().await;
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "rotator2", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let old_cookie = session_cookie(&registered).unwrap();
+
+    let changed = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/password",
+            &old_cookie,
+            json!({"current_password": "hunter2hunter2", "new_password": "brandnewpass"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(changed.status(), StatusCode::OK);
+
+    // This device is re-authenticated, so it keeps working.
+    let fresh_cookie = session_cookie(&changed).expect("must hand back a new session");
+    assert_ne!(fresh_cookie, old_cookie);
+    let with_fresh = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &fresh_cookie))
+        .await
+        .unwrap();
+    assert_eq!(with_fresh.status(), StatusCode::OK);
+
+    // Any other device holding the old token is locked out.
+    let with_old = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &old_cookie))
+        .await
+        .unwrap();
+    assert_eq!(with_old.status(), StatusCode::UNAUTHORIZED);
+
+    // The new password is the one that works now.
+    let old_password = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "rotator2", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(old_password.status(), StatusCode::UNAUTHORIZED);
+
+    let new_password = app
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "rotator2", "password": "brandnewpass"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(new_password.status(), StatusCode::OK);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn profile_edits_apply_and_survive_a_reload() {
+    let (app, db) = test_app().await;
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "editor", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+
+    let updated = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/me",
+            &cookie,
+            json!({"display_name": "The Editor", "email": "e@example.com"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(updated.status(), StatusCode::OK);
+    let body = body_json(updated).await;
+    assert_eq!(body["display_name"], "The Editor");
+    assert_eq!(body["email"], "e@example.com");
+    assert_eq!(body["username"], "editor", "username is not editable here");
+
+    // An omitted field must not be cleared.
+    let renamed = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/me",
+            &cookie,
+            json!({"display_name": "Renamed"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(renamed).await["email"], "e@example.com");
+
+    let me = app
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(body_json(me).await["display_name"], "Renamed");
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn profile_edit_requires_a_session() {
+    let (app, db) = test_app().await;
+    let response = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/auth/me",
+            json!({"display_name": "nobody"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::UNAUTHORIZED);
+
+    db.drop().await.unwrap();
+}

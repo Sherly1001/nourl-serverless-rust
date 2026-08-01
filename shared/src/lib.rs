@@ -121,6 +121,24 @@ pub struct LoginRequest {
     pub password: String,
 }
 
+/// Every field optional: omitting one leaves it untouched rather than
+/// clearing it, so a rename does not wipe the avatar.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateProfileRequest {
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangePasswordRequest {
+    pub current_password: String,
+    pub new_password: String,
+}
+
 /// Which login methods the server has enabled — drives the login UI.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct AuthMethods {

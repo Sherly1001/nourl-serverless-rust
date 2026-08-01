@@ -112,6 +112,16 @@ pub async fn create(db: &Database, new: NewUser) -> Result<User, AppError> {
     Ok(user)
 }
 
+/// Stores an **already hashed** password. Like [`NewUser`], nothing here
+/// hashes — the caller must have run it through
+/// [`crate::auth::password::hash`].
+pub async fn set_password(db: &Database, id: &str, hash_passwd: &str) -> Result<(), AppError> {
+    collection(db)
+        .update_one(doc! {"id": id}, doc! {"$set": {"hash_passwd": hash_passwd}})
+        .await?;
+    Ok(())
+}
+
 /// Partial profile update: `None` leaves a field untouched, so a caller can
 /// change their display name without clearing their avatar.
 pub async fn update_profile(
