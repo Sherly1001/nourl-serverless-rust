@@ -36,8 +36,14 @@ fmt-check:
 	prettier --check "**/*.{html,css,json,yaml,md}" --log-level warn
 	terraform fmt -check -recursive infra 2>/dev/null || true
 
+# Rebuilds and restarts on save, to match `trunk serve` on the frontend side.
+# Watching only the two crates the binary is built from keeps a frontend edit
+# from bouncing the API — `trunk serve` proxies to it and would drop the
+# connection.
 dev-backend: mongo-up
-	cargo run -p backend
+	@command -v cargo-watch >/dev/null \
+	  || { echo "cargo-watch not installed: cargo install cargo-watch"; exit 1; }
+	cargo watch -c -w backend/src -w shared/src -x 'run -p backend'
 
 dev-frontend: frontend/node_modules
 	cd frontend && trunk serve --open
