@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check mongo-up mongo-down dev-backend dev-frontend build-frontend build-lambda test tf-plan-dev deploy sync-static tf-output
+.PHONY: fmt fmt-check mongo-up mongo-down mongo-clean dev-backend dev-frontend build-frontend build-lambda test tf-plan-dev deploy sync-static tf-output
 
 ENV ?= dev
 
@@ -72,11 +72,19 @@ frontend/node_modules: frontend/package.json
 	cd frontend && pnpm install
 	touch $@
 
-test: mongo-up
+test: mongo-up mongo-clean
 	cargo test --workspace
 
 mongo-up:
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo -p 27017:27017 mongo:7
+
+# Every test builds a throwaway `nourl_test_<uuid>` database and cannot drop it
+# on the way out — Drop cannot await, and a panicking test would skip an
+# explicit teardown anyway. Sweeping before each run keeps them from piling up
+# without ever deleting a database the current run is using.
+mongo-clean: mongo-up
+	docker exec nourl-mongo mongosh --quiet --eval \
+	  'db.getMongo().getDBNames().filter(n => n.startsWith("nourl_test_")).forEach(n => db.getSiblingDB(n).dropDatabase())'
 
 mongo-down:
 	docker stop nourl-mongo
