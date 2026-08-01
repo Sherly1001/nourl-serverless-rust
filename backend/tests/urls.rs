@@ -740,3 +740,62 @@ async fn paging_and_sorting_walk_the_whole_set() {
 
     db.drop().await.unwrap();
 }
+
+/// Creating a code that already exists but belongs to nobody must hand it to
+/// the author. `$setOnInsert` does not fire when the document is already
+/// there, so ownership was silently skipped.
+#[tokio::test]
+async fn creating_over_an_unowned_code_claims_it() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "claimer").await;
+    db.collection("urls")
+        .insert_one(doc! {"code": "orphan", "url": "https://old.example"})
+        .await
+        .unwrap();
+
+    let created = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "orphan", "url": "https://mine.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    assert_eq!(body_json(created).await["owner"]["username"], "claimer");
+
+    let listed = app
+        .clone()
+        .oneshot(authed_get("/api/urls", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(listed).await["total"],
+        1,
+        "a claimed link belongs in the author's list"
+    );
+
+    // Editing is not claiming: a PUT at an unowned link leaves it unowned, so
+    // fixing a stray link does not quietly absorb it.
+    db.collection("urls")
+        .insert_one(doc! {"code": "stray", "url": "https://old.example"})
+        .await
+        .unwrap();
+    let edited = app
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/stray",
+            &cookie,
+            json!({"code": "stray", "url": "https://edited.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), StatusCode::OK);
+    let edited = body_json(edited).await;
+    assert_eq!(edited["url"], "https://edited.example");
+    assert!(edited["owner"].is_null(), "a PUT must not claim ownership");
+
+    db.drop().await.unwrap();
+}

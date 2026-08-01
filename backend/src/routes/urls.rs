@@ -16,11 +16,12 @@ use crate::users::User;
 
 fn parse_expiry(raw: Option<&str>) -> Result<Option<bson::DateTime>, AppError> {
     let Some(raw) = raw else { return Ok(None) };
-    let parsed = chrono::DateTime::parse_from_rfc3339(raw)
-        .map_err(|_| AppError::validation("expires_at must be an RFC3339 datetime"))?;
+    let parsed = chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| {
+        AppError::validation("expires_at must be an RFC3339 datetime").on_field("expires_at")
+    })?;
     let millis = parsed.timestamp_millis();
     if millis <= bson::DateTime::now().timestamp_millis() {
-        return Err(AppError::validation("expires_at must be in the future"));
+        return Err(AppError::validation("expires_at must be in the future").on_field("expires_at"));
     }
     Ok(Some(bson::DateTime::from_millis(millis)))
 }
@@ -40,6 +41,7 @@ fn owned_error(code: &str) -> AppError {
     AppError::forbidden(format!(
         "code '{code}' is already taken by a registered user"
     ))
+    .on_field("code")
 }
 
 /// The caller's own code. They may see their current target, and the message
@@ -48,6 +50,7 @@ fn own_code_conflict(code: &str, url: &str) -> AppError {
     AppError::conflict(format!(
         "you already use code '{code}' for {url} — edit it instead of recreating it"
     ))
+    .on_field("code")
 }
 
 /// Who may write to an existing document: nobody owns it, the caller owns it,
@@ -84,21 +87,26 @@ async fn upsert(
     user: Option<&User>,
     conflict_on_own: bool,
 ) -> Result<Json<UrlEntry>, AppError> {
-    validate_code(code).map_err(AppError::validation)?;
-    validate_code(&body.code).map_err(AppError::validation)?;
-    validate_url(&body.url).map_err(AppError::validation)?;
+    validate_code(code).map_err(|e| AppError::validation(e).on_field("code"))?;
+    validate_code(&body.code).map_err(|e| AppError::validation(e).on_field("code"))?;
+    validate_url(&body.url).map_err(|e| AppError::validation(e).on_field("url"))?;
     let expires = parse_expiry(body.expires_at.as_deref())?;
 
     let urls = state.db.collection::<Document>("urls");
-    if let Some(existing) = urls.find_one(doc! {"code": code}).await? {
-        let owned_by_caller = owner_id(&existing)
+    let existing = urls.find_one(doc! {"code": code}).await?;
+    let existing_owner = existing
+        .as_ref()
+        .and_then(|doc| owner_id(doc).map(str::to_string));
+    if let Some(existing) = &existing {
+        let owned_by_caller = existing_owner
+            .as_deref()
             .zip(user)
             .is_some_and(|(owner, u)| owner == u.id);
         if owned_by_caller && conflict_on_own {
             let current = existing.get_str("url").unwrap_or_default();
             return Err(own_code_conflict(code, current));
         }
-        if !may_write(&existing, user) {
+        if !may_write(existing, user) {
             return Err(owned_error(code));
         }
     }
@@ -134,12 +142,23 @@ async fn upsert(
     if let Some(expires) = expires {
         set.insert("expires_at", expires);
     }
-    // Claim the link for the caller, on insert only: an admin editing someone
-    // else's link must not take it over, and an anonymous write leaves `owner`
-    // absent so unowned links stay freely mutable exactly as before.
+    // Ownership. A brand new link always belongs to whoever made it, which
+    // `$setOnInsert` covers. *Creating* over a link nobody owns claims it as
+    // well — `$setOnInsert` does not fire when the document already exists, so
+    // without this the author would overwrite the link and then not find it in
+    // their own list. Editing (PUT) never reassigns ownership, so an admin
+    // fixing someone's link does not take it over, and an anonymous write
+    // leaves `owner` absent so unowned links stay freely mutable.
+    //
+    // `owner` must appear in at most one of the two operators: naming it in
+    // both makes Mongo reject the update for a conflicting path.
     let mut on_insert = doc! {"created_at": bson::DateTime::now()};
     if let Some(user) = user {
-        on_insert.insert("owner", &user.id);
+        if conflict_on_own && existing_owner.is_none() {
+            set.insert("owner", &user.id);
+        } else {
+            on_insert.insert("owner", &user.id);
+        }
     }
     urls.update_one(
         doc! {"code": code},
