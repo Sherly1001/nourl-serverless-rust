@@ -81,9 +81,16 @@ terraform plan -var-file=envs/dev.tfvars
 which are created out of band and land in Terraform state — accepted because
 the state bucket is private.
 
-Those two parameters are currently **identical**: same Atlas cluster, same
-path. What separates the environments is the `mongo_db` tfvar, which becomes
-`MONGO_DB` — `nourl-dev` for dev, `nourl` for prod. The backend selects the
+Sessions are signed with `JWT_SECRET`, read the same way from
+`/nourl-dev/jwt-secret` and `/nourl/jwt-secret` — both SecureString, and
+deliberately **different** per environment so a dev token is worthless against
+prod. Locally it comes from `.env`; the backend refuses to start without it.
+Rotating a secret invalidates every session signed with the old one, which is
+the intended way to log everybody out.
+
+Those two mongo parameters are currently **identical**: same Atlas cluster,
+same path. What separates the environments is the `mongo_db` tfvar, which
+becomes `MONGO_DB` — `nourl-dev` for dev, `nourl` for prod. The backend selects the
 database with `client.database(db_name)` and ignores the path in the
 connection string, so changing the URL alone would not isolate anything.
 
@@ -103,6 +110,23 @@ matched by the `ordered_cache_behavior` patterns; everything else falls
 through to the Lambda, which is what makes `GET /{code}` redirects work. A
 request for a static file that does not exist returns 403, not 404 — that is
 S3 through OAC declining to confirm the key is missing.
+
+## Accounts
+
+Anyone can register; the account owns every link it creates. Links with no
+owner — everything from before this phase — stay anonymously editable, and
+creating over one claims it.
+
+There is no automatic promotion, so the **first admin is granted by hand**:
+
+```sh
+mongosh "$MONGO_URL" --eval \
+  'db.getSiblingDB("nourl").users.updateOne({username:"you"},{$set:{is_admin:true}})'
+```
+
+Use `nourl-dev` instead of `nourl` for the dev database. An admin sees every
+link rather than only their own, and may edit any of them — but not delete
+someone else's as a side effect of renaming their own.
 
 ## Layout
 
