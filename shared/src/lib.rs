@@ -69,9 +69,93 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Stricter than `validate_code`: no spaces, because a username is typed into
+/// a login form where leading and trailing whitespace is invisible and
+/// impossible to debug.
+pub fn validate_username(username: &str) -> Result<(), String> {
+    if username.len() < 3 || username.len() > 32 {
+        return Err("username must be 3-32 characters".into());
+    }
+    if !username
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_'))
+    {
+        return Err("username may only contain letters, numbers, - and _".into());
+    }
+    Ok(())
+}
+
+pub fn validate_password(password: &str) -> Result<(), String> {
+    if password.len() < 8 {
+        return Err("password must be at least 8 characters".into());
+    }
+    Ok(())
+}
+
+/// The caller's own account, as returned by `GET /api/auth/me`. Never carries
+/// a password hash or provider ids.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UserInfo {
+    pub id: String,
+    pub username: String,
+    pub is_admin: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RegisterRequest {
+    pub username: String,
+    pub password: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct LoginRequest {
+    pub username: String,
+    pub password: String,
+}
+
+/// Which login methods the server has enabled — drives the login UI.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AuthMethods {
+    pub password: bool,
+    pub github: bool,
+    pub google: bool,
+    pub facebook: bool,
+}
+
+/// A page of URLs. `total` is the count matching the filter, before
+/// `limit`/`skip`, so the UI can render pagination.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrlListResponse {
+    pub items: Vec<UrlEntry>,
+    pub total: u64,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn username_length_bounds() {
+        assert!(validate_username("abc").is_ok());
+        assert!(validate_username(&"a".repeat(32)).is_ok());
+        assert!(validate_username("ab").is_err());
+        assert!(validate_username(&"a".repeat(33)).is_err());
+    }
+
+    #[test]
+    fn username_charset_excludes_spaces() {
+        assert!(validate_username("a-b_c1").is_ok());
+        assert!(validate_username("bad/name").is_err());
+        assert!(validate_username("with space").is_err());
+        assert!(validate_username(" leading").is_err());
+        assert!(validate_username("trailing ").is_err());
+    }
+
+    #[test]
+    fn password_minimum_length() {
+        assert!(validate_password("12345678").is_ok());
+        assert!(validate_password("1234567").is_err());
+    }
 
     #[test]
     fn code_accepts_allowed_charset() {
