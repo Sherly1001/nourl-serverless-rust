@@ -21,6 +21,7 @@ pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Da
         port: 0,
         notfound_fallback_url: fallback.map(String::from),
         jwt_secret: "test-secret-not-used-in-production".into(),
+        session_days: 60,
         cookie_secure: false,
     };
     (

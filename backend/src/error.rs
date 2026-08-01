@@ -27,6 +27,22 @@ impl AppError {
         }
     }
 
+    pub fn unauthorized(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::UNAUTHORIZED,
+            code: "unauthenticated",
+            message: message.into(),
+        }
+    }
+
+    pub fn conflict(message: impl Into<String>) -> Self {
+        Self {
+            status: StatusCode::CONFLICT,
+            code: "conflict",
+            message: message.into(),
+        }
+    }
+
     pub fn not_found(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::NOT_FOUND,
@@ -98,6 +114,16 @@ mod tests {
                 AppError::not_found("missing"),
                 StatusCode::NOT_FOUND,
                 "not_found",
+            ),
+            (
+                AppError::unauthorized("no session"),
+                StatusCode::UNAUTHORIZED,
+                "unauthenticated",
+            ),
+            (
+                AppError::conflict("code taken"),
+                StatusCode::CONFLICT,
+                "conflict",
             ),
             (
                 AppError::not_implemented(),
