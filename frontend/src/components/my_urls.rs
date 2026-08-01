@@ -8,8 +8,10 @@ use wasm_bindgen::JsCast;
 
 use crate::api;
 use crate::auth::use_auth;
+use crate::clipboard::{copy, origin, short_link};
 use crate::components::avatar::{Avatar, usable_url};
 use crate::components::confirm::ConfirmDialog;
+use crate::components::tooltip::Tooltip;
 use crate::toast::use_toasts;
 use crate::ui::row_input_class;
 
@@ -313,6 +315,14 @@ pub fn MyUrls() -> impl IntoView {
 
     // Deletes each code in turn and drops its row. Refetching instead would
     // throw away every page scrolled so far.
+    // Clearing skips the debounce: there is nothing more to type, so waiting
+    // would only delay the results the user just asked for.
+    let clear_search = move |_| {
+        set_search.set(String::new());
+        set_keystroke.update(|n| *n += 1);
+        set_debounced.set(String::new());
+    };
+
     let delete_confirmed = Callback::new(move |()| {
         let codes = pending_delete.get_untracked();
         spawn_local(async move {
@@ -474,13 +484,24 @@ pub fn MyUrls() -> impl IntoView {
                                 {move || format!("Delete {}", selected_count())}
                             </button>
                         </Show>
-                        <input
-                            class="w-64 max-w-full input"
-                            placeholder="Search code or url"
-                            aria-label="Search links"
-                            prop:value=search
-                            on:input=on_search
-                        />
+                        <div class="relative">
+                            <input
+                                class="pr-9 w-64 max-w-full input"
+                                placeholder="Search code or url"
+                                aria-label="Search links"
+                                prop:value=search
+                                on:input=on_search
+                            />
+                            <Show when=move || !search.get().is_empty()>
+                                <button
+                                    class="flex absolute right-2 top-1/2 justify-center items-center rounded opacity-60 -translate-y-1/2 hover:opacity-100 size-6 hover:bg-base-200"
+                                    aria-label="Clear search"
+                                    on:click=clear_search
+                                >
+                                    <span class="icon-[tabler--x] size-4"></span>
+                                </button>
+                            </Show>
+                        </div>
                     </div>
                 </div>
 
@@ -560,17 +581,10 @@ pub fn MyUrls() -> impl IntoView {
                                 let:entry
                             >
                                 {
-                                    let row_code = entry.code.clone();
-                                    let select_code = entry.code.clone();
-                                    let check_code = entry.code.clone();
-                                    let delete_code = entry.code.clone();
-                                    let save_code = entry.code.clone();
-                                    let keys_code = entry.code.clone();
-                                    let keys_url = entry.code.clone();
-                                    let code = entry.code.clone();
-                                    let for_edit = entry.clone();
-                                    let url = entry.url.clone();
-                                    let href = entry.url.clone();
+                                    let row_code = StoredValue::new(entry.code.clone());
+                                    let code = StoredValue::new(entry.code.clone());
+                                    let url = StoredValue::new(entry.url.clone());
+                                    let for_edit = StoredValue::new(entry.clone());
                                     let owner_name = entry
                                         .owner
                                         .as_ref()
@@ -585,13 +599,17 @@ pub fn MyUrls() -> impl IntoView {
                                     let last = short_datetime(entry.last_hit_at.as_ref());
                                     let created = short_datetime(entry.created_at.as_ref());
                                     let updated = short_datetime(entry.updated_at.as_ref());
-                                    let row_code = StoredValue::new(row_code);
                                     let is_editing = move || {
                                         row_code
                                             .with_value(|code| {
                                                 editing.get().as_deref() == Some(code.as_str())
                                             })
                                     };
+                                    // Every value a closure needs is stored
+                                    // rather than captured: `Show` and
+                                    // `Tooltip` take `Fn` children, and a
+                                    // `StoredValue` is `Copy`, so no closure
+                                    // has to own a `String`.
                                     // Stored rather than captured by value so
                                     // the closure stays `Copy` — both the cell
                                     // columns and the action column ask.
@@ -605,16 +623,16 @@ pub fn MyUrls() -> impl IntoView {
                                                 <input
                                                     type="checkbox"
                                                     class="checkbox checkbox-sm"
-                                                    aria-label=format!("Select {select_code}")
+                                                    aria-label=move || format!("Select {}", code.get_value())
                                                     prop:checked=move || {
-                                                        selected.get().contains(&check_code)
+                                                        code.with_value(|c| selected.get().contains(c))
                                                     }
                                                     on:change=move |_| {
-                                                        let code = select_code.clone();
+                                                        let this = code.get_value();
                                                         selected
                                                             .update(|set| {
-                                                                if !set.remove(&code) {
-                                                                    set.insert(code);
+                                                                if !set.remove(&this) {
+                                                                    set.insert(this);
                                                                 }
                                                             });
                                                     }
@@ -623,24 +641,44 @@ pub fn MyUrls() -> impl IntoView {
 
                                             <Show
                                                 when=is_editing
-                                                fallback={
-                                                    let code = code.clone();
-                                                    let url = url.clone();
-                                                    let href = href.clone();
-                                                    move || {
-                                                        view! {
-                                                            <td class="font-mono">{code.clone()}</td>
-                                                            <td class="truncate">
+                                                fallback=move || {
+                                                    view! {
+                                                        // The columns are a
+                                                        // fixed width, so a
+                                                        // long value clips.
+                                                        // `Tooltip` shows
+                                                        // the whole value on
+                                                        // hover, and only
+                                                        // when it was cut.
+                                                        // Clicking copies the
+                                                        // shareable link rather
+                                                        // than the bare code —
+                                                        // that is the thing
+                                                        // worth pasting.
+                                                        <td class="font-mono">
+                                                            <Tooltip
+                                                                text=code.get_value()
+                                                                class="block cursor-pointer truncate"
+                                                            >
+                                                                <span on:click=move |_| {
+                                                                    let link = short_link(&origin(), &code.get_value());
+                                                                    copy(link.clone());
+                                                                    toasts.success(format!("Copied {link}"));
+                                                                }>{code.get_value()}</span>
+                                                            </Tooltip>
+                                                        </td>
+                                                        <td>
+                                                            <Tooltip text=url.get_value()>
                                                                 <a
-                                                                    href=href.clone()
+                                                                    href=url.get_value()
                                                                     target="_blank"
                                                                     rel="noreferrer"
                                                                     class="link"
                                                                 >
-                                                                    {url.clone()}
+                                                                    {url.get_value()}
                                                                 </a>
-                                                            </td>
-                                                        }
+                                                            </Tooltip>
+                                                        </td>
                                                     }
                                                 }
                                             >
@@ -658,9 +696,8 @@ pub fn MyUrls() -> impl IntoView {
                                                             set_draft_code.set(event_target_value(&ev));
                                                             set_invalid_field.set(None);
                                                         }
-                                                        on:keydown={
-                                                            let original = keys_code.clone();
-                                                            move |ev| edit_keys(&ev, &original)
+                                                        on:keydown=move |ev| {
+                                                            code.with_value(|c| edit_keys(&ev, c))
                                                         }
                                                     />
                                                 </td>
@@ -678,9 +715,8 @@ pub fn MyUrls() -> impl IntoView {
                                                             set_draft_url.set(event_target_value(&ev));
                                                             set_invalid_field.set(None);
                                                         }
-                                                        on:keydown={
-                                                            let original = keys_url.clone();
-                                                            move |ev| edit_keys(&ev, &original)
+                                                        on:keydown=move |ev| {
+                                                            code.with_value(|c| edit_keys(&ev, c))
                                                         }
                                                     />
                                                 </td>
@@ -717,53 +753,64 @@ pub fn MyUrls() -> impl IntoView {
                                                 <span class="flex gap-1 justify-end">
                                                     <Show
                                                         when=is_editing
-                                                        fallback={
-                                                            let for_edit = for_edit.clone();
-                                                            let delete_code = delete_code.clone();
-                                                            move || {
-                                                                let for_edit = for_edit.clone();
-                                                                let delete_code = delete_code.clone();
-                                                                view! {
+                                                        fallback=move || {
+                                                            view! {
+                                                                <Tooltip
+                                                                    text="Edit"
+                                                                    class="inline-flex"
+                                                                    only_when_clipped=false
+                                                                >
                                                                     <button
                                                                         class="btn btn-text btn-sm btn-square"
                                                                         aria-label="Edit link"
-                                                                        title="Edit"
-                                                                        on:click=move |_| begin_edit(for_edit.clone())
+                                                                        on:click=move |_| begin_edit(for_edit.get_value())
                                                                     >
                                                                         <span class="icon-[tabler--pencil] size-4"></span>
                                                                     </button>
+                                                                </Tooltip>
+                                                                <Tooltip
+                                                                    text="Delete"
+                                                                    class="inline-flex"
+                                                                    only_when_clipped=false
+                                                                >
                                                                     <button
                                                                         class="btn btn-text btn-sm btn-square text-error"
                                                                         aria-label="Delete link"
-                                                                        title="Delete"
-                                                                        on:click=move |_| { ask_delete(vec![delete_code.clone()]) }
+                                                                        on:click=move |_| ask_delete(vec![code.get_value()])
                                                                     >
                                                                         <span class="icon-[tabler--trash] size-4"></span>
                                                                     </button>
-                                                                }
+                                                                </Tooltip>
                                                             }
                                                         }
                                                     >
-                                                        <button
-                                                            class="btn btn-primary btn-sm btn-square"
-                                                            aria-label="Save changes"
-                                                            title="Save"
-                                                            disabled=move || saving.get()
-                                                            on:click={
-                                                                let save_code = save_code.clone();
-                                                                move |_| save_edit(save_code.clone())
-                                                            }
+                                                        <Tooltip
+                                                            text="Save"
+                                                            class="inline-flex"
+                                                            only_when_clipped=false
                                                         >
-                                                            <span class="icon-[tabler--check] size-4"></span>
-                                                        </button>
-                                                        <button
-                                                            class="btn btn-text btn-sm btn-square"
-                                                            aria-label="Cancel editing"
-                                                            title="Cancel"
-                                                            on:click=move |_| cancel_edit()
+                                                            <button
+                                                                class="btn btn-primary btn-sm btn-square"
+                                                                aria-label="Save changes"
+                                                                disabled=move || saving.get()
+                                                                on:click=move |_| { save_edit(code.get_value()) }
+                                                            >
+                                                                <span class="icon-[tabler--check] size-4"></span>
+                                                            </button>
+                                                        </Tooltip>
+                                                        <Tooltip
+                                                            text="Cancel"
+                                                            class="inline-flex"
+                                                            only_when_clipped=false
                                                         >
-                                                            <span class="icon-[tabler--x] size-4"></span>
-                                                        </button>
+                                                            <button
+                                                                class="btn btn-text btn-sm btn-square"
+                                                                aria-label="Cancel editing"
+                                                                on:click=move |_| cancel_edit()
+                                                            >
+                                                                <span class="icon-[tabler--x] size-4"></span>
+                                                            </button>
+                                                        </Tooltip>
                                                     </Show>
                                                 </span>
                                             </td>
