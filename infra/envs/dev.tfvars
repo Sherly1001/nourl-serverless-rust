@@ -3,4 +3,5 @@ mongo_url_ssm_path = "/nourl-dev/mongo-url"
 
 # Same Atlas cluster as prod, different database — the two SSM parameters are
 # currently identical, so without this dev would read and write live data.
-mongo_db = "nourl-dev"
+mongo_db            = "nourl-dev"
+jwt_secret_ssm_path = "/nourl-dev/jwt-secret"

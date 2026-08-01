@@ -20,6 +20,12 @@ variable "mongo_url_ssm_path" {
   type = string
 }
 
+# Deliberately a different secret per environment: a leaked dev secret must
+# not be able to mint production sessions.
+variable "jwt_secret_ssm_path" {
+  type = string
+}
+
 # The database inside the cluster. Both SSM connection strings point at the
 # same Atlas cluster, and the backend ignores the path component of the URL
 # (`client.database(db_name)`), so this is what actually keeps dev off the

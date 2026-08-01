@@ -2,6 +2,10 @@ data "aws_ssm_parameter" "mongo_url" {
   name = var.mongo_url_ssm_path
 }
 
+data "aws_ssm_parameter" "jwt_secret" {
+  name = var.jwt_secret_ssm_path
+}
+
 data "archive_file" "lambda_zip" {
   type        = "zip"
   source_file = "${path.module}/../target/lambda/backend/bootstrap"
@@ -40,6 +44,7 @@ resource "aws_lambda_function" "api" {
     variables = {
       MONGO_URL             = data.aws_ssm_parameter.mongo_url.value
       MONGO_DB              = var.mongo_db
+      JWT_SECRET            = data.aws_ssm_parameter.jwt_secret.value
       NOTFOUND_FALLBACK_URL = local.notfound_fallback_url
     }
   }

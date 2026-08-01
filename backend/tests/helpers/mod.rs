@@ -20,6 +20,8 @@ pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Da
         db_name: db.name().to_string(),
         port: 0,
         notfound_fallback_url: fallback.map(String::from),
+        jwt_secret: "test-secret-not-used-in-production".into(),
+        cookie_secure: false,
     };
     (
         build_app(AppState {
