@@ -35,6 +35,7 @@ pub fn build_app(state: AppState) -> Router {
                 status: axum::http::StatusCode::METHOD_NOT_ALLOWED,
                 code: "method_not_allowed",
                 message: "method not allowed for this route".into(),
+                field: None,
             }
         })
         .with_state(state)

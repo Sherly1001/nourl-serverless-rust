@@ -43,6 +43,13 @@ pub struct ApiError {
 pub struct ApiErrorBody {
     pub code: String,
     pub message: String,
+    /// Which form field the message belongs to, when the server can say —
+    /// lets a UI show it under that input instead of only in a banner.
+    /// Absent when the failure is not about one field, and deliberately absent
+    /// on a failed login, where naming the wrong half would leak which
+    /// usernames exist.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub field: Option<String>,
 }
 
 pub fn validate_code(code: &str) -> Result<(), String> {
@@ -66,7 +73,39 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("url must start with http:// or https://".into());
     }
-    Ok(())
+    // `Url::parse` is happy with a single-label host — `https://google` and
+    // `http://localhost` both parse — but a short link is shared with other
+    // people, so a host that only resolves on the author's machine (or is a
+    // typo for a real domain) is never what was meant.
+    match parsed.host() {
+        // An address needs no name.
+        Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => Ok(()),
+        Some(url::Host::Domain(host)) => {
+            // One trailing dot is the FQDN root and carries no label.
+            let suffix = host
+                .strip_suffix('.')
+                .unwrap_or(host)
+                .rsplit_once('.')
+                .map(|(_, suffix)| suffix)
+                .ok_or_else(|| {
+                    format!("'{host}' is not a full domain name — try something like {host}.com")
+                })?;
+            // Two characters minimum, starting with a letter. Internationalised
+            // domains arrive punycoded (`.рф` is `.xn--p1ai`), so digits and
+            // hyphens after the first character have to stay legal.
+            let valid = suffix.len() >= 2
+                && suffix
+                    .chars()
+                    .next()
+                    .is_some_and(|c| c.is_ascii_alphabetic());
+            if valid {
+                Ok(())
+            } else {
+                Err(format!("'{suffix}' is not a valid domain suffix"))
+            }
+        }
+        None => Err("url must include a host".into()),
+    }
 }
 
 /// Stricter than `validate_code`: no spaces, because a username is typed into
@@ -218,5 +257,34 @@ mod tests {
         assert!(validate_url("not a url").is_err());
         let long = format!("https://e.com/{}", "a".repeat(2048));
         assert!(validate_url(&long).is_err());
+    }
+
+    /// `Url::parse` accepts a single-label host, so these all used to pass.
+    /// A short link is shared with other people; a host that resolves only on
+    /// the author's machine is not a destination.
+    #[test]
+    fn url_rejects_hosts_that_are_not_full_domain_names() {
+        assert!(validate_url("https://google").is_err());
+        assert!(validate_url("http://localhost").is_err());
+        assert!(validate_url("http://localhost:3000").is_err());
+        assert!(validate_url("http://internal-host/path").is_err());
+        assert!(validate_url("https://google.").is_err());
+        assert!(validate_url("https://x.i").is_err(), "one-letter suffix");
+    }
+
+    #[test]
+    fn url_accepts_real_hosts_addresses_and_punycode() {
+        assert!(validate_url("https://google.com").is_ok());
+        assert!(validate_url("https://a.b.co.uk/p?q=1").is_ok());
+        assert!(validate_url("https://x.io").is_ok());
+        assert!(
+            validate_url("https://example.com.").is_ok(),
+            "FQDN root dot"
+        );
+        // Addresses carry no domain name at all.
+        assert!(validate_url("http://127.0.0.1:8080").is_ok());
+        assert!(validate_url("http://[::1]:8080").is_ok());
+        // Internationalised domains are punycoded before we see them.
+        assert!(validate_url("https://пример.рф").is_ok());
     }
 }

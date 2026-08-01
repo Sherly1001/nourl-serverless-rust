@@ -124,6 +124,54 @@ async fn login_accepts_the_right_password_only() {
     db.drop().await.unwrap();
 }
 
+/// The UI renders a message under the input it names, so which errors carry a
+/// `field` — and which deliberately do not — is part of the contract.
+#[tokio::test]
+async fn errors_name_the_field_they_are_about() {
+    let (app, db) = test_app().await;
+    let taken = json!({"username": "namesake", "password": "hunter2hunter2"});
+    app.clone()
+        .oneshot(json_request("POST", "/api/auth/register", taken.clone()))
+        .await
+        .unwrap();
+
+    for (body, field) in [
+        (taken, "username"),
+        (
+            json!({"username": "sh", "password": "hunter2hunter2"}),
+            "username",
+        ),
+        (
+            json!({"username": "goodname", "password": "no"}),
+            "password",
+        ),
+    ] {
+        let response = app
+            .clone()
+            .oneshot(json_request("POST", "/api/auth/register", body))
+            .await
+            .unwrap();
+        assert_eq!(body_json(response).await["error"]["field"], field);
+    }
+
+    // A failed login must not say which half was wrong, so it names no field.
+    let failed = app
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "namesake", "password": "wrong-password"}),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(failed).await;
+    assert!(
+        body["error"].get("field").is_none(),
+        "a failed login must not point at a field: {body}"
+    );
+
+    db.drop().await.unwrap();
+}
+
 #[tokio::test]
 async fn me_requires_a_session_and_returns_the_account() {
     let (app, db) = test_app().await;

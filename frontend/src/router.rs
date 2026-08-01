@@ -4,6 +4,8 @@ use wasm_bindgen::prelude::*;
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
 pub enum Route {
     Shorten,
+    Login,
+    MyUrls,
     NotFound,
 }
 
@@ -16,6 +18,8 @@ fn read_hash() -> String {
 pub fn parse_route(hash: &str) -> Route {
     match hash.trim_start_matches('#').trim_start_matches('/') {
         "" => Route::Shorten,
+        "login" => Route::Login,
+        "urls" => Route::MyUrls,
         _ => Route::NotFound,
     }
 }
@@ -41,5 +45,12 @@ mod tests {
         assert_eq!(parse_route("#/"), Route::Shorten);
         assert_eq!(parse_route("#"), Route::Shorten);
         assert_eq!(parse_route("#/whatever"), Route::NotFound);
+    }
+
+    #[test]
+    fn parses_the_authenticated_routes() {
+        assert_eq!(parse_route("#/login"), Route::Login);
+        assert_eq!(parse_route("#/urls"), Route::MyUrls);
+        assert_eq!(parse_route("#/nope"), Route::NotFound);
     }
 }

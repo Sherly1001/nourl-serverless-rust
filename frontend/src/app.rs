@@ -1,5 +1,9 @@
 use leptos::prelude::*;
 
+use crate::auth::provide_auth;
+use crate::components::account::AccountMenu;
+use crate::components::login::Login;
+use crate::components::my_urls::MyUrls;
 use crate::components::shorten::Shorten;
 use crate::router::{Route, use_hash_route};
 use crate::theme::ThemePicker;
@@ -7,6 +11,7 @@ use crate::theme::ThemePicker;
 #[component]
 pub fn App() -> impl IntoView {
     let route = use_hash_route();
+    let auth = provide_auth();
 
     view! {
         <div class="border-b shadow-sm navbar bg-base-200 border-base-content/10">
@@ -16,14 +21,23 @@ pub fn App() -> impl IntoView {
                     "NoUrl"
                 </a>
             </div>
-            <div class="navbar-end">
+            <div class="flex gap-2 items-center navbar-end">
+                <Show when=move || auth.user.get().is_some()>
+                    <a href="#/urls" class="gap-2 btn btn-text">
+                        <span class="icon-[tabler--link] size-5"></span>
+                        "My URLs"
+                    </a>
+                </Show>
                 <ThemePicker />
+                <AccountMenu />
             </div>
         </div>
 
         <main class="container py-10 px-4 mx-auto max-w-2xl">
             {move || match route.get() {
                 Route::Shorten => view! { <Shorten /> }.into_any(),
+                Route::Login => view! { <Login /> }.into_any(),
+                Route::MyUrls => view! { <MyUrls /> }.into_any(),
                 Route::NotFound => view! { <NotFound /> }.into_any(),
             }}
         </main>

@@ -8,14 +8,25 @@ pub struct AppError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
+    /// Form field this error belongs to, when there is exactly one. Serialised
+    /// so a client can render the message under that input.
+    pub field: Option<&'static str>,
 }
 
 impl AppError {
+    /// Attaches the field this error is about. Never call it on an error whose
+    /// whole point is ambiguity, such as a failed login.
+    pub fn on_field(mut self, field: &'static str) -> Self {
+        self.field = Some(field);
+        self
+    }
+
     pub fn validation(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             code: "validation",
             message: message.into(),
+            field: None,
         }
     }
 
@@ -24,6 +35,7 @@ impl AppError {
             status: StatusCode::FORBIDDEN,
             code: "forbidden",
             message: message.into(),
+            field: None,
         }
     }
 
@@ -32,6 +44,7 @@ impl AppError {
             status: StatusCode::UNAUTHORIZED,
             code: "unauthenticated",
             message: message.into(),
+            field: None,
         }
     }
 
@@ -40,6 +53,7 @@ impl AppError {
             status: StatusCode::CONFLICT,
             code: "conflict",
             message: message.into(),
+            field: None,
         }
     }
 
@@ -48,6 +62,7 @@ impl AppError {
             status: StatusCode::NOT_FOUND,
             code: "not_found",
             message: message.into(),
+            field: None,
         }
     }
 
@@ -56,6 +71,7 @@ impl AppError {
             status: StatusCode::NOT_IMPLEMENTED,
             code: "not_implemented",
             message: "available in a later phase".into(),
+            field: None,
         }
     }
 
@@ -65,6 +81,7 @@ impl AppError {
             status: StatusCode::INTERNAL_SERVER_ERROR,
             code: "internal",
             message: "internal server error".into(),
+            field: None,
         }
     }
 }
@@ -75,6 +92,7 @@ impl IntoResponse for AppError {
             error: ApiErrorBody {
                 code: self.code.into(),
                 message: self.message,
+                field: self.field.map(String::from),
             },
         };
         (self.status, Json(body)).into_response()

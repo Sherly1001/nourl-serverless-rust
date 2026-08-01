@@ -4,6 +4,7 @@ use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
 use wasm_bindgen_futures::JsFuture;
 
 use crate::api;
+use crate::ui::input_class;
 
 fn origin() -> String {
     web_sys::window()
@@ -116,13 +117,10 @@ pub fn Shorten() -> impl IntoView {
         }
     });
 
-    let input_class = |invalid: bool| {
-        if invalid {
-            "input h-13 text-lg border-error focus:border-error"
-        } else {
-            "input h-13 text-lg"
-        }
-    };
+    // Once the link exists the form is a record of what was created, not an
+    // editable draft: the only way on is "Create another short link", which
+    // resets it. Leaving the fields live would invite edits that go nowhere.
+    let done = Memo::new(move |_| result.get().is_some());
 
     view! {
         <div class="border shadow-xl card bg-base-200 border-base-content/10 motion-preset-fade motion-duration-500">
@@ -142,6 +140,7 @@ pub fn Shorten() -> impl IntoView {
                             autocomplete="off"
                             aria-invalid=move || code_error.get().is_some().to_string()
                             aria-describedby="code-error"
+                            disabled=move || done.get()
                             prop:value=code
                             on:input=move |ev| {
                                 set_code.set(event_target_value(&ev));
@@ -169,6 +168,7 @@ pub fn Shorten() -> impl IntoView {
                             autocomplete="off"
                             aria-invalid=move || url_error.get().is_some().to_string()
                             aria-describedby="url-error"
+                            disabled=move || done.get()
                             prop:value=url
                             on:input=move |ev| {
                                 set_url.set(event_target_value(&ev));

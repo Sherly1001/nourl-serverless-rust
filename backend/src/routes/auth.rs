@@ -35,8 +35,8 @@ pub async fn register(
     if !settings::load(&state.db).await?.password.enabled {
         return Err(AppError::forbidden("password registration is disabled"));
     }
-    validate_username(&body.username).map_err(AppError::validation)?;
-    validate_password(&body.password).map_err(AppError::validation)?;
+    validate_username(&body.username).map_err(|e| AppError::validation(e).on_field("username"))?;
+    validate_password(&body.password).map_err(|e| AppError::validation(e).on_field("password"))?;
 
     // Friendlier than waiting for the unique index to reject it; the index is
     // still what actually prevents a race between two simultaneous signups.
@@ -44,7 +44,7 @@ pub async fn register(
         .await?
         .is_some()
     {
-        return Err(AppError::conflict("that username is already taken"));
+        return Err(AppError::conflict("that username is already taken").on_field("username"));
     }
 
     // password::hash is the only thing that hashes; users::create stores
@@ -93,9 +93,11 @@ pub async fn update_me(
         // Re-sending the current username is a no-op rather than a self-collision.
         Some(name) if name == user.username => body.username = None,
         Some(name) => {
-            validate_username(name).map_err(AppError::validation)?;
+            validate_username(name).map_err(|e| AppError::validation(e).on_field("username"))?;
             if users::find_by_username(&state.db, name).await?.is_some() {
-                return Err(AppError::conflict("that username is already taken"));
+                return Err(
+                    AppError::conflict("that username is already taken").on_field("username")
+                );
             }
         }
         None => {}
@@ -135,15 +137,16 @@ pub async fn change_password(
     AppJson(body): AppJson<ChangePasswordRequest>,
 ) -> Result<Response, AppError> {
     if let Some(stored) = user.hash_passwd.as_deref() {
-        let current = body
-            .current_password
-            .as_deref()
-            .ok_or_else(|| AppError::unauthorized("current password is required"))?;
+        let current = body.current_password.as_deref().ok_or_else(|| {
+            AppError::unauthorized("current password is required").on_field("current_password")
+        })?;
         if !password::verify(current, stored) {
-            return Err(AppError::unauthorized("current password is incorrect"));
+            return Err(AppError::unauthorized("current password is incorrect")
+                .on_field("current_password"));
         }
     }
-    validate_password(&body.new_password).map_err(AppError::validation)?;
+    validate_password(&body.new_password)
+        .map_err(|e| AppError::validation(e).on_field("new_password"))?;
 
     let hash = password::hash(&body.new_password)?;
     users::set_password(&state.db, &user.id, &hash).await?;

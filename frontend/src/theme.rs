@@ -1,6 +1,7 @@
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::Closure;
+
+use crate::dropdown::dismiss_on_outside_click;
 
 const STORAGE_KEY: &str = "nourl-theme";
 
@@ -83,35 +84,8 @@ pub fn ThemePicker() -> impl IntoView {
         set_open.set(false);
     };
 
-    // Dismiss on a click anywhere outside the picker, or on Escape. Listeners
-    // sit on the document because clicks elsewhere never reach this subtree.
     let root: NodeRef<leptos::html::Div> = NodeRef::new();
-    let pointer = Closure::<dyn FnMut(web_sys::Event)>::new(move |ev: web_sys::Event| {
-        let Some(container) = root.get_untracked() else {
-            return;
-        };
-        let inside = ev
-            .target()
-            .and_then(|t| t.dyn_into::<web_sys::Node>().ok())
-            .is_some_and(|node| container.contains(Some(&node)));
-        if !inside {
-            set_open.set(false);
-        }
-    });
-    let keydown =
-        Closure::<dyn FnMut(web_sys::KeyboardEvent)>::new(move |ev: web_sys::KeyboardEvent| {
-            if ev.key() == "Escape" {
-                set_open.set(false);
-            }
-        });
-    if let Some(document) = web_sys::window().and_then(|w| w.document()) {
-        let _ = document
-            .add_event_listener_with_callback("pointerdown", pointer.as_ref().unchecked_ref());
-        let _ =
-            document.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-    }
-    pointer.forget();
-    keydown.forget();
+    dismiss_on_outside_click(root, set_open);
 
     view! {
         <div class="relative" node_ref=root>
