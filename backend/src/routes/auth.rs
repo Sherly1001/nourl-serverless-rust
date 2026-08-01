@@ -81,21 +81,27 @@ pub async fn me(CurrentUser(user): CurrentUser) -> Json<UserInfo> {
     Json(user.to_info())
 }
 
-/// `username` is deliberately not editable here: it is the login handle and
-/// carries a unique index, so changing it belongs in its own flow.
+/// `username` is editable, but unlike the free-text fields it has to clear the
+/// same validation and uniqueness bar as registration. A rename does not touch
+/// `token_version`: sessions are keyed on the user id, so they stay valid.
 pub async fn update_me(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
-    AppJson(body): AppJson<UpdateProfileRequest>,
+    AppJson(mut body): AppJson<UpdateProfileRequest>,
 ) -> Result<Json<UserInfo>, AppError> {
-    users::update_profile(
-        &state.db,
-        &user.id,
-        body.display_name,
-        body.email,
-        body.avatar_url,
-    )
-    .await?;
+    match body.username.as_deref() {
+        // Re-sending the current username is a no-op rather than a self-collision.
+        Some(name) if name == user.username => body.username = None,
+        Some(name) => {
+            validate_username(name).map_err(AppError::validation)?;
+            if users::find_by_username(&state.db, name).await?.is_some() {
+                return Err(AppError::conflict("that username is already taken"));
+            }
+        }
+        None => {}
+    }
+
+    users::update_profile(&state.db, &user.id, body).await?;
     let reloaded = users::find_by_id(&state.db, &user.id)
         .await?
         .ok_or_else(|| AppError::internal("user vanished mid-update"))?;
@@ -115,21 +121,27 @@ pub async fn logout(
     Ok((jar, Json(serde_json::json!({"logged_out": true}))).into_response())
 }
 
-/// Rotating the password revokes every outstanding token, then immediately
-/// re-authenticates the caller so the device doing the change stays signed in
-/// while other devices are logged out.
+/// Sets or rotates the password, revoking every outstanding token, then
+/// immediately re-authenticates the caller so the device doing the change stays
+/// signed in while other devices are logged out.
+///
+/// An account with no password yet — created through an OAuth provider — sets
+/// its first one here with no `current_password`: there is no secret to prove,
+/// and the session cookie already proves ownership.
 pub async fn change_password(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     AppJson(body): AppJson<ChangePasswordRequest>,
 ) -> Result<Response, AppError> {
-    let stored = user
-        .hash_passwd
-        .as_deref()
-        .ok_or_else(|| AppError::forbidden("this account has no password to change"))?;
-    if !password::verify(&body.current_password, stored) {
-        return Err(AppError::unauthorized("current password is incorrect"));
+    if let Some(stored) = user.hash_passwd.as_deref() {
+        let current = body
+            .current_password
+            .as_deref()
+            .ok_or_else(|| AppError::unauthorized("current password is required"))?;
+        if !password::verify(current, stored) {
+            return Err(AppError::unauthorized("current password is incorrect"));
+        }
     }
     validate_password(&body.new_password).map_err(AppError::validation)?;
 

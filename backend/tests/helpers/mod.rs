@@ -4,6 +4,8 @@ use backend::app::{AppState, build_app};
 use backend::config::Config;
 
 pub const FALLBACK: &str = "https://fallback.example";
+pub const JWT_SECRET: &str = "test-secret-not-used-in-production";
+pub const SESSION_DAYS: i64 = 60;
 
 /// Fresh throwaway database (`nourl_test_<uuid>`) on the local test mongo.
 pub async fn test_db() -> mongodb::Database {
@@ -20,8 +22,8 @@ pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Da
         db_name: db.name().to_string(),
         port: 0,
         notfound_fallback_url: fallback.map(String::from),
-        jwt_secret: "test-secret-not-used-in-production".into(),
-        session_days: 60,
+        jwt_secret: JWT_SECRET.into(),
+        session_days: SESSION_DAYS,
         cookie_secure: false,
     };
     (
@@ -47,6 +49,15 @@ pub fn session_cookie(response: &axum::response::Response) -> Option<String> {
         .filter_map(|v| v.to_str().ok())
         .find(|v| v.starts_with("nourl_session="))
         .map(|v| v.split(';').next().unwrap_or(v).to_string())
+}
+
+/// A session for a user inserted straight into the database, bypassing the
+/// login flow — the only way to get one for a passwordless account until
+/// phase 2b's OAuth callbacks exist.
+pub fn cookie_for(user: &backend::users::User) -> String {
+    let token =
+        backend::auth::jwt::encode(JWT_SECRET, &user.id, user.token_version, SESSION_DAYS).unwrap();
+    format!("nourl_session={token}")
 }
 
 pub fn json_request(

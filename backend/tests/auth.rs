@@ -400,6 +400,167 @@ async fn profile_edits_apply_and_survive_a_reload() {
 }
 
 #[tokio::test]
+async fn username_can_be_renamed_but_not_onto_a_taken_one() {
+    let (app, db) = test_app().await;
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "before", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": "occupied", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+
+    for (body, status) in [
+        (json!({"username": "occupied"}), StatusCode::CONFLICT),
+        (json!({"username": "no"}), StatusCode::BAD_REQUEST),
+        (json!({"username": "has space"}), StatusCode::BAD_REQUEST),
+    ] {
+        let rejected = app
+            .clone()
+            .oneshot(helpers::authed_request(
+                "PUT",
+                "/api/auth/me",
+                &cookie,
+                body.clone(),
+            ))
+            .await
+            .unwrap();
+        assert_eq!(rejected.status(), status, "{body}");
+    }
+
+    // Re-sending the current name is a no-op, not a collision with itself.
+    let unchanged = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/me",
+            &cookie,
+            json!({"username": "before"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unchanged.status(), StatusCode::OK);
+
+    let renamed = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/me",
+            &cookie,
+            json!({"username": "after"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), StatusCode::OK);
+    assert_eq!(body_json(renamed).await["username"], "after");
+
+    // The session survives the rename, and the new name is the login handle.
+    let still_authed = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(still_authed.status(), StatusCode::OK);
+
+    let old_name = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "before", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(old_name.status(), StatusCode::UNAUTHORIZED);
+
+    let new_name = app
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "after", "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(new_name.status(), StatusCode::OK);
+
+    db.drop().await.unwrap();
+}
+
+/// An account with no password — what phase 2b's OAuth signups produce — sets
+/// its first one with the session cookie alone.
+#[tokio::test]
+async fn a_passwordless_account_can_set_a_first_password() {
+    let (app, db) = test_app().await;
+    let user = backend::users::create(
+        &db,
+        backend::users::NewUser {
+            username: "providerkid".into(),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
+    let cookie = helpers::cookie_for(&user);
+
+    let me = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(body_json(me).await["has_password"], false);
+
+    // No current_password, because there is none to give.
+    let set = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/password",
+            &cookie,
+            json!({"new_password": "firstpassword"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(set.status(), StatusCode::OK);
+    assert_eq!(body_json(set).await["has_password"], true);
+
+    let login = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/login",
+            json!({"username": "providerkid", "password": "firstpassword"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(login.status(), StatusCode::OK);
+
+    // Now that one exists, the check is back on.
+    let second = app
+        .oneshot(helpers::authed_request(
+            "PUT",
+            "/api/auth/password",
+            &session_cookie(&login).unwrap(),
+            json!({"new_password": "secondpassword"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(second.status(), StatusCode::UNAUTHORIZED);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
 async fn profile_edit_requires_a_session() {
     let (app, db) = test_app().await;
     let response = app

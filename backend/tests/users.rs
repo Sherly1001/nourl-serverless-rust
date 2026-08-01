@@ -129,9 +129,16 @@ async fn profile_fields_are_settable_at_creation_and_editable_after() {
     assert!(rich.hash_passwd.is_none());
 
     // A partial update leaves untouched fields alone.
-    users::update_profile(&db, &rich.id, Some("Renamed".into()), None, None)
-        .await
-        .unwrap();
+    users::update_profile(
+        &db,
+        &rich.id,
+        shared::UpdateProfileRequest {
+            display_name: Some("Renamed".into()),
+            ..Default::default()
+        },
+    )
+    .await
+    .unwrap();
     let after = users::find_by_id(&db, &rich.id).await.unwrap().unwrap();
     assert_eq!(after.display_name.as_deref(), Some("Renamed"));
     assert_eq!(

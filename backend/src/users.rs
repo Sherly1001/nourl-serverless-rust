@@ -1,7 +1,7 @@
 use mongodb::Database;
 use mongodb::bson::{Document, doc};
 use serde::{Deserialize, Serialize};
-use shared::UserInfo;
+use shared::{UpdateProfileRequest, UserInfo};
 
 use crate::error::AppError;
 
@@ -41,7 +41,18 @@ impl User {
             email: self.email.clone(),
             avatar_url: self.avatar_url.clone(),
             is_admin: self.is_admin,
+            has_password: self.hash_passwd.is_some(),
         }
+    }
+}
+
+/// True for the unique-index violation Mongo raises when two accounts would end
+/// up sharing a username. Caught so a rename race reads as 409 rather than 500.
+fn is_duplicate_key(err: &mongodb::error::Error) -> bool {
+    use mongodb::error::{ErrorKind, WriteFailure};
+    match &*err.kind {
+        ErrorKind::Write(WriteFailure::WriteError(e)) => e.code == 11000,
+        _ => false,
     }
 }
 
@@ -123,30 +134,38 @@ pub async fn set_password(db: &Database, id: &str, hash_passwd: &str) -> Result<
 }
 
 /// Partial profile update: `None` leaves a field untouched, so a caller can
-/// change their display name without clearing their avatar.
+/// change their display name without clearing their avatar. `username` is
+/// expected to be validated by the caller; the unique index is what actually
+/// keeps it unique, and a collision surfaces here as a 409.
 pub async fn update_profile(
     db: &Database,
     id: &str,
-    display_name: Option<String>,
-    email: Option<String>,
-    avatar_url: Option<String>,
+    update: UpdateProfileRequest,
 ) -> Result<(), AppError> {
     let mut set = Document::new();
-    if let Some(value) = display_name {
-        set.insert("display_name", value);
-    }
-    if let Some(value) = email {
-        set.insert("email", value);
-    }
-    if let Some(value) = avatar_url {
-        set.insert("avatar_url", value);
+    for (field, value) in [
+        ("username", update.username),
+        ("display_name", update.display_name),
+        ("email", update.email),
+        ("avatar_url", update.avatar_url),
+    ] {
+        if let Some(value) = value {
+            set.insert(field, value);
+        }
     }
     if set.is_empty() {
         return Ok(());
     }
     collection(db)
         .update_one(doc! {"id": id}, doc! {"$set": set})
-        .await?;
+        .await
+        .map_err(|err| {
+            if is_duplicate_key(&err) {
+                AppError::conflict("that username is already taken")
+            } else {
+                err.into()
+            }
+        })?;
     Ok(())
 }
 

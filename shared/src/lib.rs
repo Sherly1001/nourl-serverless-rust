@@ -107,6 +107,11 @@ pub struct UserInfo {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub is_admin: bool,
+    /// False for accounts that only ever signed in through a provider. The UI
+    /// uses it to render "set a password" instead of "change password", and
+    /// the server uses the same fact to skip the current-password check.
+    #[serde(default)]
+    pub has_password: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -125,6 +130,10 @@ pub struct LoginRequest {
 /// clearing it, so a rename does not wipe the avatar.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
+    /// The login handle. Unlike the rest it is validated and must stay unique,
+    /// so a change here can come back 400 or 409.
+    #[serde(default)]
+    pub username: Option<String>,
     #[serde(default)]
     pub display_name: Option<String>,
     #[serde(default)]
@@ -133,9 +142,13 @@ pub struct UpdateProfileRequest {
     pub avatar_url: Option<String>,
 }
 
+/// `current_password` is optional because an account created through an OAuth
+/// provider has no password to prove ownership of — for those, holding a valid
+/// session is the whole check. Accounts that do have one must still supply it.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
-    pub current_password: String,
+    #[serde(default)]
+    pub current_password: Option<String>,
     pub new_password: String,
 }
 
