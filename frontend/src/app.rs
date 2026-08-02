@@ -19,7 +19,11 @@ pub fn App() -> impl IntoView {
     provide_toasts();
 
     view! {
-        <div class="border-b shadow-sm navbar bg-base-200 border-base-content/10">
+        // Sticky, and below the row menus (`z-30`) rather than above them: a
+        // header that paints over an open dropdown is worse than one a
+        // dropdown briefly covers. The page's own sticky table heads sit at
+        // `z-10`, so those still scroll under it.
+        <div class="sticky top-0 z-20 border-b shadow-sm navbar bg-base-200 border-base-content/10">
             <div class="navbar-start">
                 <a href="#/" class="flex gap-2 items-center text-xl font-bold">
                     <img src="/favicon.png" alt="" class="size-7" />
