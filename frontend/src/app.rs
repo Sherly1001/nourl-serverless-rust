@@ -18,6 +18,24 @@ pub fn App() -> impl IntoView {
     let auth = provide_auth();
     provide_toasts();
 
+    // Which tab is showing, marked on the link that leads there. `btn-soft`
+    // rather than a colour swap: it is the same button, lit, so the row still
+    // reads as one set of tabs.
+    let tab = move |target: Route| {
+        if route.get() == target {
+            "gap-2 btn btn-soft btn-primary"
+        } else {
+            "gap-2 btn btn-text"
+        }
+    };
+    let current = move |target: Route| {
+        if route.get() == target {
+            "page"
+        } else {
+            "false"
+        }
+    };
+
     view! {
         // Sticky, and below the row menus (`z-30`) rather than above them: a
         // header that paints over an open dropdown is worse than one a
@@ -32,13 +50,21 @@ pub fn App() -> impl IntoView {
             </div>
             <div class="flex gap-2 items-center navbar-end">
                 <Show when=move || auth.user.get().is_some()>
-                    <a href="#/urls" class="gap-2 btn btn-text">
+                    <a
+                        href="#/urls"
+                        class=move || tab(Route::MyUrls)
+                        aria-current=move || current(Route::MyUrls)
+                    >
                         <span class="icon-[tabler--link] size-5"></span>
                         "My URLs"
                     </a>
                 </Show>
                 <Show when=move || auth.is_admin()>
-                    <a href="#/users" class="gap-2 btn btn-text">
+                    <a
+                        href="#/users"
+                        class=move || tab(Route::Users)
+                        aria-current=move || current(Route::Users)
+                    >
                         <span class="icon-[tabler--users] size-5"></span>
                         "Users"
                     </a>
@@ -46,7 +72,11 @@ pub fn App() -> impl IntoView {
                 // The sign-in settings belong to the root alone, so an ordinary
                 // admin must not be offered a link that only ends in a 403.
                 <Show when=move || auth.is_root()>
-                    <a href="#/settings" class="gap-2 btn btn-text">
+                    <a
+                        href="#/settings"
+                        class=move || tab(Route::Settings)
+                        aria-current=move || current(Route::Settings)
+                    >
                         <span class="icon-[tabler--settings] size-5"></span>
                         "Settings"
                     </a>
