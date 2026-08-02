@@ -28,6 +28,15 @@ pub struct User {
     pub hash_passwd: Option<String>,
     #[serde(default)]
     pub is_admin: bool,
+    /// Id of the admin who granted the flag — the only thing the admin chain is
+    /// stored as. Depth and ancestry are both derived from following it, so
+    /// moving a branch cannot leave a stale rank behind.
+    ///
+    /// `None` on an admin flipped on directly in the database, which is exactly
+    /// how the first one is made. Such an account is a root: nobody is above
+    /// it, so nobody can touch it through the API.
+    #[serde(default)]
+    pub promoted_by: Option<String>,
     /// Bumped on logout and password change to revoke outstanding tokens.
     /// i64 because Mongo's `$inc` silently promotes an int32 past its max into
     /// an int64, which would then no longer deserialize into the struct.
@@ -118,6 +127,7 @@ pub async fn create(db: &Database, new: NewUser) -> Result<User, AppError> {
         avatar_url: new.avatar_url,
         hash_passwd: new.hash_passwd,
         is_admin: false,
+        promoted_by: None,
         token_version: 0,
     };
     let mut doc = bson::to_document(&user).map_err(AppError::internal)?;
@@ -172,6 +182,102 @@ pub async fn update_profile(
     Ok(())
 }
 
+/// How far the chain is followed before giving up. Deep enough that no real
+/// hierarchy hits it, shallow enough that a cycle introduced by hand-editing
+/// the collection cannot turn a lookup into a long walk.
+const MAX_CHAIN_DEPTH: i32 = 32;
+
+/// Hangs `id` under `parent` and gives it the flag.
+///
+/// The same write covers both promoting a fresh account and moving an existing
+/// admin, because they are the same fact: this is who vouches for them now.
+/// Whatever hangs below `id` moves with it, since the subtree is described by
+/// pointers to `id` rather than by a stored depth.
+pub async fn grant_admin(db: &Database, id: &str, parent_id: &str) -> Result<(), AppError> {
+    collection(db)
+        .update_one(
+            doc! {"id": id},
+            doc! {"$set": {"is_admin": true, "promoted_by": parent_id}},
+        )
+        .await?;
+    Ok(())
+}
+
+/// Drops the flag from `id` **and from everyone below them**, returning how
+/// many accounts lost it.
+///
+/// The cascade is the point: an admin only holds the flag because the person
+/// above them vouched, so withdrawing that vouching withdraws what it granted.
+/// Leaving the subtree in place would instead leave admins hanging off an
+/// ordinary account.
+pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
+    let mut ids = descendant_ids(db, id).await?;
+    ids.push(id.to_string());
+    let result = collection(db)
+        .update_many(
+            doc! {"id": {"$in": &ids}},
+            doc! {
+                "$set": {"is_admin": false},
+                "$unset": {"promoted_by": ""},
+            },
+        )
+        .await?;
+    Ok(result.modified_count)
+}
+
+/// Ids of every account above `id` in the chain. Membership is what callers
+/// want — whether the actor is one of them — so the order is not defined.
+pub async fn ancestor_ids(db: &Database, id: &str) -> Result<Vec<String>, AppError> {
+    chain_ids(db, id, "$promoted_by", "promoted_by", "id").await
+}
+
+/// Ids of every account below `id`: the ones it promoted, and so on down.
+pub async fn descendant_ids(db: &Database, id: &str) -> Result<Vec<String>, AppError> {
+    chain_ids(db, id, "$id", "id", "promoted_by").await
+}
+
+/// Walks `promoted_by` in one direction or the other.
+///
+/// `$graphLookup` rather than a loop of `find_one`s: one round trip instead of
+/// one per level, and it tracks what it has already visited, so a cycle left by
+/// a hand-edited document terminates instead of hanging.
+async fn chain_ids(
+    db: &Database,
+    id: &str,
+    start_with: &str,
+    connect_from: &str,
+    connect_to: &str,
+) -> Result<Vec<String>, AppError> {
+    let pipeline = vec![
+        doc! {"$match": {"id": id}},
+        doc! {"$graphLookup": {
+            "from": "users",
+            "startWith": start_with,
+            "connectFromField": connect_from,
+            "connectToField": connect_to,
+            "as": "chain",
+            "maxDepth": MAX_CHAIN_DEPTH,
+        }},
+        doc! {"$project": {"_id": 0, "ids": "$chain.id"}},
+    ];
+    let rows: Vec<Document> = collection(db)
+        .aggregate(pipeline)
+        .await?
+        .try_collect()
+        .await?;
+    let Some(row) = rows.first() else {
+        return Ok(Vec::new());
+    };
+    Ok(row
+        .get_array("ids")
+        .map(|ids| {
+            ids.iter()
+                .filter_map(|id| id.as_str().map(String::from))
+                .collect()
+        })
+        .unwrap_or_default())
+}
+
 pub async fn bump_token_version(db: &Database, id: &str) -> Result<(), AppError> {
     collection(db)
         .update_one(doc! {"id": id}, doc! {"$inc": {"token_version": 1}})
@@ -179,28 +285,32 @@ pub async fn bump_token_version(db: &Database, id: &str) -> Result<(), AppError>
     Ok(())
 }
 
-/// One page of accounts for the admin list.
+/// Joins the link count on.
 ///
-/// An aggregate rather than a find, so the link count comes from the database
-/// instead of N+1 round trips, and so `hash_passwd` and the provider ids are
-/// dropped before the documents ever reach this process.
-///
-/// `$match` comes first so a search narrows the set before it is paged, and so
-/// the `$lookup` only joins the rows on the page.
-pub async fn list(db: &Database, params: &UserListParams) -> Result<Vec<AdminUserInfo>, AppError> {
-    let pipeline = vec![
-        doc! {"$match": params.filter()},
-        doc! {"$sort": params.sort.clone()},
-        doc! {"$skip": params.skip},
-        doc! {"$limit": params.limit},
+/// The inner pipeline counts inside the database rather than returning the
+/// documents to be counted here: without it, listing an account that owns ten
+/// thousand links would pull all ten thousand across just to call `$size` on
+/// them.
+fn link_count_stages() -> Vec<Document> {
+    vec![
         doc! {"$lookup": {
             "from": "urls",
             "localField": "id",
             "foreignField": "owner",
             "as": "owned",
+            "pipeline": [{"$count": "n"}],
         }},
+        doc! {"$set": {"url_count": {"$ifNull": [{"$first": "$owned.n"}, 0]}}},
+    ]
+}
+
+/// The columns every listed account carries, whichever list it came from.
+///
+/// The shape that drops `hash_passwd` and the provider ids before the documents
+/// ever reach this process.
+fn presentation_stages() -> Vec<Document> {
+    vec![
         doc! {"$set": {
-            "url_count": {"$size": "$owned"},
             "has_password": {"$eq": [{"$type": "$hash_passwd"}, "string"]},
             // A BSON date cannot deserialize into the DTO's Option<String>.
             "created_at": crate::db::as_iso_string("created_at"),
@@ -214,12 +324,14 @@ pub async fn list(db: &Database, params: &UserListParams) -> Result<Vec<AdminUse
             ]},
         }},
         doc! {"$unset": [
-            "_id", "owned", "hash_passwd", "token_version",
+            "_id", "owned", "ancestors", "hash_passwd", "token_version",
             "github_id", "google_id", "facebook_id",
         ]},
-    ];
-    let rows: Vec<Document> = db
-        .collection::<Document>("users")
+    ]
+}
+
+async fn collect(db: &Database, pipeline: Vec<Document>) -> Result<Vec<AdminUserInfo>, AppError> {
+    let rows: Vec<Document> = collection(db)
         .aggregate(pipeline)
         .await?
         .try_collect()
@@ -227,6 +339,76 @@ pub async fn list(db: &Database, params: &UserListParams) -> Result<Vec<AdminUse
     rows.into_iter()
         .map(|doc| bson::from_document(doc).map_err(AppError::internal))
         .collect()
+}
+
+/// One page of the accounts that are *not* admins.
+///
+/// Admins are excluded because they come back whole from [`admins`] instead:
+/// the page they would land on has nothing to do with where they sit in the
+/// tree, and paging the tree would cut branches.
+///
+/// `$match` comes first so a search narrows the set before anything else runs.
+/// After that the order of the join and the paging depends on what the sort
+/// asks for: normally the twenty rows on the page are joined, but ordering *by*
+/// the link count cannot know which twenty those are until every account has
+/// been counted.
+pub async fn list(db: &Database, params: &UserListParams) -> Result<Vec<AdminUserInfo>, AppError> {
+    let mut pipeline = vec![doc! {"$match": params.filter()}];
+    let paging = [
+        doc! {"$sort": params.sort.clone()},
+        doc! {"$skip": params.skip},
+        doc! {"$limit": params.limit},
+    ];
+    if params.sorts_by_join() {
+        pipeline.extend(link_count_stages());
+        pipeline.extend(paging);
+    } else {
+        pipeline.extend(paging);
+        pipeline.extend(link_count_stages());
+    }
+    pipeline.extend(presentation_stages());
+    // Nothing outside the tree has a rank, and old documents may still carry a
+    // stored one from before the level was derived.
+    pipeline.push(doc! {"$unset": ["admin_level", "promoted_by"]});
+    collect(db, pipeline).await
+}
+
+/// Never paged, so the tree cannot lose an interior node. Admins are a bounded
+/// set — they exist only by invitation — but the limit is here so a runaway
+/// cannot return the whole collection.
+const MAX_ADMINS: i64 = 1000;
+
+/// Every admin, with the depth of each one derived from the chain above it.
+///
+/// Deliberately not searched: hiding an admin whose name does not match would
+/// orphan the admins below them, so filtering is the client's job once it has
+/// the whole shape. The sort *is* honoured, but as the order siblings appear
+/// in — the tree's own structure decides everything above that.
+pub async fn admins(
+    db: &Database,
+    params: &UserListParams,
+) -> Result<Vec<AdminUserInfo>, AppError> {
+    let mut pipeline = vec![
+        doc! {"$match": {"is_admin": true}},
+        // Everyone above this account, which is both the depth and — for the
+        // permission check elsewhere — who is allowed to touch them.
+        doc! {"$graphLookup": {
+            "from": "users",
+            "startWith": "$promoted_by",
+            "connectFromField": "promoted_by",
+            "connectToField": "id",
+            "as": "ancestors",
+            "maxDepth": MAX_CHAIN_DEPTH,
+        }},
+        doc! {"$set": {"admin_level": {"$size": "$ancestors"}}},
+    ];
+    // Unconditionally before the sort: this list is never paged, so ordering by
+    // the link count costs nothing extra here.
+    pipeline.extend(link_count_stages());
+    pipeline.push(doc! {"$sort": params.sort.clone()});
+    pipeline.push(doc! {"$limit": MAX_ADMINS});
+    pipeline.extend(presentation_stages());
+    collect(db, pipeline).await
 }
 
 /// Counts what the same filter matches, so a searched page can report totals

@@ -22,10 +22,18 @@ const URL_SORTABLE: &[&str] = &[
 
 /// Fields a client may sort users by.
 ///
-/// `url_count` is deliberately absent: it only exists after the `$lookup`, so
-/// sorting by it would mean joining every account in the collection before
-/// paging rather than joining the twenty rows on the page.
-const USER_SORTABLE: &[&str] = &["username", "created_at", "is_admin"];
+/// `url_count` only exists after the join, so ordering by it costs a join
+/// across the whole collection rather than across the page — see
+/// [`UserListParams::sorts_by_join`], which is how that cost stays confined to
+/// the requests that ask for it.
+///
+/// `admin_level` is absent because it is derived from the chain rather than
+/// stored: there is no field to sort on, and the tree is ordered by its own
+/// shape anyway.
+const USER_SORTABLE: &[&str] = &["username", "created_at", "url_count"];
+
+/// The one sortable field that does not exist until after the `$lookup`.
+const JOINED_SORT_FIELD: &str = "url_count";
 
 pub struct ListParams {
     pub limit: i64,
@@ -162,13 +170,27 @@ impl UserListParams {
         })
     }
 
+    /// Whether this order can only be applied after the link count is joined
+    /// on. When it is, the pipeline has to join before paging, which is the
+    /// expensive shape — so callers check rather than always paying it.
+    pub fn sorts_by_join(&self) -> bool {
+        self.sort.contains_key(JOINED_SORT_FIELD)
+    }
+
     /// Matches the name someone would search by. Not the provider ids, which
     /// are secrets, and not `hash_passwd` for the obvious reason.
+    ///
+    /// Always excludes admins: they are returned whole alongside this page so
+    /// the tree keeps its interior nodes, and counting them here would report
+    /// them twice.
     pub fn filter(&self) -> Document {
-        match &self.q {
-            Some(q) => any_field_matches(q, &["username", "display_name", "email"]),
-            None => Document::new(),
+        // `$ne` rather than `false`, because an account that predates the field
+        // has no `is_admin` at all.
+        let mut filter = doc! {"is_admin": {"$ne": true}};
+        if let Some(q) = &self.q {
+            filter.extend(any_field_matches(q, &["username", "display_name", "email"]));
         }
+        filter
     }
 }
 
@@ -285,16 +307,48 @@ mod tests {
     fn users_and_urls_do_not_share_a_sort_whitelist() {
         let parsed = UserListParams::from_query(&params(&[("sort", "username,1")])).unwrap();
         assert_eq!(parsed.sort, doc! {"username": 1});
+        // Derived from the chain rather than stored, and these rows have no
+        // chain — the tree is sorted by its own shape, not by a query string.
+        assert!(UserListParams::from_query(&params(&[("sort", "admin_level,1")])).is_err());
+        assert!(UserListParams::from_query(&params(&[("sort", "promoted_by,1")])).is_err());
+    }
 
+    /// Ordering by the link count needs the join done before paging, and the
+    /// pipeline is built differently for it, so the flag has to be right.
+    #[test]
+    fn only_the_link_count_forces_a_join_before_paging() {
+        let by_count = UserListParams::from_query(&params(&[("sort", "url_count,-1")])).unwrap();
+        assert_eq!(by_count.sort, doc! {"url_count": -1});
+        assert!(by_count.sorts_by_join());
+
+        assert!(
+            !UserListParams::from_query(&params(&[("sort", "username,1")]))
+                .unwrap()
+                .sorts_by_join()
+        );
+        assert!(
+            !UserListParams::from_query(&params(&[]))
+                .unwrap()
+                .sorts_by_join()
+        );
+        // Even as the second key, it still decides the shape of the pipeline.
+        assert!(
+            UserListParams::from_query(&params(&[("sort", "username,1,url_count,-1")]))
+                .unwrap()
+                .sorts_by_join()
+        );
+    }
+
+    /// The two whitelists must not overlap where the collections do not.
+    #[test]
+    fn users_and_urls_keep_separate_whitelists() {
         // Valid for URLs, meaningless for users.
         assert!(UserListParams::from_query(&params(&[("sort", "hits,-1")])).is_err());
-        // Only exists after the `$lookup`, so sorting by it would join the
-        // whole collection before paging.
-        assert!(UserListParams::from_query(&params(&[("sort", "url_count,-1")])).is_err());
         assert!(UserListParams::from_query(&params(&[("sort", "hash_passwd,1")])).is_err());
-
         // And the reverse: a user field is not sortable on URLs.
         assert!(ListParams::from_query(&params(&[("sort", "username,1")])).is_err());
+        // `url_count` is a user field only — a URL does not have one.
+        assert!(ListParams::from_query(&params(&[("sort", "url_count,-1")])).is_err());
     }
 
     #[test]
@@ -302,10 +356,25 @@ mod tests {
         let filter = UserListParams::from_query(&params(&[("q", "a.b")]))
             .unwrap()
             .filter();
+        // Admins are excluded whether or not a search is running: they come
+        // back whole from `users::admins`, and counting them here would report
+        // them in two places at once.
+        assert_eq!(
+            filter.get_document("is_admin").unwrap(),
+            &doc! {"$ne": true}
+        );
         let branches = filter.get_array("$or").unwrap();
         let fields: Vec<&str> = branches
             .iter()
-            .map(|branch| branch.as_document().unwrap().keys().next().unwrap().as_str())
+            .map(|branch| {
+                branch
+                    .as_document()
+                    .unwrap()
+                    .keys()
+                    .next()
+                    .unwrap()
+                    .as_str()
+            })
             .collect();
         assert_eq!(fields, ["username", "display_name", "email"]);
         // Never the provider ids or the hash, however tempting as a lookup.
@@ -327,6 +396,6 @@ mod tests {
     fn users_without_a_search_are_unfiltered() {
         let parsed = UserListParams::from_query(&params(&[("q", "   ")])).unwrap();
         assert!(parsed.q.is_none(), "whitespace is not a search");
-        assert_eq!(parsed.filter(), doc! {});
+        assert_eq!(parsed.filter(), doc! {"is_admin": {"$ne": true}});
     }
 }

@@ -58,6 +58,15 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
             )
             .await?;
     }
+
+    // Not unique, and not optional either: `owner` is the join the admin list
+    // counts links through, and `promoted_by` is what `$graphLookup` follows to
+    // resolve the admin chain. Without them both walk the whole collection.
+    urls.create_index(IndexModel::builder().keys(doc! {"owner": 1}).build())
+        .await?;
+    users
+        .create_index(IndexModel::builder().keys(doc! {"promoted_by": 1}).build())
+        .await?;
     Ok(())
 }
 

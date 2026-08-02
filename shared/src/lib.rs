@@ -235,6 +235,17 @@ pub struct AdminUserInfo {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub is_admin: bool,
+    /// How deep in the admin chain: 0 for an admin seeded directly in the
+    /// database, and one more for each grant below that. Derived from
+    /// `promoted_by` rather than stored, so moving a branch cannot leave a
+    /// stale number behind. `None` for anyone who is not an admin.
+    #[serde(default)]
+    pub admin_level: Option<i32>,
+    /// Id of the admin who granted the flag — the parent pointer the tree is
+    /// drawn from. `None` for a seeded admin, who nobody promoted, and for
+    /// ordinary accounts, who are in no subtree at all.
+    #[serde(default)]
+    pub promoted_by: Option<String>,
     /// `"github"`, `"google"`, `"facebook"` — whichever are linked.
     #[serde(default)]
     pub providers: Vec<String>,
@@ -251,13 +262,41 @@ pub struct AdminUserInfo {
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminUserListResponse {
+    /// Every admin, unpaged and unsearched — the skeleton of the tree. A search
+    /// must not drop them, or the tree loses interior nodes and the accounts
+    /// below them have nowhere to hang.
+    #[serde(default)]
+    pub admins: Vec<AdminUserInfo>,
+    /// Accounts with no admin flag: paged, sorted and searched as usual. They
+    /// belong to no subtree, so they render as a flat bucket under the tree.
     pub items: Vec<AdminUserInfo>,
+    /// How many ordinary accounts match the search, for the bucket's count.
     pub total: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAdminRequest {
     pub is_admin: bool,
+    /// Which admin to hang them under. Defaults to the caller, which is the
+    /// ordinary promotion; naming someone else moves them, subtree and all.
+    /// Ignored when `is_admin` is false, since a demotion has no parent.
+    #[serde(default)]
+    pub promoted_by: Option<String>,
+}
+
+/// What changed after a call to `PUT /api/admin/users/{id}`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetAdminResponse {
+    pub id: String,
+    pub is_admin: bool,
+    /// Who they now hang under. `None` once demoted.
+    #[serde(default)]
+    pub promoted_by: Option<String>,
+    /// How many accounts lost the flag, counting the target itself: demoting an
+    /// admin demotes everyone they promoted, and everyone those admins
+    /// promoted. Zero on a promotion or a move.
+    #[serde(default)]
+    pub demoted: u64,
 }
 
 /// One login method as the settings page sees it. The secret itself never

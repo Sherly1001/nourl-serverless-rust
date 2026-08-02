@@ -290,6 +290,7 @@ mod tests {
             avatar_url: None,
             hash_passwd: None,
             is_admin: false,
+            promoted_by: None,
             token_version: 0,
         };
         let other = User {

@@ -81,11 +81,14 @@ async fn the_user_list_strips_secrets_and_counts_links() {
         .unwrap();
     assert_eq!(listed.status(), StatusCode::OK);
     let body = body_json(listed).await;
-    assert_eq!(body["total"], 2);
+    assert_eq!(body["total"], 1, "the admin is in the tree, not the bucket");
 
     let rendered = body.to_string();
     assert!(!rendered.contains("hash_passwd"), "never leak the hash");
     assert!(!rendered.contains("$argon2"), "never leak the hash");
+    // Both buckets go through the same projection, so check both.
+    assert_eq!(body["admins"][0]["username"], "boss");
+    assert_eq!(body["admins"][0]["has_password"], true);
 
     let member_row = body["items"]
         .as_array()
@@ -110,8 +113,11 @@ async fn the_user_list_strips_secrets_and_counts_links() {
 #[tokio::test]
 async fn users_sort_by_their_own_fields_only() {
     let (app, db) = test_app().await;
-    let boss = admin(&app, &db, "zzz-boss").await;
+    let boss = admin(&app, &db, "the-boss").await;
+    // Two ordinary accounts: the sort applies to the bucket, and the admin is
+    // not in it.
     account(&app, "aaa-member").await;
+    account(&app, "zzz-member").await;
 
     let ascending = app
         .clone()
@@ -129,7 +135,7 @@ async fn users_sort_by_their_own_fields_only() {
         .unwrap();
     assert_eq!(
         body_json(descending).await["items"][0]["username"],
-        "zzz-boss"
+        "zzz-member"
     );
 
     // A URL field must not be accepted just because URLs can sort by it.
@@ -140,12 +146,143 @@ async fn users_sort_by_their_own_fields_only() {
         .unwrap();
     assert_eq!(wrong_collection.status(), StatusCode::BAD_REQUEST);
 
-    // `url_count` only exists after the join, so it is not sortable either.
-    let after_join = app
-        .oneshot(authed_get("/api/admin/users?sort=url_count,-1", &boss))
+    // Derived from the chain rather than stored, so there is no field to sort
+    // on — the tree is ordered by its own shape.
+    let derived = app
+        .oneshot(authed_get("/api/admin/users?sort=admin_level,-1", &boss))
         .await
         .unwrap();
-    assert_eq!(after_join.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(derived.status(), StatusCode::BAD_REQUEST);
+
+    db.drop().await.unwrap();
+}
+
+/// Ordering by the link count is the one sort that cannot be applied before
+/// the join, so it takes a different pipeline. It has to produce the same rows
+/// as the ordinary shape, just in a different order.
+#[tokio::test]
+async fn users_can_be_ordered_by_how_many_links_they_own() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "count-boss").await;
+    let busy = account(&app, "busy").await;
+    let quiet = account(&app, "quiet").await;
+    account(&app, "idle").await;
+
+    for code in ["one", "two", "three"] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &busy,
+                json!({"code": code, "url": "https://example.com"}),
+            ))
+            .await
+            .unwrap();
+    }
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &quiet,
+            json!({"code": "solo", "url": "https://example.com"}),
+        ))
+        .await
+        .unwrap();
+
+    let by_count = |dir: &'static str| {
+        let (app, boss) = (app.clone(), boss.clone());
+        async move {
+            let response = app
+                .oneshot(authed_get(
+                    &format!("/api/admin/users?sort=url_count,{dir}"),
+                    &boss,
+                ))
+                .await
+                .unwrap();
+            assert_eq!(response.status(), StatusCode::OK);
+            let body = body_json(response).await;
+            body["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| {
+                    (
+                        row["username"].as_str().unwrap().to_string(),
+                        row["url_count"].as_u64().unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>()
+        }
+    };
+
+    assert_eq!(
+        by_count("-1").await,
+        [
+            ("busy".to_string(), 3),
+            ("quiet".to_string(), 1),
+            ("idle".to_string(), 0)
+        ]
+    );
+    // Ascending is the same three rows, reversed — the join happening before
+    // the paging must not drop or duplicate anyone.
+    let ascending = by_count("1").await;
+    assert_eq!(ascending.first().unwrap().0, "idle");
+    assert_eq!(ascending.len(), 3);
+
+    // And paging still works on top of the joined order.
+    let paged = app
+        .oneshot(authed_get(
+            "/api/admin/users?sort=url_count,-1&limit=1&skip=1",
+            &boss,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(paged).await;
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["username"], "quiet");
+    assert_eq!(body["total"], 3, "the total ignores the page");
+
+    db.drop().await.unwrap();
+}
+
+/// The tree's shape is fixed, but the order siblings appear in is the client's
+/// to choose — and a search must never remove an admin, or the accounts below
+/// them lose their parent.
+#[tokio::test]
+async fn the_admin_tree_honours_the_sort_but_not_the_search() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "m-root").await;
+    promote(&app, &root, "z-second").await;
+    promote(&app, &root, "a-third").await;
+
+    let names = |query: &'static str| {
+        let (app, root) = (app.clone(), root.clone());
+        async move {
+            let response = app
+                .oneshot(authed_get(&format!("/api/admin/users?{query}"), &root))
+                .await
+                .unwrap();
+            body_json(response).await["admins"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|row| row["username"].as_str().unwrap().to_string())
+                .collect::<Vec<_>>()
+        }
+    };
+
+    assert_eq!(
+        names("sort=username,1").await,
+        ["a-third", "m-root", "z-second"]
+    );
+    assert_eq!(
+        names("sort=username,-1").await,
+        ["z-second", "m-root", "a-third"]
+    );
+
+    // A search that matches one admin still returns all three: the client
+    // highlights the match, it does not prune the tree.
+    assert_eq!(names("q=z-second&sort=username,1").await.len(), 3);
 
     db.drop().await.unwrap();
 }
@@ -195,6 +332,413 @@ async fn searching_users_narrows_the_page_and_the_total() {
         .await
         .unwrap();
     assert_eq!(body_json(literal).await["total"], 0);
+
+    db.drop().await.unwrap();
+}
+
+/// Looks up the account id the list reports for `username`, wherever it sits —
+/// admins come back in `admins`, everyone else in the paged `items`.
+async fn id_of(app: &axum::Router, cookie: &str, username: &str) -> String {
+    row_of(app, cookie, username).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string()
+}
+
+/// Fetches one row of the list by username, from either bucket.
+async fn row_of(app: &axum::Router, cookie: &str, username: &str) -> serde_json::Value {
+    let listed = app
+        .clone()
+        .oneshot(authed_get("/api/admin/users?limit=100", cookie))
+        .await
+        .unwrap();
+    let body = body_json(listed).await;
+    body["admins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .chain(body["items"].as_array().unwrap())
+        .find(|row| row["username"] == username)
+        .unwrap_or_else(|| panic!("{username} is listed"))
+        .clone()
+}
+
+/// Sends a change to someone's admin standing, as `actor`.
+async fn set_admin(
+    app: &axum::Router,
+    actor: &str,
+    target_id: &str,
+    body: serde_json::Value,
+) -> axum::http::Response<axum::body::Body> {
+    app.clone()
+        .oneshot(authed_request(
+            "PUT",
+            &format!("/api/admin/users/{target_id}"),
+            actor,
+            body,
+        ))
+        .await
+        .unwrap()
+}
+
+/// Registers `username`, promotes them with `promoter`'s session, and returns
+/// the new admin's own cookie.
+async fn promote(app: &axum::Router, promoter: &str, username: &str) -> String {
+    let cookie = account(app, username).await;
+    let id = id_of(app, promoter, username).await;
+    let response = set_admin(app, promoter, &id, json!({"is_admin": true})).await;
+    assert_eq!(response.status(), StatusCode::OK, "promoting {username}");
+    cookie
+}
+
+#[tokio::test]
+async fn an_admin_may_promote_others_but_never_themselves() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "boss2").await;
+    let plain = account(&app, "promotable").await;
+
+    let target = id_of(&app, &boss, "promotable").await;
+    let own = id_of(&app, &boss, "boss2").await;
+
+    let promoted = set_admin(&app, &boss, &target, json!({"is_admin": true})).await;
+    assert_eq!(promoted.status(), StatusCode::OK);
+    assert_eq!(body_json(promoted).await["is_admin"], true);
+
+    // The promotion is real, not just echoed back.
+    let now_admin = app
+        .clone()
+        .oneshot(authed_get("/api/admin/users", &plain))
+        .await
+        .unwrap();
+    assert_eq!(now_admin.status(), StatusCode::OK);
+
+    // Demoting yourself is how a root locks everyone out of the admin pages.
+    let self_demote = set_admin(&app, &boss, &own, json!({"is_admin": false})).await;
+    assert_eq!(self_demote.status(), StatusCode::BAD_REQUEST);
+
+    // And the refusal must have changed nothing.
+    let still_admin = app
+        .clone()
+        .oneshot(authed_get("/api/auth/me", &boss))
+        .await
+        .unwrap();
+    assert_eq!(body_json(still_admin).await["is_admin"], true);
+
+    let missing = set_admin(&app, &boss, "no-such-id", json!({"is_admin": true})).await;
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    db.drop().await.unwrap();
+}
+
+/// The chain: an admin seeded in the database is depth 0, and every grant hangs
+/// one below whoever made it. Depth is derived from the parent pointer, not
+/// stored, so there is nothing to keep in sync.
+#[tokio::test]
+async fn a_promotee_hangs_one_below_whoever_promoted_them() {
+    let (app, db) = test_app().await;
+    let one = admin(&app, &db, "chain-one").await;
+    let two = promote(&app, &one, "chain-two").await;
+    promote(&app, &two, "chain-three").await;
+
+    let seeded = row_of(&app, &one, "chain-one").await;
+    assert_eq!(seeded["admin_level"], 0, "a seeded admin is the root");
+    assert!(
+        seeded["promoted_by"].is_null(),
+        "nobody promoted the first admin"
+    );
+
+    let second = row_of(&app, &one, "chain-two").await;
+    assert_eq!(second["admin_level"], 1);
+    assert_eq!(second["promoted_by"], id_of(&app, &one, "chain-one").await);
+
+    let third = row_of(&app, &one, "chain-three").await;
+    assert_eq!(third["admin_level"], 2);
+    assert_eq!(third["promoted_by"], id_of(&app, &one, "chain-two").await);
+
+    // An account outside the tree has neither depth nor a parent.
+    account(&app, "nobody").await;
+    let plain = row_of(&app, &one, "nobody").await;
+    assert!(plain["admin_level"].is_null());
+    assert!(plain["promoted_by"].is_null());
+
+    db.drop().await.unwrap();
+}
+
+/// Admins are returned whole; everyone else is paged and searched. The split
+/// is what lets the client draw a tree that a search cannot cut branches off.
+#[tokio::test]
+async fn admins_come_back_whole_and_everyone_else_is_paged() {
+    let (app, db) = test_app().await;
+    let one = admin(&app, &db, "split-one").await;
+    promote(&app, &one, "split-two").await;
+    account(&app, "plain-a").await;
+    account(&app, "plain-b").await;
+
+    let listed = app
+        .clone()
+        .oneshot(authed_get(
+            "/api/admin/users?q=plain-a&sort=username,1",
+            &one,
+        ))
+        .await
+        .unwrap();
+    let body = body_json(listed).await;
+
+    // The search narrowed the bucket...
+    assert_eq!(body["items"].as_array().unwrap().len(), 1);
+    assert_eq!(body["items"][0]["username"], "plain-a");
+    assert_eq!(body["total"], 1, "the total counts ordinary accounts only");
+
+    // ...but left the tree intact, or "split-two" would have had no parent to
+    // hang from.
+    let admins: Vec<&str> = body["admins"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|row| row["username"].as_str().unwrap())
+        .collect();
+    assert_eq!(admins, ["split-one", "split-two"]);
+
+    // And nobody is in both buckets.
+    assert!(
+        !body["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|row| row["is_admin"] == true)
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// The subtree rule: an admin owns what grew below them, and nothing else.
+#[tokio::test]
+async fn an_admin_may_act_only_inside_their_own_subtree() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "tree-root").await;
+    // Two branches off the same root.
+    let left = promote(&app, &root, "tree-left").await;
+    let right = promote(&app, &root, "tree-right").await;
+    promote(&app, &left, "tree-left-child").await;
+    let right_child = promote(&app, &right, "tree-right-child").await;
+
+    let id = |name: &'static str| {
+        let (app, root) = (app.clone(), root.clone());
+        async move { id_of(&app, &root, name).await }
+    };
+    let (id_root, id_left, id_right) = (
+        id("tree-root").await,
+        id("tree-left").await,
+        id("tree-right").await,
+    );
+    let id_right_child = id("tree-right-child").await;
+
+    let demote = json!({"is_admin": false});
+
+    // Sideways is refused even at the same depth: the right branch is not the
+    // left branch's to touch, however equal their levels look.
+    assert_eq!(
+        set_admin(&app, &left, &id_right, demote.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        set_admin(&app, &left, &id_right_child, demote.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN,
+        "nor anyone the other branch promoted"
+    );
+    // Upward is refused.
+    assert_eq!(
+        set_admin(&app, &right_child, &id_root, demote.clone())
+            .await
+            .status(),
+        StatusCode::FORBIDDEN
+    );
+    // Nothing changed.
+    assert_eq!(row_of(&app, &root, "tree-right").await["admin_level"], 1);
+    assert_eq!(row_of(&app, &root, "tree-root").await["admin_level"], 0);
+
+    // Downward works, at any distance: the root reaches the whole tree.
+    assert_eq!(
+        set_admin(&app, &root, &id_left, demote).await.status(),
+        StatusCode::OK
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// Demoting cascades: the flag was only ever held on the strength of the
+/// vouching above it.
+#[tokio::test]
+async fn demoting_an_admin_demotes_everyone_below_them() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "casc-root").await;
+    let mid = promote(&app, &root, "casc-mid").await;
+    let leaf = promote(&app, &mid, "casc-leaf").await;
+    promote(&app, &leaf, "casc-deep").await;
+    // A sibling branch, to prove the cascade is bounded by the subtree.
+    promote(&app, &root, "casc-other").await;
+
+    let id_mid = id_of(&app, &root, "casc-mid").await;
+    let response = set_admin(&app, &root, &id_mid, json!({"is_admin": false})).await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["demoted"], 3, "the target and the two below them");
+
+    for name in ["casc-mid", "casc-leaf", "casc-deep"] {
+        let row = row_of(&app, &root, name).await;
+        assert_eq!(row["is_admin"], false, "{name} kept the flag");
+        assert!(row["promoted_by"].is_null(), "{name} kept its parent");
+        assert!(row["admin_level"].is_null());
+    }
+    // The other branch is untouched.
+    assert_eq!(row_of(&app, &root, "casc-other").await["is_admin"], true);
+
+    // And the whole demoted branch is out of the admin pages.
+    for cookie in [&mid, &leaf] {
+        let locked_out = app
+            .clone()
+            .oneshot(authed_get("/api/admin/users", cookie))
+            .await
+            .unwrap();
+        assert_eq!(locked_out.status(), StatusCode::FORBIDDEN);
+    }
+
+    db.drop().await.unwrap();
+}
+
+/// Moving a branch is the same write as promoting: set who vouches for them.
+#[tokio::test]
+async fn an_admin_can_be_moved_within_the_part_of_the_tree_you_control() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "move-root").await;
+    let left = promote(&app, &root, "move-left").await;
+    promote(&app, &root, "move-right").await;
+    promote(&app, &left, "move-child").await;
+
+    let id = |name: &'static str| {
+        let (app, root) = (app.clone(), root.clone());
+        async move { id_of(&app, &root, name).await }
+    };
+    let (id_left, id_right) = (id("move-left").await, id("move-right").await);
+    let id_child = id("move-child").await;
+
+    // The root moves the left branch under the right one.
+    let moved = set_admin(
+        &app,
+        &root,
+        &id_left,
+        json!({"is_admin": true, "promoted_by": id_right}),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    assert_eq!(body_json(moved).await["promoted_by"], id_right);
+
+    // The subtree came along, and everyone's depth followed from the pointer
+    // rather than needing a rewrite.
+    assert_eq!(row_of(&app, &root, "move-left").await["admin_level"], 2);
+    assert_eq!(row_of(&app, &root, "move-child").await["admin_level"], 3);
+
+    // A cycle is refused: the parent cannot be inside the branch being moved.
+    let cycle = set_admin(
+        &app,
+        &root,
+        &id_right,
+        json!({"is_admin": true, "promoted_by": id_child}),
+    )
+    .await;
+    assert_eq!(cycle.status(), StatusCode::BAD_REQUEST);
+    // Nor can an account vouch for itself.
+    let itself = set_admin(
+        &app,
+        &root,
+        &id_right,
+        json!({"is_admin": true, "promoted_by": id_right}),
+    )
+    .await;
+    assert_eq!(itself.status(), StatusCode::BAD_REQUEST);
+    // The refusals left the tree as it was.
+    assert_eq!(row_of(&app, &root, "move-right").await["admin_level"], 1);
+
+    db.drop().await.unwrap();
+}
+
+/// A move must not be a way to reach outside your own subtree, in either
+/// direction: not by grafting someone onto a branch you do not control, and not
+/// by placing them under an ordinary account.
+#[tokio::test]
+async fn a_move_cannot_reach_outside_the_callers_subtree() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "graft-root").await;
+    let left = promote(&app, &root, "graft-left").await;
+    promote(&app, &root, "graft-right").await;
+    promote(&app, &left, "graft-child").await;
+    account(&app, "graft-plain").await;
+
+    let id = |name: &'static str| {
+        let (app, root) = (app.clone(), root.clone());
+        async move { id_of(&app, &root, name).await }
+    };
+    let id_child = id("graft-child").await;
+    let id_right = id("graft-right").await;
+    let id_plain = id("graft-plain").await;
+
+    // `left` controls its own child, but `right` is not theirs to hang it on.
+    let sideways = set_admin(
+        &app,
+        &left,
+        &id_child,
+        json!({"is_admin": true, "promoted_by": id_right}),
+    )
+    .await;
+    assert_eq!(sideways.status(), StatusCode::FORBIDDEN);
+
+    // An ordinary account cannot hold up a branch.
+    let under_plain = set_admin(
+        &app,
+        &root,
+        &id_child,
+        json!({"is_admin": true, "promoted_by": id_plain}),
+    )
+    .await;
+    assert_eq!(under_plain.status(), StatusCode::BAD_REQUEST);
+
+    // Nor can a parent that does not exist.
+    let missing = set_admin(
+        &app,
+        &root,
+        &id_child,
+        json!({"is_admin": true, "promoted_by": "no-such-id"}),
+    )
+    .await;
+    assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
+
+    // None of it moved anything.
+    assert_eq!(row_of(&app, &root, "graft-child").await["admin_level"], 2);
+
+    db.drop().await.unwrap();
+}
+
+/// The flag is not something an account can set on itself by calling the
+/// endpoint it is not allowed to reach.
+#[tokio::test]
+async fn an_ordinary_account_cannot_promote_itself() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "boss3").await;
+    let plain = account(&app, "climber").await;
+    let own = id_of(&app, &boss, "climber").await;
+
+    let attempt = set_admin(&app, &plain, &own, json!({"is_admin": true})).await;
+    assert_eq!(attempt.status(), StatusCode::FORBIDDEN);
+
+    let unchanged = app
+        .oneshot(authed_get("/api/auth/me", &plain))
+        .await
+        .unwrap();
+    assert_eq!(body_json(unchanged).await["is_admin"], false);
 
     db.drop().await.unwrap();
 }

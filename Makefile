@@ -81,8 +81,14 @@ frontend/node_modules: frontend/package.json
 test: mongo-up mongo-clean
 	cargo test --workspace
 
+# `--ulimit nofile`: docker's default of 1024 is far below what mongod wants.
+# Each throwaway test database costs WiredTiger a handful of file handles, so a
+# parallel run against a few dozen of them exhausts the limit, and mongod
+# answers that with a fatal assertion rather than an error — the container dies
+# mid-run and every remaining test fails on "connection refused".
 mongo-up:
-	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo -p 27017:27017 mongo:7
+	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo \
+	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7
 
 # Every test builds a throwaway `nourl_test_<uuid>` database and cannot drop it
 # on the way out — Drop cannot await, and a panicking test would skip an
