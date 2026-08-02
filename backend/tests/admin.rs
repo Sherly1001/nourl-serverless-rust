@@ -1245,3 +1245,90 @@ async fn settings_are_closed_to_anonymous_and_ordinary_users() {
 
     db.drop().await.unwrap();
 }
+
+/// The nav has to know who the root is before any list has loaded, so the
+/// session itself carries it.
+#[tokio::test]
+async fn the_session_says_whether_you_are_the_root() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "flag-root").await;
+    let deputy = promote(&app, &root, "flag-deputy").await;
+    let plain = account(&app, "flag-plain").await;
+
+    let me = |cookie: &str| {
+        let (app, cookie) = (app.clone(), cookie.to_string());
+        async move {
+            body_json(
+                app.oneshot(authed_get("/api/auth/me", &cookie))
+                    .await
+                    .unwrap(),
+            )
+            .await
+        }
+    };
+
+    let root_me = me(&root).await;
+    assert_eq!(root_me["is_admin"], true);
+    assert_eq!(root_me["is_root"], true);
+
+    let deputy_me = me(&deputy).await;
+    assert_eq!(deputy_me["is_admin"], true);
+    assert_eq!(deputy_me["is_root"], false, "promoted, so not the root");
+
+    let plain_me = me(&plain).await;
+    assert_eq!(plain_me["is_admin"], false);
+    assert_eq!(plain_me["is_root"], false);
+
+    db.drop().await.unwrap();
+}
+
+/// A grant with no parent named leaves an existing admin where they are.
+///
+/// The alternative — defaulting to the caller — would make a stray toggle of an
+/// admin switch re-parent someone, and their whole branch, onto whoever clicked
+/// it. Restructuring the tree is worth asking for explicitly.
+#[tokio::test]
+async fn re_granting_an_existing_admin_does_not_move_them() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "idem-root").await;
+    let mid = promote(&app, &root, "idem-mid").await;
+    promote(&app, &mid, "idem-leaf").await;
+
+    let id_mid = id_of(&app, &root, "idem-mid").await;
+    let id_leaf = id_of(&app, &root, "idem-leaf").await;
+
+    // The root re-grants a deep admin without naming a parent. Under the old
+    // default this pulled them up to depth 1.
+    let again = set_admin(&app, &root, &id_leaf, json!({"is_admin": true})).await;
+    assert_eq!(again.status(), StatusCode::OK);
+    assert_eq!(body_json(again).await["promoted_by"], id_mid);
+
+    let unchanged = row_of(&app, &root, "idem-leaf").await;
+    assert_eq!(unchanged["admin_level"], 2, "still below the middle admin");
+    assert_eq!(unchanged["promoted_by"], id_mid);
+
+    // Naming the parent is how a move is asked for, and that still works.
+    let id_root = id_of(&app, &root, "idem-root").await;
+    let moved = set_admin(
+        &app,
+        &root,
+        &id_leaf,
+        json!({"is_admin": true, "promoted_by": id_root}),
+    )
+    .await;
+    assert_eq!(moved.status(), StatusCode::OK);
+    assert_eq!(row_of(&app, &root, "idem-leaf").await["admin_level"], 1);
+
+    // A fresh account still lands under whoever promoted it.
+    account(&app, "idem-new").await;
+    let id_new = id_of(&app, &root, "idem-new").await;
+    assert_eq!(
+        set_admin(&app, &mid, &id_new, json!({"is_admin": true}))
+            .await
+            .status(),
+        StatusCode::OK
+    );
+    assert_eq!(row_of(&app, &root, "idem-new").await["promoted_by"], id_mid);
+
+    db.drop().await.unwrap();
+}

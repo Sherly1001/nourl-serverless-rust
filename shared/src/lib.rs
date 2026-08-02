@@ -159,6 +159,12 @@ pub struct UserInfo {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub is_admin: bool,
+    /// True for the admin nobody promoted — the one seeded directly in the
+    /// database. Sent because the sign-in settings are theirs alone, and the
+    /// navigation has to know that before it can render, long before any list
+    /// of accounts has loaded.
+    #[serde(default)]
+    pub is_root: bool,
     /// False for accounts that only ever signed in through a provider. The UI
     /// uses it to render "set a password" instead of "change password", and
     /// the server uses the same fact to skip the current-password check.

@@ -115,12 +115,19 @@ async fn target_user(state: &AppState, actor: &User, id: &str) -> Result<User, A
     Ok(target)
 }
 
-/// Where `target` will hang, and whether the actor is allowed to hang them
-/// there.
+/// Which admin `target` will hang under, and whether the actor is allowed to
+/// put them there. Returns the parent's id.
 ///
-/// Defaults to the caller, which is the ordinary promotion. Naming someone else
-/// is a move, and moves are the operation that can break the tree, so each way
-/// of breaking it is refused separately:
+/// An omitted parent means *leave them where they are*: for someone who is
+/// already an admin that is their current parent, and for everyone else it is
+/// the caller, which is the ordinary promotion. Defaulting to the caller in
+/// both cases would make a bare `{"is_admin": true}` quietly re-parent an
+/// existing admin — and their whole branch — onto whoever sent it, so a stray
+/// toggle of an admin switch would restructure the tree. Moving is worth
+/// asking for explicitly.
+///
+/// Naming a parent is that explicit move, and moves are the operation that can
+/// break the tree, so each way of breaking it is refused separately:
 ///
 /// - under an ordinary account, which would leave an admin outside the chain;
 /// - under themselves, or under one of their own descendants, which would cut
@@ -132,12 +139,15 @@ async fn parent_for(
     actor: &User,
     target: &User,
     requested: Option<&str>,
-) -> Result<User, AppError> {
+) -> Result<String, AppError> {
     let Some(parent_id) = requested else {
-        return Ok(actor.clone());
+        return Ok(target
+            .promoted_by
+            .clone()
+            .unwrap_or_else(|| actor.id.clone()));
     };
     if parent_id == actor.id {
-        return Ok(actor.clone());
+        return Ok(actor.id.clone());
     }
     if parent_id == target.id {
         return Err(AppError::validation(
@@ -169,7 +179,7 @@ async fn parent_for(
             "that would put them under one of their own admins",
         ));
     }
-    Ok(parent)
+    Ok(parent.id)
 }
 
 /// Grants, moves, or revokes — all three are one write to the parent pointer,
@@ -195,11 +205,11 @@ pub async fn set_user_admin(
         }));
     }
     let parent = parent_for(&state, &actor, &target, body.promoted_by.as_deref()).await?;
-    users::grant_admin(&state.db, &target.id, &parent.id).await?;
+    users::grant_admin(&state.db, &target.id, &parent).await?;
     Ok(Json(SetAdminResponse {
         id: target.id,
         is_admin: true,
-        promoted_by: Some(parent.id),
+        promoted_by: Some(parent),
         demoted: 0,
     }))
 }

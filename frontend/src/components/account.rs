@@ -122,6 +122,7 @@ mod tests {
             email: None,
             avatar_url: avatar.map(String::from),
             is_admin: false,
+            is_root: false,
             has_password: true,
         }
     }

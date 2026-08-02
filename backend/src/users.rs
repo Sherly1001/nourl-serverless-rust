@@ -53,6 +53,7 @@ impl User {
             email: self.email.clone(),
             avatar_url: self.avatar_url.clone(),
             is_admin: self.is_admin,
+            is_root: self.is_admin && self.promoted_by.is_none(),
             has_password: self.hash_passwd.is_some(),
         }
     }

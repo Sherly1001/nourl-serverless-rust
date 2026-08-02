@@ -2,8 +2,9 @@ use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::{
-    ApiError, ApiErrorBody, AuthMethods, LoginRequest, RegisterRequest, UrlEntry, UrlListResponse,
-    UrlUpsertRequest, UserInfo,
+    AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods, DeleteUserResponse,
+    LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
+    UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
 };
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
@@ -47,6 +48,13 @@ async fn send_json<B: Serialize, T: DeserializeOwned>(
 
 async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, ApiErrorBody> {
     let resp = Request::get(path).send().await.map_err(net_err)?;
+    read(resp).await
+}
+
+/// A request with no body of its own whose response *is* worth reading — a
+/// `DELETE` that reports what it did, for instance.
+async fn read_json<T: DeserializeOwned>(request: RequestBuilder) -> Result<T, ApiErrorBody> {
+    let resp = request.send().await.map_err(net_err)?;
     read(resp).await
 }
 
@@ -109,4 +117,46 @@ pub async fn me() -> Result<UserInfo, ApiErrorBody> {
 
 pub async fn auth_methods() -> Result<AuthMethods, ApiErrorBody> {
     get_json("/api/auth/methods").await
+}
+
+/// `query` is the already-encoded query string, without the leading `?`. It
+/// pages and searches the ordinary accounts only — the admins come back whole
+/// in the same response, because the tree cannot be paged without losing
+/// interior nodes.
+pub async fn admin_users(query: &str) -> Result<AdminUserListResponse, ApiErrorBody> {
+    get_json(&format!("/api/admin/users?{query}")).await
+}
+
+/// Promotes, demotes, or moves — the server treats all three as one write to
+/// the parent pointer. `parent` names who they hang under; `None` means the
+/// caller, which is the ordinary promotion.
+pub async fn set_user_admin(
+    id: &str,
+    is_admin: bool,
+    parent: Option<String>,
+) -> Result<SetAdminResponse, ApiErrorBody> {
+    send_json(
+        Request::put(&format!("/api/admin/users/{id}")),
+        &SetAdminRequest {
+            is_admin,
+            promoted_by: parent,
+        },
+    )
+    .await
+}
+
+/// The response says how many links were orphaned and how long they have left,
+/// which is what the confirmation reports back.
+pub async fn delete_user(id: &str) -> Result<DeleteUserResponse, ApiErrorBody> {
+    read_json(Request::delete(&format!("/api/admin/users/{id}"))).await
+}
+
+pub async fn admin_settings() -> Result<AdminSettings, ApiErrorBody> {
+    get_json("/api/admin/settings").await
+}
+
+pub async fn save_admin_settings(
+    body: &UpdateSettingsRequest,
+) -> Result<AdminSettings, ApiErrorBody> {
+    send_json(Request::put("/api/admin/settings"), body).await
 }

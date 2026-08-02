@@ -4,8 +4,10 @@ use crate::auth::provide_auth;
 use crate::components::account::AccountMenu;
 use crate::components::login::Login;
 use crate::components::my_urls::MyUrls;
+use crate::components::settings::Settings;
 use crate::components::shorten::Shorten;
 use crate::components::toasts::ToastStack;
+use crate::components::users::Users;
 use crate::router::{Route, use_hash_route};
 use crate::theme::ThemePicker;
 use crate::toast::provide_toasts;
@@ -31,6 +33,20 @@ pub fn App() -> impl IntoView {
                         "My URLs"
                     </a>
                 </Show>
+                <Show when=move || auth.is_admin()>
+                    <a href="#/users" class="gap-2 btn btn-text">
+                        <span class="icon-[tabler--users] size-5"></span>
+                        "Users"
+                    </a>
+                </Show>
+                // The sign-in settings belong to the root alone, so an ordinary
+                // admin must not be offered a link that only ends in a 403.
+                <Show when=move || auth.is_root()>
+                    <a href="#/settings" class="gap-2 btn btn-text">
+                        <span class="icon-[tabler--settings] size-5"></span>
+                        "Settings"
+                    </a>
+                </Show>
                 <ThemePicker />
                 <AccountMenu />
             </div>
@@ -40,7 +56,7 @@ pub fn App() -> impl IntoView {
         // follows the route rather than being one compromise for both.
         <main class=move || {
             let width = match route.get() {
-                Route::MyUrls => "max-w-6xl",
+                Route::MyUrls | Route::Users => "max-w-6xl",
                 _ => "max-w-2xl",
             };
             format!("container py-10 px-4 mx-auto {width}")
@@ -49,6 +65,8 @@ pub fn App() -> impl IntoView {
                 Route::Shorten => view! { <Shorten /> }.into_any(),
                 Route::Login => view! { <Login /> }.into_any(),
                 Route::MyUrls => view! { <MyUrls /> }.into_any(),
+                Route::Users => view! { <Users /> }.into_any(),
+                Route::Settings => view! { <Settings /> }.into_any(),
                 Route::NotFound => view! { <NotFound /> }.into_any(),
             }}
         </main>

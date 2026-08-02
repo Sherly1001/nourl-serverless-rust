@@ -6,6 +6,8 @@ pub enum Route {
     Shorten,
     Login,
     MyUrls,
+    Users,
+    Settings,
     NotFound,
 }
 
@@ -20,6 +22,8 @@ pub fn parse_route(hash: &str) -> Route {
         "" => Route::Shorten,
         "login" => Route::Login,
         "urls" => Route::MyUrls,
+        "users" => Route::Users,
+        "settings" => Route::Settings,
         _ => Route::NotFound,
     }
 }
@@ -45,6 +49,12 @@ mod tests {
         assert_eq!(parse_route("#/"), Route::Shorten);
         assert_eq!(parse_route("#"), Route::Shorten);
         assert_eq!(parse_route("#/whatever"), Route::NotFound);
+    }
+
+    #[test]
+    fn parses_the_admin_routes() {
+        assert_eq!(parse_route("#/users"), Route::Users);
+        assert_eq!(parse_route("#/settings"), Route::Settings);
     }
 
     #[test]

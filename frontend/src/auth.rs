@@ -20,6 +20,13 @@ impl AuthContext {
         self.user.get().is_some_and(|u| u.is_admin)
     }
 
+    /// The sign-in settings are the root's alone, so the nav entry that leads
+    /// there has to ask separately — an ordinary admin following it would only
+    /// get a 403.
+    pub fn is_root(&self) -> bool {
+        self.user.get().is_some_and(|u| u.is_root)
+    }
+
     /// Re-reads `/api/auth/me`. Called once at startup and after login/logout.
     /// An error is indistinguishable from logged out on purpose: a 401 is the
     /// normal answer for an anonymous visitor.
