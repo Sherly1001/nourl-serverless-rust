@@ -288,6 +288,10 @@ pub struct SetAdminRequest {
     /// Ignored when `is_admin` is false, since a demotion has no parent.
     #[serde(default)]
     pub promoted_by: Option<String>,
+    /// What happens to the admins this account promoted. Only read on a
+    /// demotion — a promotion or a move leaves the branch where it is.
+    #[serde(default)]
+    pub orphans: AdminOrphans,
 }
 
 /// What becomes of the links an account leaves behind.
@@ -317,6 +321,29 @@ pub struct DeleteAccountRequest {
     pub current_password: Option<String>,
 }
 
+/// What happens to the admins an about-to-be-deleted account had promoted.
+/// They cannot simply be left behind: `promoted_by` would point at an account
+/// that no longer exists, and nothing walking the chain upward could reach them
+/// again.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum AdminOrphans {
+    /// They lose the flag, and so does everyone below them. The safe default:
+    /// it never hands anybody a standing they were not given directly.
+    #[default]
+    Demote,
+    /// They keep it, hanging from whoever promoted the deleted account — or
+    /// standing as roots of their own if nobody was above it.
+    Reparent,
+}
+
+/// Query for `DELETE /api/admin/users/{id}`.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct DeleteUserParams {
+    #[serde(default)]
+    pub orphans: AdminOrphans,
+}
+
 /// What a `DELETE /api/admin/users/{id}` did. `orphaned` and `grace_days` are
 /// reported so the UI can say what happened to the links rather than leaving
 /// the admin to guess.
@@ -337,6 +364,10 @@ pub struct DeleteUserResponse {
     /// Admins below the deleted account who lost the flag with them.
     #[serde(default)]
     pub demoted: u64,
+    /// Admins the deleted account had promoted who kept the flag and moved up
+    /// to its own parent instead. Never non-zero together with `demoted`.
+    #[serde(default)]
+    pub reparented: u64,
 }
 
 /// What changed after a call to `PUT /api/admin/users/{id}`.
@@ -352,6 +383,10 @@ pub struct SetAdminResponse {
     /// promoted. Zero on a promotion or a move.
     #[serde(default)]
     pub demoted: u64,
+    /// Admins the demoted account had promoted who kept the flag and moved up
+    /// to its own parent instead of losing it.
+    #[serde(default)]
+    pub reparented: u64,
 }
 
 /// One login method as the settings page sees it. The secret itself never

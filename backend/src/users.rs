@@ -226,6 +226,29 @@ pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
     Ok(result.modified_count)
 }
 
+/// Hands the admins `id` promoted to whoever promoted `id`, or makes them roots
+/// of their own when nobody was above it. Returns how many moved.
+///
+/// The alternative to [`revoke_admin`] when an admin account is deleted: the
+/// branch keeps its standing rather than losing it, one level shallower.
+pub async fn reparent_children(
+    db: &Database,
+    id: &str,
+    parent: Option<&str>,
+) -> Result<u64, AppError> {
+    let update = match parent {
+        Some(parent) => doc! {"$set": {"promoted_by": parent}},
+        // A root's children become roots: nobody is above them, so nobody but
+        // the database can touch them — the same standing the deleted account
+        // itself had.
+        None => doc! {"$unset": {"promoted_by": ""}},
+    };
+    Ok(collection(db)
+        .update_many(doc! {"promoted_by": id}, update)
+        .await?
+        .modified_count)
+}
+
 /// What deleting an account did to the links it owned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LinkOutcome {

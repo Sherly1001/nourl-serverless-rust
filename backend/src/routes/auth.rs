@@ -221,6 +221,7 @@ pub async fn delete_me(
             links_deleted: links.deleted,
             grace_days: state.config.orphan_grace_days,
             demoted: 0,
+            reparented: 0,
         }),
     )
         .into_response())

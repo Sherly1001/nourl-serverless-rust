@@ -1,8 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use shared::{
-    AdminSettings, AdminUserListResponse, DeleteUserResponse, LinkDisposition, SetAdminRequest,
-    SetAdminResponse, UpdateSettingsRequest,
+    AdminOrphans, AdminSettings, AdminUserListResponse, DeleteUserParams, DeleteUserResponse,
+    LinkDisposition, SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
 };
 
 use crate::app::AppState;
@@ -64,19 +64,45 @@ fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
 /// resigning would demote every admin on the system at once and leave the admin
 /// pages unreachable — recoverable only by editing the collection, which is
 /// where the root came from in the first place.
-async fn resign(state: &AppState, actor: &User) -> Result<Json<SetAdminResponse>, AppError> {
+async fn resign(
+    state: &AppState,
+    actor: &User,
+    orphans: AdminOrphans,
+) -> Result<Json<SetAdminResponse>, AppError> {
     if is_root(actor) {
         return Err(AppError::validation(
             "you are the top admin so cannot give up the flag — it can only be removed directly in the database",
         ));
     }
-    let demoted = users::revoke_admin(&state.db, &actor.id).await?;
+    let (demoted, reparented) = demote(state, actor, orphans).await?;
     Ok(Json(SetAdminResponse {
         id: actor.id.clone(),
         is_admin: false,
         promoted_by: None,
         demoted,
+        reparented,
     }))
+}
+
+/// Takes the flag off `target`, and does with the branch below them whatever
+/// `orphans` says. Returns how many lost the flag and how many kept it by
+/// moving up.
+///
+/// Re-parenting runs first: once the children hang from the target's own
+/// parent, revoking finds nothing below and takes only the target itself.
+async fn demote(
+    state: &AppState,
+    target: &User,
+    orphans: AdminOrphans,
+) -> Result<(u64, u64), AppError> {
+    let reparented = match orphans {
+        AdminOrphans::Demote => 0,
+        AdminOrphans::Reparent => {
+            users::reparent_children(&state.db, &target.id, target.promoted_by.as_deref()).await?
+        }
+    };
+    let demoted = users::revoke_admin(&state.db, &target.id).await?;
+    Ok((demoted, reparented))
 }
 
 /// Whether `actor` may act on `target`.
@@ -192,16 +218,17 @@ pub async fn set_user_admin(
 ) -> Result<Json<SetAdminResponse>, AppError> {
     // Resigning is the one thing you may do to your own standing.
     if actor.id == id && !body.is_admin {
-        return resign(&state, &actor).await;
+        return resign(&state, &actor, body.orphans).await;
     }
     let target = target_user(&state, &actor, &id).await?;
     if !body.is_admin {
-        let demoted = users::revoke_admin(&state.db, &target.id).await?;
+        let (demoted, reparented) = demote(&state, &target, body.orphans).await?;
         return Ok(Json(SetAdminResponse {
             id: target.id,
             is_admin: false,
             promoted_by: None,
             demoted,
+            reparented,
         }));
     }
     let parent = parent_for(&state, &actor, &target, body.promoted_by.as_deref()).await?;
@@ -211,6 +238,7 @@ pub async fn set_user_admin(
         is_admin: true,
         promoted_by: Some(parent),
         demoted: 0,
+        reparented: 0,
     }))
 }
 
@@ -229,13 +257,23 @@ pub async fn delete_user(
     State(state): State<AppState>,
     AdminUser(actor): AdminUser,
     Path(id): Path<String>,
+    Query(params): Query<DeleteUserParams>,
 ) -> Result<Json<DeleteUserResponse>, AppError> {
     let target = target_user(&state, &actor, &id).await?;
-    // Counts the target as well, but the target is being deleted rather than
-    // demoted, so only the branch below them is worth reporting.
-    let demoted = users::revoke_admin(&state.db, &target.id)
-        .await?
-        .saturating_sub(1);
+    let (demoted, reparented) = match params.orphans {
+        // Counts the target as well, but the target is being deleted rather
+        // than demoted, so only the branch below them is worth reporting.
+        AdminOrphans::Demote => (
+            users::revoke_admin(&state.db, &target.id)
+                .await?
+                .saturating_sub(1),
+            0,
+        ),
+        AdminOrphans::Reparent => (
+            0,
+            users::reparent_children(&state.db, &target.id, target.promoted_by.as_deref()).await?,
+        ),
+    };
     let links = users::delete_with_cascade(
         &state.db,
         &target.id,
@@ -250,6 +288,7 @@ pub async fn delete_user(
         links_deleted: links.deleted,
         grace_days: state.config.orphan_grace_days,
         demoted,
+        reparented,
     }))
 }
 

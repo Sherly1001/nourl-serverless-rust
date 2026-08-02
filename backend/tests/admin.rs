@@ -925,6 +925,76 @@ async fn deleting_an_admin_demotes_the_branch_below_them() {
     db.drop().await.unwrap();
 }
 
+/// Demoting has the same two answers as deleting: take the branch down, or
+/// hand it to the demoted admin's own parent.
+#[tokio::test]
+async fn demoting_an_admin_can_hand_their_branch_to_their_own_parent() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "rrep-root").await;
+    let mid = promote(&app, &root, "rrep-mid").await;
+    promote(&app, &mid, "rrep-leaf").await;
+
+    let id_mid = id_of(&app, &root, "rrep-mid").await;
+    let id_root = id_of(&app, &root, "rrep-root").await;
+    let response = set_admin(
+        &app,
+        &root,
+        &id_mid,
+        json!({"is_admin": false, "orphans": "reparent"}),
+    )
+    .await;
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["demoted"], 1, "only the admin who was asked about");
+    assert_eq!(body["reparented"], 1, "the admin directly below them");
+
+    let leaf = row_of(&app, &root, "rrep-leaf").await;
+    assert_eq!(leaf["is_admin"], true, "the flag was meant to survive");
+    assert_eq!(leaf["promoted_by"], id_root);
+    assert_eq!(leaf["admin_level"], 1);
+    assert_eq!(row_of(&app, &root, "rrep-mid").await["is_admin"], false);
+
+    db.drop().await.unwrap();
+}
+
+/// The other way to dispose of a deleted admin's branch: keep their standing
+/// and move them up one level, onto whoever promoted the account being removed.
+#[tokio::test]
+async fn deleting_an_admin_can_hand_their_branch_to_their_own_parent() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "drep-root").await;
+    let mid = promote(&app, &root, "drep-mid").await;
+    promote(&app, &mid, "drep-leaf").await;
+
+    let id_mid = id_of(&app, &root, "drep-mid").await;
+    let id_root = id_of(&app, &root, "drep-root").await;
+    let deleted = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            &format!("/api/admin/users/{id_mid}?orphans=reparent"),
+            &root,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let outcome = body_json(deleted).await;
+    assert_eq!(outcome["reparented"], 1, "the admin directly below");
+    assert_eq!(outcome["demoted"], 0, "nobody lost the flag");
+
+    let leaf = row_of(&app, &root, "drep-leaf").await;
+    assert_eq!(leaf["is_admin"], true, "the flag was meant to survive");
+    assert_eq!(
+        leaf["promoted_by"], id_root,
+        "they should hang from the deleted account's own parent"
+    );
+    // And one level shallower than they were, since a level disappeared.
+    assert_eq!(leaf["admin_level"], 1);
+
+    db.drop().await.unwrap();
+}
+
 /// An admin who no longer wants the responsibility should not have to ask
 /// permission — but a root has nobody above them to put it back.
 #[tokio::test]
