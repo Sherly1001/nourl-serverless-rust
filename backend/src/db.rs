@@ -66,7 +66,7 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
 /// Anything that is not a date passes through untouched — legacy documents may
 /// already hold a string, and `$dateToString` would abort the whole pipeline on
 /// one.
-fn as_iso_string(field: &str) -> Document {
+pub fn as_iso_string(field: &str) -> Document {
     let path = format!("${field}");
     doc! {"$cond": [
         {"$eq": [{"$type": &path}, "date"]},

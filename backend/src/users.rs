@@ -1,7 +1,10 @@
+use futures::TryStreamExt;
 use mongodb::Database;
 use mongodb::bson::{Document, doc};
 use serde::{Deserialize, Serialize};
-use shared::{UpdateProfileRequest, UserInfo};
+use shared::{AdminUserInfo, UpdateProfileRequest, UserInfo};
+
+use crate::query::UserListParams;
 
 use crate::error::AppError;
 
@@ -174,4 +177,60 @@ pub async fn bump_token_version(db: &Database, id: &str) -> Result<(), AppError>
         .update_one(doc! {"id": id}, doc! {"$inc": {"token_version": 1}})
         .await?;
     Ok(())
+}
+
+/// One page of accounts for the admin list.
+///
+/// An aggregate rather than a find, so the link count comes from the database
+/// instead of N+1 round trips, and so `hash_passwd` and the provider ids are
+/// dropped before the documents ever reach this process.
+///
+/// `$match` comes first so a search narrows the set before it is paged, and so
+/// the `$lookup` only joins the rows on the page.
+pub async fn list(db: &Database, params: &UserListParams) -> Result<Vec<AdminUserInfo>, AppError> {
+    let pipeline = vec![
+        doc! {"$match": params.filter()},
+        doc! {"$sort": params.sort.clone()},
+        doc! {"$skip": params.skip},
+        doc! {"$limit": params.limit},
+        doc! {"$lookup": {
+            "from": "urls",
+            "localField": "id",
+            "foreignField": "owner",
+            "as": "owned",
+        }},
+        doc! {"$set": {
+            "url_count": {"$size": "$owned"},
+            "has_password": {"$eq": [{"$type": "$hash_passwd"}, "string"]},
+            // A BSON date cannot deserialize into the DTO's Option<String>.
+            "created_at": crate::db::as_iso_string("created_at"),
+            // Says *that* a provider is linked without exposing the id.
+            // Spelled out per provider because `$getField` demands a constant
+            // field name — a computed one is rejected outright.
+            "providers": {"$concatArrays": [
+                {"$cond": [{"$eq": [{"$type": "$github_id"}, "string"]}, ["github"], []]},
+                {"$cond": [{"$eq": [{"$type": "$google_id"}, "string"]}, ["google"], []]},
+                {"$cond": [{"$eq": [{"$type": "$facebook_id"}, "string"]}, ["facebook"], []]},
+            ]},
+        }},
+        doc! {"$unset": [
+            "_id", "owned", "hash_passwd", "token_version",
+            "github_id", "google_id", "facebook_id",
+        ]},
+    ];
+    let rows: Vec<Document> = db
+        .collection::<Document>("users")
+        .aggregate(pipeline)
+        .await?
+        .try_collect()
+        .await?;
+    rows.into_iter()
+        .map(|doc| bson::from_document(doc).map_err(AppError::internal))
+        .collect()
+}
+
+/// Counts what the same filter matches, so a searched page can report totals
+/// rather than claiming the whole collection.
+pub async fn count(db: &Database, filter: Document) -> Result<u64, AppError> {
+    Ok(collection(db).count_documents(filter).await?)
 }
