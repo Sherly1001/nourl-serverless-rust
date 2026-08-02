@@ -7,7 +7,9 @@ use mongodb::Database;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::routes::admin::{delete_user, list_users, set_user_admin};
+use crate::routes::admin::{
+    delete_user, get_settings, list_users, set_user_admin, update_settings,
+};
 use crate::routes::auth::{
     change_password, delete_me, login, logout, me, methods, register, update_me,
 };
@@ -29,6 +31,10 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/auth/methods", get(methods))
         .route("/api/auth/password", put(change_password))
         .route("/api/admin/users", get(list_users))
+        .route(
+            "/api/admin/settings",
+            get(get_settings).put(update_settings),
+        )
         .route(
             "/api/admin/users/{id}",
             put(set_user_admin).delete(delete_user),

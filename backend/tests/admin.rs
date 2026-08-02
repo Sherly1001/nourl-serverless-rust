@@ -1003,3 +1003,245 @@ async fn an_admin_cannot_promote_or_move_themselves() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn settings_round_trip_without_ever_returning_a_secret() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "set-boss").await;
+
+    let initial = app
+        .clone()
+        .oneshot(authed_get("/api/admin/settings", &boss))
+        .await
+        .unwrap();
+    assert_eq!(initial.status(), StatusCode::OK);
+    let body = body_json(initial).await;
+    assert_eq!(
+        body["password"]["enabled"], true,
+        "password is on by default"
+    );
+    assert_eq!(body["github"]["enabled"], false);
+    assert_eq!(body["github"]["has_secret"], false);
+
+    let saved = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/admin/settings",
+            &boss,
+            json!({
+                "password": {"enabled": true},
+                "github": {"enabled": true, "client_id": "gh-id", "client_secret": "gh-secret"},
+                "google": {"enabled": false},
+                "facebook": {"enabled": false},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(saved.status(), StatusCode::OK);
+    let body = body_json(saved).await;
+    assert_eq!(body["github"]["client_id"], "gh-id");
+    assert_eq!(body["github"]["has_secret"], true);
+    assert!(
+        !body.to_string().contains("gh-secret"),
+        "the secret must never come back out"
+    );
+
+    // Saving again without the secret keeps the stored one: the page cannot
+    // send back a value it was never given.
+    let resaved = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/admin/settings",
+            &boss,
+            json!({
+                "password": {"enabled": true},
+                "github": {"enabled": true, "client_id": "gh-id-2"},
+                "google": {"enabled": false},
+                "facebook": {"enabled": false},
+            }),
+        ))
+        .await
+        .unwrap();
+    let body = body_json(resaved).await;
+    assert_eq!(body["github"]["client_id"], "gh-id-2");
+    assert_eq!(body["github"]["has_secret"], true, "secret survived");
+
+    // An explicit empty string is how a credential is retired.
+    let cleared = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/admin/settings",
+            &boss,
+            json!({
+                "password": {"enabled": true},
+                "github": {"enabled": true, "client_id": "gh-id-2", "client_secret": ""},
+                "google": {"enabled": false},
+                "facebook": {"enabled": false},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(body_json(cleared).await["github"]["has_secret"], false);
+
+    // The settings survive a reload rather than living in the handler.
+    let reloaded = app
+        .clone()
+        .oneshot(authed_get("/api/admin/settings", &boss))
+        .await
+        .unwrap();
+    assert_eq!(body_json(reloaded).await["github"]["client_id"], "gh-id-2");
+
+    db.drop().await.unwrap();
+}
+
+/// The public login page reads the same document, but only ever learns which
+/// methods to offer.
+#[tokio::test]
+async fn saved_settings_drive_the_public_methods_endpoint() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "meth-boss").await;
+
+    let configure = |secret: &'static str| {
+        let (app, boss) = (app.clone(), boss.clone());
+        async move {
+            app.oneshot(authed_request(
+                "PUT",
+                "/api/admin/settings",
+                &boss,
+                json!({
+                    "password": {"enabled": false},
+                    "github": {"enabled": true, "client_id": "gh-id", "client_secret": secret},
+                    "google": {"enabled": false},
+                    "facebook": {"enabled": false},
+                }),
+            ))
+            .await
+            .unwrap()
+        }
+    };
+
+    assert_eq!(configure("gh-secret").await.status(), StatusCode::OK);
+    let methods = app
+        .clone()
+        .oneshot(request("GET", "/api/auth/methods"))
+        .await
+        .unwrap();
+    let body = body_json(methods).await;
+    assert_eq!(body["github"], true);
+    assert_eq!(body["password"], false);
+    assert!(
+        !body.to_string().contains("gh-id"),
+        "the public endpoint says which methods, not how they are configured"
+    );
+
+    // Enabled but with the credential retired: not offered, because sending
+    // someone into that redirect would only break.
+    assert_eq!(configure("").await.status(), StatusCode::OK);
+    let methods = app
+        .oneshot(request("GET", "/api/auth/methods"))
+        .await
+        .unwrap();
+    assert_eq!(body_json(methods).await["github"], false);
+
+    db.drop().await.unwrap();
+}
+
+/// The sign-in settings are the root's alone. They decide how *everyone*
+/// authenticates — including whether password login exists at all — so they are
+/// deployment configuration rather than day-to-day administration.
+#[tokio::test]
+async fn only_the_root_admin_can_see_or_change_the_settings() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "cfg-root").await;
+    let promoted = promote(&app, &root, "cfg-deputy").await;
+
+    // The deputy runs the user list perfectly well...
+    let users = app
+        .clone()
+        .oneshot(authed_get("/api/admin/users", &promoted))
+        .await
+        .unwrap();
+    assert_eq!(users.status(), StatusCode::OK);
+
+    // ...but the settings are not theirs.
+    let reading = app
+        .clone()
+        .oneshot(authed_get("/api/admin/settings", &promoted))
+        .await
+        .unwrap();
+    assert_eq!(reading.status(), StatusCode::FORBIDDEN);
+    assert_eq!(body_json(reading).await["error"]["code"], "forbidden");
+
+    let writing = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/admin/settings",
+            &promoted,
+            json!({
+                "password": {"enabled": false},
+                "github": {"enabled": false},
+                "google": {"enabled": false},
+                "facebook": {"enabled": false},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(writing.status(), StatusCode::FORBIDDEN);
+
+    // And the refusal was not a silent no-op: password login is still on.
+    let unchanged = app
+        .oneshot(authed_get("/api/admin/settings", &root))
+        .await
+        .unwrap();
+    assert_eq!(body_json(unchanged).await["password"]["enabled"], true);
+
+    db.drop().await.unwrap();
+}
+
+/// Settings are at least as closed as the user list.
+#[tokio::test]
+async fn settings_are_closed_to_anonymous_and_ordinary_users() {
+    let (app, db) = test_app().await;
+    let plain = account(&app, "settings-nobody").await;
+
+    for (method, cookie) in [("GET", None), ("PUT", None)] {
+        let response = app
+            .clone()
+            .oneshot(match cookie {
+                Some(c) => authed_request(method, "/api/admin/settings", c, json!({})),
+                None => request(method, "/api/admin/settings"),
+            })
+            .await
+            .unwrap();
+        assert_eq!(response.status(), StatusCode::UNAUTHORIZED, "{method}");
+    }
+
+    let ordinary = app
+        .clone()
+        .oneshot(authed_get("/api/admin/settings", &plain))
+        .await
+        .unwrap();
+    assert_eq!(ordinary.status(), StatusCode::FORBIDDEN);
+
+    let writing = app
+        .oneshot(authed_request(
+            "PUT",
+            "/api/admin/settings",
+            &plain,
+            json!({
+                "password": {"enabled": false},
+                "github": {"enabled": false},
+                "google": {"enabled": false},
+                "facebook": {"enabled": false},
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(writing.status(), StatusCode::FORBIDDEN);
+
+    db.drop().await.unwrap();
+}

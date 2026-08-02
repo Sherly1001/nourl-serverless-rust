@@ -1,14 +1,16 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use shared::{
-    AdminUserListResponse, DeleteUserResponse, LinkDisposition, SetAdminRequest, SetAdminResponse,
+    AdminSettings, AdminUserListResponse, DeleteUserResponse, LinkDisposition, SetAdminRequest,
+    SetAdminResponse, UpdateSettingsRequest,
 };
 
 use crate::app::AppState;
-use crate::auth::extract::AdminUser;
+use crate::auth::extract::{AdminUser, RootAdmin};
 use crate::error::AppError;
 use crate::extract::AppJson;
 use crate::query::UserListParams;
+use crate::settings;
 use crate::users::{self, User};
 
 /// The account tree, in two parts.
@@ -239,4 +241,27 @@ pub async fn delete_user(
         grace_days: state.config.orphan_grace_days,
         demoted,
     }))
+}
+
+/// `RootAdmin`, not `AdminUser`: see the extractor for why the sign-in
+/// settings are the root's alone.
+pub async fn get_settings(
+    State(state): State<AppState>,
+    RootAdmin(_): RootAdmin,
+) -> Result<Json<AdminSettings>, AppError> {
+    Ok(Json(settings::load(&state.db).await?.to_admin_view()))
+}
+
+/// Writes the settings and answers with the same view `get_settings` returns,
+/// so the page re-renders from what was stored rather than from what it sent.
+pub async fn update_settings(
+    State(state): State<AppState>,
+    RootAdmin(_): RootAdmin,
+    AppJson(body): AppJson<UpdateSettingsRequest>,
+) -> Result<Json<AdminSettings>, AppError> {
+    // Merged against what is stored, because the request cannot carry the
+    // secrets — see `MethodConfig::merged`.
+    let merged = settings::load(&state.db).await?.merged(&body);
+    settings::save(&state.db, &merged).await?;
+    Ok(Json(merged.to_admin_view()))
 }

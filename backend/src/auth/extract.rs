@@ -79,3 +79,30 @@ impl FromRequestParts<AppState> for AdminUser {
         Ok(AdminUser(user))
     }
 }
+
+/// An [`AdminUser`] who is also the root of the chain — the admin nobody
+/// promoted, seeded directly in the database.
+///
+/// Reserved for what is deployment configuration rather than day-to-day
+/// administration: the sign-in settings decide how *everyone* authenticates,
+/// including whether password login exists at all, so turning them off is a way
+/// to lock the system rather than to run it. Promoted admins manage accounts;
+/// the root decides how accounts get in.
+pub struct RootAdmin(pub User);
+
+impl FromRequestParts<AppState> for RootAdmin {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let AdminUser(user) = AdminUser::from_request_parts(parts, state).await?;
+        if user.promoted_by.is_some() {
+            return Err(AppError::forbidden(
+                "only the top admin can see or change the sign-in settings",
+            ));
+        }
+        Ok(RootAdmin(user))
+    }
+}
