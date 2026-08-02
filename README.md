@@ -128,6 +128,25 @@ Use `nourl-dev` instead of `nourl` for the dev database. An admin sees every
 link rather than only their own, and may edit any of them — but not delete
 someone else's as a side effect of renaming their own.
 
+Once one admin exists, the rest is done in the app: `#/users` grants and revokes
+the admin flag and deletes accounts, `#/settings` turns login methods on and off
+and holds the OAuth credentials.
+
+Admins form a chain — whoever grants the flag owns that branch, and an admin can
+act only on accounts below their own. Nobody may act on their own row, which is
+what stops the last admin demoting or deleting themselves and locking everyone
+out. The account promoted by hand above is the root of that chain: it answers to
+nobody, cannot be reached through the API, and is the only one the settings page
+opens for.
+
+Removing an admin, or deleting their account, asks what becomes of the admins
+they promoted — demote that whole branch, or hand it to their own parent so it
+keeps the flag one level shallower.
+
+Deleting a user never deletes their links. They become unowned and get
+`expires_at = min(existing, now + 7 days)`, so an orphaned code frees itself
+within a week unless somebody claims it by re-creating or editing it.
+
 ## Layout
 
 - `shared/` — DTOs + validation used by backend and frontend
