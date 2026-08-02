@@ -25,6 +25,9 @@ pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Da
         jwt_secret: JWT_SECRET.into(),
         session_days: SESSION_DAYS,
         cookie_secure: false,
+        // The production default, so the tests assert on the number a real
+        // deployment uses unless it says otherwise.
+        orphan_grace_days: 7,
     };
     (
         build_app(AppState {

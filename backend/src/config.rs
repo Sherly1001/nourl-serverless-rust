@@ -14,18 +14,29 @@ pub struct Config {
     /// `Secure` attribute on the session cookie. Browsers treat localhost as a
     /// secure context, so this only needs turning off for exotic local setups.
     pub cookie_secure: bool,
+    /// How long a link outlives the account that owned it, when that account is
+    /// deleted and its links are left in place. They keep working, unowned,
+    /// until this runs out — long enough for someone to notice a link has gone
+    /// unowned and claim it, short enough that abandoned links do not
+    /// accumulate for ever.
+    pub orphan_grace_days: i64,
 }
 
 fn parse_cookie_secure(raw: Option<String>) -> bool {
     !raw.is_some_and(|v| v.eq_ignore_ascii_case("false"))
 }
 
-/// Falls back to 60 days for anything unparseable or non-positive — a zero or
-/// negative lifetime would mint tokens that are already expired.
-fn parse_session_days(raw: Option<String>) -> i64 {
+/// A positive number of days, or `default` for anything unparseable or
+/// non-positive.
+///
+/// Zero and negative are refused rather than honoured: a session lifetime of
+/// zero would mint tokens that are already expired, and a grace period of zero
+/// would delete a link the moment its owner left rather than giving anyone the
+/// chance to claim it.
+fn parse_days(raw: Option<String>, default: i64) -> i64 {
     raw.and_then(|v| v.parse::<i64>().ok())
         .filter(|d| *d > 0)
-        .unwrap_or(60)
+        .unwrap_or(default)
 }
 
 impl Config {
@@ -44,8 +55,9 @@ impl Config {
                 .filter(|v| !v.is_empty()),
             jwt_secret: std::env::var("JWT_SECRET")
                 .map_err(|_| "JWT_SECRET environment variable is required".to_string())?,
-            session_days: parse_session_days(std::env::var("JWT_SESSION_DAYS").ok()),
+            session_days: parse_days(std::env::var("JWT_SESSION_DAYS").ok(), 60),
             cookie_secure: parse_cookie_secure(std::env::var("COOKIE_SECURE").ok()),
+            orphan_grace_days: parse_days(std::env::var("ORPHAN_GRACE_DAYS").ok(), 7),
         })
     }
 }
@@ -64,11 +76,15 @@ mod tests {
     }
 
     #[test]
-    fn session_days_defaults_and_rejects_nonsense() {
-        assert_eq!(parse_session_days(None), 60);
-        assert_eq!(parse_session_days(Some("7".into())), 7);
-        assert_eq!(parse_session_days(Some("abc".into())), 60);
-        assert_eq!(parse_session_days(Some("0".into())), 60);
-        assert_eq!(parse_session_days(Some("-5".into())), 60);
+    fn day_counts_default_and_reject_nonsense() {
+        assert_eq!(parse_days(None, 60), 60);
+        assert_eq!(parse_days(Some("7".into()), 60), 7);
+        assert_eq!(parse_days(Some("abc".into()), 60), 60);
+        // Zero and negative fall back rather than being honoured.
+        assert_eq!(parse_days(Some("0".into()), 60), 60);
+        assert_eq!(parse_days(Some("-5".into()), 60), 60);
+        // The grace period shares the parser but not the default.
+        assert_eq!(parse_days(None, 7), 7);
+        assert_eq!(parse_days(Some("30".into()), 7), 30);
     }
 }

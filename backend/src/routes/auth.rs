@@ -3,8 +3,8 @@ use axum::extract::State;
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use shared::{
-    AuthMethods, ChangePasswordRequest, LoginRequest, RegisterRequest, UpdateProfileRequest,
-    UserInfo, validate_password, validate_username,
+    AuthMethods, ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest,
+    RegisterRequest, UpdateProfileRequest, UserInfo, validate_password, validate_username,
 };
 
 use crate::app::AppState;
@@ -162,4 +162,66 @@ pub async fn change_password(
 /// is authenticated.
 pub async fn methods(State(state): State<AppState>) -> Result<Json<AuthMethods>, AppError> {
     Ok(Json(settings::load(&state.db).await?.methods()))
+}
+
+/// Closes the caller's own account.
+///
+/// The one place [`LinkDisposition::Delete`] is allowed: only the person who
+/// made the links gets to decide that nobody should be able to follow them any
+/// more. An admin deleting someone else always orphans them instead.
+///
+/// Refused while the account holds the admin flag. Deleting an admin cascades
+/// the demotion down their branch, and doing that on the way out gives nobody a
+/// chance to notice. Resign first — `PUT /api/admin/users/{own id}` with
+/// `is_admin: false` — and then close the account, or have another admin do
+/// both. A root cannot resign either, so for them the flag comes off in the
+/// database, which is where it went on.
+pub async fn delete_me(
+    State(state): State<AppState>,
+    jar: CookieJar,
+    CurrentUser(user): CurrentUser,
+    AppJson(body): AppJson<DeleteAccountRequest>,
+) -> Result<Response, AppError> {
+    if user.is_admin {
+        // Named differently for a root, because "resign first" is advice they
+        // cannot act on: only the database can take a root's flag away.
+        return Err(AppError::forbidden(if user.promoted_by.is_some() {
+            "you are an admin so cannot close your own account — give up the admin flag first"
+        } else {
+            "you are the top admin so cannot close your own account"
+        }));
+    }
+    // Holding the session is not enough for something irreversible. An account
+    // with no password has nothing to prove, so the session is the whole check.
+    if let Some(stored) = user.hash_passwd.as_deref() {
+        let current = body.current_password.as_deref().ok_or_else(|| {
+            AppError::unauthorized("current password is required").on_field("current_password")
+        })?;
+        if !password::verify(current, stored) {
+            return Err(AppError::unauthorized("current password is incorrect")
+                .on_field("current_password"));
+        }
+    }
+
+    let links = users::delete_with_cascade(
+        &state.db,
+        &user.id,
+        body.links,
+        state.config.orphan_grace_days,
+    )
+    .await?;
+    // The account is gone, so the cookie has nothing left to authenticate.
+    let jar = jar.add(cookie::cleared(&state.config));
+    Ok((
+        jar,
+        Json(DeleteUserResponse {
+            id: user.id,
+            deleted: true,
+            orphaned: links.orphaned,
+            links_deleted: links.deleted,
+            grace_days: state.config.orphan_grace_days,
+            demoted: 0,
+        }),
+    )
+        .into_response())
 }

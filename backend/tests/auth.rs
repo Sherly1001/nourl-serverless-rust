@@ -623,3 +623,231 @@ async fn profile_edit_requires_a_session() {
 
     db.drop().await.unwrap();
 }
+
+/// Registers an account, gives it a link, and returns its session cookie.
+async fn account_with_a_link(app: &axum::Router, username: &str, code: &str) -> String {
+    let registered = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/auth/register",
+            json!({"username": username, "password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    let cookie = session_cookie(&registered).unwrap();
+    app.clone()
+        .oneshot(helpers::authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": code, "url": "https://example.com"}),
+        ))
+        .await
+        .unwrap();
+    cookie
+}
+
+/// The owner is the only one who may decide their links should stop resolving.
+#[tokio::test]
+async fn closing_your_account_can_take_your_links_with_it() {
+    let (app, db) = test_app().await;
+    let cookie = account_with_a_link(&app, "quitter", "taking-it").await;
+
+    let closed = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "DELETE",
+            "/api/auth/me",
+            &cookie,
+            json!({"links": "delete", "current_password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let body = body_json(closed).await;
+    assert_eq!(body["links_deleted"], 1);
+    assert_eq!(body["orphaned"], 0);
+
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    assert!(
+        urls.find_one(mongodb::bson::doc! {"code": "taking-it"})
+            .await
+            .unwrap()
+            .is_none(),
+        "the link must be gone, not orphaned"
+    );
+    // The session cannot outlive the account it belonged to.
+    let after = app
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(after.status(), StatusCode::UNAUTHORIZED);
+
+    db.drop().await.unwrap();
+}
+
+/// The other choice: the links keep working for whoever is already using them.
+#[tokio::test]
+async fn closing_your_account_can_leave_your_links_running() {
+    let (app, db) = test_app().await;
+    let cookie = account_with_a_link(&app, "leaver", "leaving-it").await;
+
+    let closed = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "DELETE",
+            "/api/auth/me",
+            &cookie,
+            json!({"links": "orphan", "current_password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(closed.status(), StatusCode::OK);
+    let body = body_json(closed).await;
+    assert_eq!(body["orphaned"], 1);
+    assert_eq!(body["links_deleted"], 0);
+    assert_eq!(body["grace_days"], 7);
+
+    // Still resolving, and now claimable by anyone.
+    let followed = app
+        .clone()
+        .oneshot(helpers::request("GET", "/leaving-it"))
+        .await
+        .unwrap();
+    assert_eq!(followed.status(), StatusCode::FOUND);
+
+    let row = db
+        .collection::<mongodb::bson::Document>("urls")
+        .find_one(mongodb::bson::doc! {"code": "leaving-it"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(row.get("owner").is_none(), "must be unowned");
+    assert!(
+        row.get_datetime("expires_at").is_ok(),
+        "must be on a deadline"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// Irreversible, so the session alone is not enough to trigger it.
+#[tokio::test]
+async fn closing_your_account_needs_your_password() {
+    let (app, db) = test_app().await;
+    let cookie = account_with_a_link(&app, "careful", "still-here").await;
+
+    for body in [
+        json!({"links": "delete"}),
+        json!({"links": "delete", "current_password": "not-my-password"}),
+    ] {
+        let refused = app
+            .clone()
+            .oneshot(helpers::authed_request(
+                "DELETE",
+                "/api/auth/me",
+                &cookie,
+                body,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(refused.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(
+            body_json(refused).await["error"]["field"],
+            "current_password",
+            "the UI needs to know which input to mark"
+        );
+    }
+
+    // Nothing was touched.
+    let still_there = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(still_there.status(), StatusCode::OK);
+    assert!(
+        db.collection::<mongodb::bson::Document>("urls")
+            .find_one(mongodb::bson::doc! {"code": "still-here"})
+            .await
+            .unwrap()
+            .is_some()
+    );
+
+    // And an omitted disposition is a 400, not a guess at what they meant.
+    let vague = app
+        .oneshot(helpers::authed_request(
+            "DELETE",
+            "/api/auth/me",
+            &cookie,
+            json!({"current_password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(vague.status(), StatusCode::BAD_REQUEST);
+
+    db.drop().await.unwrap();
+}
+
+/// A root closing their own account would cascade the demotion through every
+/// admin below them and leave nobody able to reach the admin pages.
+#[tokio::test]
+async fn an_admin_cannot_close_their_own_account() {
+    let (app, db) = test_app().await;
+    let cookie = account_with_a_link(&app, "the-admin", "admins-link").await;
+    // Promoted rather than seeded — `promoted_by` is what marks a root, and a
+    // root has a different refusal because it can never resign.
+    db.collection::<mongodb::bson::Document>("users")
+        .update_one(
+            mongodb::bson::doc! {"username": "the-admin"},
+            mongodb::bson::doc! {"$set": {"is_admin": true, "promoted_by": "someone-else"}},
+        )
+        .await
+        .unwrap();
+
+    let close = || {
+        let (app, cookie) = (app.clone(), cookie.clone());
+        async move {
+            app.oneshot(helpers::authed_request(
+                "DELETE",
+                "/api/auth/me",
+                &cookie,
+                json!({"links": "orphan", "current_password": "hunter2hunter2"}),
+            ))
+            .await
+            .unwrap()
+        }
+    };
+
+    let refused = close().await;
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let still_there = app
+        .clone()
+        .oneshot(helpers::authed_get("/api/auth/me", &cookie))
+        .await
+        .unwrap();
+    assert_eq!(still_there.status(), StatusCode::OK);
+
+    // Resigning is the way out, and then the account can be closed. This one
+    // was promoted rather than seeded, so it is allowed to resign.
+    let id = body_json(still_there).await["id"]
+        .as_str()
+        .unwrap()
+        .to_string();
+    let resigned = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "PUT",
+            &format!("/api/admin/users/{id}"),
+            &cookie,
+            json!({"is_admin": false}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(resigned.status(), StatusCode::OK);
+    assert_eq!(close().await.status(), StatusCode::OK);
+
+    db.drop().await.unwrap();
+}

@@ -89,6 +89,14 @@ test: mongo-up mongo-clean
 mongo-up:
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo \
 	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7
+	@# `docker start` returns as soon as the container exists, not when mongod is
+	@# listening, so anything that connects straight after it races the startup
+	@# and fails with ECONNREFUSED.
+	@for i in $$(seq 30); do \
+	  docker exec nourl-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && exit 0; \
+	  sleep 1; \
+	done; \
+	echo "mongod did not come up in 30s" >&2; exit 1
 
 # Every test builds a throwaway `nourl_test_<uuid>` database and cannot drop it
 # on the way out — Drop cannot await, and a panicking test would skip an

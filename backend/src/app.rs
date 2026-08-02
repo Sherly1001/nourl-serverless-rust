@@ -7,8 +7,10 @@ use mongodb::Database;
 
 use crate::config::Config;
 use crate::error::AppError;
-use crate::routes::admin::{list_users, set_user_admin};
-use crate::routes::auth::{change_password, login, logout, me, methods, register, update_me};
+use crate::routes::admin::{delete_user, list_users, set_user_admin};
+use crate::routes::auth::{
+    change_password, delete_me, login, logout, me, methods, register, update_me,
+};
 use crate::routes::redirect::{fallback_url, found, redirect};
 use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
 
@@ -23,11 +25,14 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/auth/register", post(register))
         .route("/api/auth/login", post(login))
         .route("/api/auth/logout", post(logout))
-        .route("/api/auth/me", get(me).put(update_me))
+        .route("/api/auth/me", get(me).put(update_me).delete(delete_me))
         .route("/api/auth/methods", get(methods))
         .route("/api/auth/password", put(change_password))
         .route("/api/admin/users", get(list_users))
-        .route("/api/admin/users/{id}", put(set_user_admin))
+        .route(
+            "/api/admin/users/{id}",
+            put(set_user_admin).delete(delete_user),
+        )
         .route("/api/urls", post(create_url).get(list_urls))
         .route("/api/urls/{code}", put(update_url).delete(delete_url))
         .route("/", get(|| async { found("/index.html") }))

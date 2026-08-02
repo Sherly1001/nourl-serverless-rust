@@ -45,6 +45,7 @@ mod tests {
             jwt_secret: "s".into(),
             session_days,
             cookie_secure: secure,
+            orphan_grace_days: 7,
         }
     }
 

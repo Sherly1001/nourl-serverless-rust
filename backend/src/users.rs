@@ -2,7 +2,7 @@ use futures::TryStreamExt;
 use mongodb::Database;
 use mongodb::bson::{Document, doc};
 use serde::{Deserialize, Serialize};
-use shared::{AdminUserInfo, UpdateProfileRequest, UserInfo};
+use shared::{AdminUserInfo, LinkDisposition, UpdateProfileRequest, UserInfo};
 
 use crate::query::UserListParams;
 
@@ -223,6 +223,61 @@ pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
         )
         .await?;
     Ok(result.modified_count)
+}
+
+/// What deleting an account did to the links it owned.
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
+pub struct LinkOutcome {
+    /// Left in place, unowned, on a deadline.
+    pub orphaned: u64,
+    /// Removed with the account.
+    pub deleted: u64,
+}
+
+/// Deletes the account and disposes of its links.
+///
+/// [`LinkDisposition::Orphan`] does not delete them: someone may still be
+/// following them. They become unowned — so anyone can re-claim or edit them —
+/// and expire in `grace_days` unless someone does. An existing earlier expiry
+/// is kept, so this can only bring a deadline forward, never push one out.
+///
+/// The orphan branch runs as an aggregation-pipeline update because `$unset`
+/// and a computed `$min` cannot both be expressed in a plain update document.
+pub async fn delete_with_cascade(
+    db: &Database,
+    id: &str,
+    links: LinkDisposition,
+    grace_days: i64,
+) -> Result<LinkOutcome, AppError> {
+    let urls = db.collection::<Document>("urls");
+    let outcome = match links {
+        LinkDisposition::Delete => LinkOutcome {
+            deleted: urls.delete_many(doc! {"owner": id}).await?.deleted_count,
+            orphaned: 0,
+        },
+        LinkDisposition::Orphan => {
+            let cutoff = bson::DateTime::from_millis(
+                bson::DateTime::now().timestamp_millis() + grace_days * 24 * 60 * 60 * 1000,
+            );
+            LinkOutcome {
+                orphaned: urls
+                    .update_many(
+                        doc! {"owner": id},
+                        vec![
+                            doc! {"$set": {
+                                "expires_at": {"$min": [{"$ifNull": ["$expires_at", cutoff]}, cutoff]},
+                            }},
+                            doc! {"$unset": "owner"},
+                        ],
+                    )
+                    .await?
+                    .modified_count,
+                deleted: 0,
+            }
+        }
+    };
+    collection(db).delete_one(doc! {"id": id}).await?;
+    Ok(outcome)
 }
 
 /// Ids of every account above `id` in the chain. Membership is what callers

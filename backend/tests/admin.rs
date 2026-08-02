@@ -742,3 +742,264 @@ async fn an_ordinary_account_cannot_promote_itself() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn deleting_a_user_orphans_their_links_with_a_deadline() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "del-boss").await;
+    let doomed = account(&app, "doomed").await;
+
+    // One link with no expiry, and one that already expires sooner than the
+    // grace period — the sooner deadline must win.
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &doomed,
+            json!({"code": "no-expiry", "url": "https://example.com"}),
+        ))
+        .await
+        .unwrap();
+    let soon = (chrono::Utc::now() + chrono::Duration::days(2)).to_rfc3339();
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &doomed,
+            json!({"code": "expires-soon", "url": "https://example.com", "expires_at": soon}),
+        ))
+        .await
+        .unwrap();
+
+    let target = id_of(&app, &boss, "doomed").await;
+    let deleted = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            &format!("/api/admin/users/{target}"),
+            &boss,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+    let outcome = body_json(deleted).await;
+    assert_eq!(outcome["orphaned"], 2);
+    assert_eq!(
+        outcome["links_deleted"], 0,
+        "an admin never destroys someone else's links"
+    );
+    assert_eq!(outcome["grace_days"], 7);
+
+    // The account is gone.
+    assert!(
+        db.collection::<mongodb::bson::Document>("users")
+            .find_one(doc! {"username": "doomed"})
+            .await
+            .unwrap()
+            .is_none()
+    );
+
+    // The links survive, unowned, each with a deadline. They are not deleted:
+    // somebody may still be following them.
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    for code in ["no-expiry", "expires-soon"] {
+        let row = urls
+            .find_one(doc! {"code": code})
+            .await
+            .unwrap()
+            .unwrap_or_else(|| panic!("{code} must survive its owner"));
+        assert!(row.get("owner").is_none(), "{code} must be unowned");
+        assert!(
+            row.get_datetime("expires_at").is_ok(),
+            "{code} needs a deadline"
+        );
+    }
+
+    let cutoff = chrono::Utc::now() + chrono::Duration::days(7);
+    let sooner = urls
+        .find_one(doc! {"code": "expires-soon"})
+        .await
+        .unwrap()
+        .unwrap();
+    let kept = sooner
+        .get_datetime("expires_at")
+        .unwrap()
+        .timestamp_millis();
+    assert!(
+        kept < cutoff.timestamp_millis(),
+        "an earlier expiry must not be pushed out to the grace period"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// Deleting is heavier than demoting, so it must not reach anywhere demoting
+/// cannot.
+#[tokio::test]
+async fn deleting_obeys_the_same_subtree_rule_as_demoting() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "dsub-root").await;
+    let left = promote(&app, &root, "dsub-left").await;
+    promote(&app, &root, "dsub-right").await;
+
+    let delete = |actor: &str, id: String| {
+        let (app, actor) = (app.clone(), actor.to_string());
+        async move {
+            app.oneshot(authed_request(
+                "DELETE",
+                &format!("/api/admin/users/{id}"),
+                &actor,
+                json!({}),
+            ))
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    let id_root = id_of(&app, &root, "dsub-root").await;
+    let id_left = id_of(&app, &root, "dsub-left").await;
+    let id_right = id_of(&app, &root, "dsub-right").await;
+
+    // A sibling branch is not yours to delete.
+    assert_eq!(delete(&left, id_right.clone()).await, StatusCode::FORBIDDEN);
+    // Nor is anyone above you.
+    assert_eq!(delete(&left, id_root).await, StatusCode::FORBIDDEN);
+    // Nor your own account.
+    assert_eq!(delete(&left, id_left).await, StatusCode::BAD_REQUEST);
+
+    // And every refusal left the account in place.
+    assert_eq!(row_of(&app, &root, "dsub-right").await["is_admin"], true);
+    assert_eq!(row_of(&app, &root, "dsub-left").await["is_admin"], true);
+
+    db.drop().await.unwrap();
+}
+
+/// Deleting an admin has to take the branch below them down too. Leaving those
+/// accounts pointing at an id that no longer exists would strand them outside
+/// the tree: nothing walking upward could reach them, so nobody could ever
+/// demote or delete them again.
+#[tokio::test]
+async fn deleting_an_admin_demotes_the_branch_below_them() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "dcasc-root").await;
+    let mid = promote(&app, &root, "dcasc-mid").await;
+    let leaf = promote(&app, &mid, "dcasc-leaf").await;
+    promote(&app, &leaf, "dcasc-deep").await;
+
+    let id_mid = id_of(&app, &root, "dcasc-mid").await;
+    let deleted = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            &format!("/api/admin/users/{id_mid}"),
+            &root,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(deleted.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(deleted).await["demoted"],
+        2,
+        "the two admins below the deleted one"
+    );
+
+    for name in ["dcasc-leaf", "dcasc-deep"] {
+        let row = row_of(&app, &root, name).await;
+        assert_eq!(row["is_admin"], false, "{name} kept the flag");
+        assert!(
+            row["promoted_by"].is_null(),
+            "{name} still points at an account that no longer exists"
+        );
+    }
+
+    // And they really are out, not just relabelled.
+    let locked_out = app
+        .oneshot(authed_get("/api/admin/users", &leaf))
+        .await
+        .unwrap();
+    assert_eq!(locked_out.status(), StatusCode::FORBIDDEN);
+
+    db.drop().await.unwrap();
+}
+
+/// An admin who no longer wants the responsibility should not have to ask
+/// permission — but a root has nobody above them to put it back.
+#[tokio::test]
+async fn an_admin_can_resign_unless_they_are_the_root() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "res-root").await;
+    let mid = promote(&app, &root, "res-mid").await;
+    let leaf = promote(&app, &mid, "res-leaf").await;
+
+    let id_root = id_of(&app, &root, "res-root").await;
+    let id_mid = id_of(&app, &root, "res-mid").await;
+
+    // The root is refused: resigning would cascade through every admin and
+    // leave the pages unreachable.
+    let root_quits = set_admin(&app, &root, &id_root, json!({"is_admin": false})).await;
+    assert_eq!(root_quits.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(row_of(&app, &root, "res-root").await["is_admin"], true);
+
+    // A promoted admin may go, and takes their branch with them — the same
+    // cascade any demotion has.
+    let resigned = set_admin(&app, &mid, &id_mid, json!({"is_admin": false})).await;
+    assert_eq!(resigned.status(), StatusCode::OK);
+    let body = body_json(resigned).await;
+    assert_eq!(body["is_admin"], false);
+    assert_eq!(body["demoted"], 2, "themselves and the admin below them");
+
+    for cookie in [&mid, &leaf] {
+        let locked_out = app
+            .clone()
+            .oneshot(authed_get("/api/admin/users", cookie))
+            .await
+            .unwrap();
+        assert_eq!(locked_out.status(), StatusCode::FORBIDDEN);
+    }
+    assert_eq!(row_of(&app, &root, "res-mid").await["is_admin"], false);
+
+    // And whoever promoted them can put it back.
+    let restored = set_admin(&app, &root, &id_mid, json!({"is_admin": true})).await;
+    assert_eq!(restored.status(), StatusCode::OK);
+    assert_eq!(row_of(&app, &root, "res-mid").await["admin_level"], 1);
+
+    db.drop().await.unwrap();
+}
+
+/// Resigning is the only thing an admin may do to their own standing.
+#[tokio::test]
+async fn an_admin_cannot_promote_or_move_themselves() {
+    let (app, db) = test_app().await;
+    let root = admin(&app, &db, "self-root").await;
+    let left = promote(&app, &root, "self-left").await;
+    promote(&app, &root, "self-right").await;
+
+    let id_left = id_of(&app, &root, "self-left").await;
+    let id_right = id_of(&app, &root, "self-right").await;
+
+    // Re-granting your own flag would reset your own place in the chain.
+    let self_promote = set_admin(&app, &left, &id_left, json!({"is_admin": true})).await;
+    assert_eq!(self_promote.status(), StatusCode::BAD_REQUEST);
+
+    // And moving yourself is how you would leave the branch you were put in.
+    let self_move = set_admin(
+        &app,
+        &left,
+        &id_left,
+        json!({"is_admin": true, "promoted_by": id_right}),
+    )
+    .await;
+    assert_eq!(self_move.status(), StatusCode::BAD_REQUEST);
+
+    let unchanged = row_of(&app, &root, "self-left").await;
+    assert_eq!(unchanged["admin_level"], 1);
+    assert_eq!(
+        unchanged["promoted_by"],
+        id_of(&app, &root, "self-root").await
+    );
+
+    db.drop().await.unwrap();
+}

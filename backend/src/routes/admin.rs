@@ -1,6 +1,8 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
-use shared::{AdminUserListResponse, SetAdminRequest, SetAdminResponse};
+use shared::{
+    AdminUserListResponse, DeleteUserResponse, LinkDisposition, SetAdminRequest, SetAdminResponse,
+};
 
 use crate::app::AppState;
 use crate::auth::extract::AdminUser;
@@ -30,8 +32,16 @@ pub async fn list_users(
     }))
 }
 
-/// Refusing to act on your own account is what keeps an admin from demoting
-/// themselves — which, for a root, would lock the pages away for everyone.
+/// A root is an admin nobody promoted — the one seeded directly in the
+/// database. Nothing sits above them, so nothing can restore what they give up.
+fn is_root(user: &User) -> bool {
+    user.is_admin && user.promoted_by.is_none()
+}
+
+/// Refuses acting on your own account. Resigning is the one exception and is
+/// handled separately in [`set_user_admin`]: everything else here — promoting
+/// yourself, moving yourself somewhere you were not put — is a way to change
+/// your own standing, which is exactly what the chain exists to prevent.
 fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
     if actor.id == target_id {
         return Err(AppError::validation(
@@ -39,6 +49,32 @@ fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
         ));
     }
     Ok(())
+}
+
+/// Giving up your own flag.
+///
+/// Allowed, because an admin who no longer wants the responsibility should not
+/// have to ask permission for it, and whoever promoted them can put it back.
+/// The cascade applies as it does to any demotion: the branch below was vouched
+/// for through this account, so it goes too.
+///
+/// A root is refused. Nobody is above them to restore anything, so a root
+/// resigning would demote every admin on the system at once and leave the admin
+/// pages unreachable — recoverable only by editing the collection, which is
+/// where the root came from in the first place.
+async fn resign(state: &AppState, actor: &User) -> Result<Json<SetAdminResponse>, AppError> {
+    if is_root(actor) {
+        return Err(AppError::validation(
+            "you are the top admin so cannot give up the flag — it can only be removed directly in the database",
+        ));
+    }
+    let demoted = users::revoke_admin(&state.db, &actor.id).await?;
+    Ok(Json(SetAdminResponse {
+        id: actor.id.clone(),
+        is_admin: false,
+        promoted_by: None,
+        demoted,
+    }))
 }
 
 /// Whether `actor` may act on `target`.
@@ -142,6 +178,10 @@ pub async fn set_user_admin(
     Path(id): Path<String>,
     AppJson(body): AppJson<SetAdminRequest>,
 ) -> Result<Json<SetAdminResponse>, AppError> {
+    // Resigning is the one thing you may do to your own standing.
+    if actor.id == id && !body.is_admin {
+        return resign(&state, &actor).await;
+    }
     let target = target_user(&state, &actor, &id).await?;
     if !body.is_admin {
         let demoted = users::revoke_admin(&state.db, &target.id).await?;
@@ -159,5 +199,44 @@ pub async fn set_user_admin(
         is_admin: true,
         promoted_by: Some(parent.id),
         demoted: 0,
+    }))
+}
+
+/// Removes the account, orphaning its links rather than destroying them.
+///
+/// An admin never gets the choice the account's owner gets: someone may be
+/// following those links, and taking a stranger's account off the system is not
+/// a reason to break every URL they ever shared. Only the owner may ask for
+/// [`LinkDisposition::Delete`], via `DELETE /api/auth/me`.
+///
+/// The demotion runs first and for a stronger reason than it does on its own:
+/// the account those admins hang from is about to stop existing, so leaving
+/// `promoted_by` pointing at it would strand the whole branch outside the tree,
+/// where nothing walking upward could reach them again.
+pub async fn delete_user(
+    State(state): State<AppState>,
+    AdminUser(actor): AdminUser,
+    Path(id): Path<String>,
+) -> Result<Json<DeleteUserResponse>, AppError> {
+    let target = target_user(&state, &actor, &id).await?;
+    // Counts the target as well, but the target is being deleted rather than
+    // demoted, so only the branch below them is worth reporting.
+    let demoted = users::revoke_admin(&state.db, &target.id)
+        .await?
+        .saturating_sub(1);
+    let links = users::delete_with_cascade(
+        &state.db,
+        &target.id,
+        LinkDisposition::Orphan,
+        state.config.orphan_grace_days,
+    )
+    .await?;
+    Ok(Json(DeleteUserResponse {
+        id: target.id,
+        deleted: true,
+        orphaned: links.orphaned,
+        links_deleted: links.deleted,
+        grace_days: state.config.orphan_grace_days,
+        demoted,
     }))
 }

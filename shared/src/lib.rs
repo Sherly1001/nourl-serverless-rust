@@ -284,6 +284,55 @@ pub struct SetAdminRequest {
     pub promoted_by: Option<String>,
 }
 
+/// What becomes of the links an account leaves behind.
+///
+/// No default: deleting an account is irreversible, and which of these the
+/// caller meant is not something to guess at.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LinkDisposition {
+    /// Leave them working, unowned, on a deadline. Anyone can claim or edit
+    /// them until it runs out.
+    Orphan,
+    /// Delete them with the account. Every one of them stops resolving
+    /// immediately.
+    Delete,
+}
+
+/// Closing your own account, via `DELETE /api/auth/me`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteAccountRequest {
+    pub links: LinkDisposition,
+    /// Required when the account has a password — holding the session is not
+    /// enough for something this final. Accounts that only ever signed in
+    /// through a provider have no password to prove, so for those the session
+    /// is the whole check, exactly as in [`ChangePasswordRequest`].
+    #[serde(default)]
+    pub current_password: Option<String>,
+}
+
+/// What a `DELETE /api/admin/users/{id}` did. `orphaned` and `grace_days` are
+/// reported so the UI can say what happened to the links rather than leaving
+/// the admin to guess.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeleteUserResponse {
+    pub id: String,
+    pub deleted: bool,
+    /// Links that outlived their owner, now unowned and on a deadline.
+    #[serde(default)]
+    pub orphaned: u64,
+    /// Links removed along with the account. Only ever non-zero when the owner
+    /// closed their own account and asked for it.
+    #[serde(default)]
+    pub links_deleted: u64,
+    /// How long the orphaned links have left unless someone claims them.
+    #[serde(default)]
+    pub grace_days: i64,
+    /// Admins below the deleted account who lost the flag with them.
+    #[serde(default)]
+    pub demoted: u64,
+}
+
 /// What changed after a call to `PUT /api/admin/users/{id}`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAdminResponse {
