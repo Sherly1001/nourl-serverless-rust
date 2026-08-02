@@ -221,6 +221,83 @@ pub struct UrlListResponse {
     pub total: u64,
 }
 
+/// A user as an admin sees them. Never carries a password hash; provider ids
+/// are reduced to `providers`, which says *that* an account is linked without
+/// exposing the id itself.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct AdminUserInfo {
+    pub id: String,
+    pub username: String,
+    #[serde(default)]
+    pub display_name: Option<String>,
+    #[serde(default)]
+    pub email: Option<String>,
+    #[serde(default)]
+    pub avatar_url: Option<String>,
+    pub is_admin: bool,
+    /// `"github"`, `"google"`, `"facebook"` — whichever are linked.
+    #[serde(default)]
+    pub providers: Vec<String>,
+    #[serde(default)]
+    pub has_password: bool,
+    /// RFC3339. Absent on accounts created before the field existed.
+    #[serde(default)]
+    pub created_at: Option<String>,
+    /// How many links this account owns, so the delete confirmation can say
+    /// what is about to be orphaned.
+    #[serde(default)]
+    pub url_count: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct AdminUserListResponse {
+    pub items: Vec<AdminUserInfo>,
+    pub total: u64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct SetAdminRequest {
+    pub is_admin: bool,
+}
+
+/// One login method as the settings page sees it. The secret itself never
+/// leaves the server — only whether one is stored.
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+pub struct MethodView {
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    pub has_secret: bool,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct AdminSettings {
+    pub password: MethodView,
+    pub github: MethodView,
+    pub google: MethodView,
+    pub facebook: MethodView,
+}
+
+/// An omitted `client_secret` means "leave the stored one alone", which is how
+/// the page can save without ever having seen it. An explicit empty string
+/// clears it.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct MethodUpdate {
+    pub enabled: bool,
+    #[serde(default)]
+    pub client_id: Option<String>,
+    #[serde(default)]
+    pub client_secret: Option<String>,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct UpdateSettingsRequest {
+    pub password: MethodUpdate,
+    pub github: MethodUpdate,
+    pub google: MethodUpdate,
+    pub facebook: MethodUpdate,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

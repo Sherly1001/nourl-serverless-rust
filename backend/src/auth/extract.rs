@@ -58,3 +58,24 @@ impl FromRequestParts<AppState> for OptionalUser {
         current_user(state, parts).await.map(OptionalUser)
     }
 }
+
+/// A `CurrentUser` that also carries the admin flag.
+///
+/// Rejecting here rather than inside each handler means a new admin route
+/// cannot forget the check: the type is the permission.
+pub struct AdminUser(pub User);
+
+impl FromRequestParts<AppState> for AdminUser {
+    type Rejection = AppError;
+
+    async fn from_request_parts(
+        parts: &mut Parts,
+        state: &AppState,
+    ) -> Result<Self, Self::Rejection> {
+        let CurrentUser(user) = CurrentUser::from_request_parts(parts, state).await?;
+        if !user.is_admin {
+            return Err(AppError::forbidden("this account is not an admin"));
+        }
+        Ok(AdminUser(user))
+    }
+}
