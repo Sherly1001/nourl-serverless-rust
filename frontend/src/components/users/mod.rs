@@ -174,7 +174,14 @@ pub fn Users() -> impl IntoView {
     // Re-reads the whole list. A change to the tree can move rows between the
     // two groups and change everyone's depth, so patching in place would be
     // guesswork.
-    let reload = move || fetch(0, false);
+    let reload = move || {
+        // Whatever was ticked has just been acted on, one way or another —
+        // through the row's own switch as much as through the bulk bar. Leaving
+        // the ticks behind would arm the next bulk action with rows the admin
+        // thought they were done with.
+        selected.try_set(HashSet::new());
+        fetch(0, false);
+    };
 
     let apply = move |id: String,
                       is_admin: bool,
@@ -253,7 +260,6 @@ pub fn Users() -> impl IntoView {
             if let Some(message) = last {
                 toasts.error(format!("{failed} failed: {message}"));
             }
-            selected.try_set(HashSet::new());
             reload();
         });
     };
