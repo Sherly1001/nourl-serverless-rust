@@ -65,13 +65,24 @@ fn paging(params: &HashMap<String, String>) -> Result<(i64, i64), AppError> {
 }
 
 /// Parses `field,dir,field,dir…` against `allowed`, falling back to `default`.
+///
+/// Every sort ends with `_id` so it is total. Without it Mongo is free to
+/// return equal rows in any order, and it does: the sorted fields are timestamps
+/// that whole batches of accounts share, so a single unrelated write — flipping
+/// an admin flag, say — reshuffles the rows around it on the next page load.
 fn sort_doc(
     params: &HashMap<String, String>,
     allowed: &[&str],
     default: Document,
 ) -> Result<Document, AppError> {
+    let tiebreak = |mut sort: Document| {
+        if !sort.contains_key("_id") {
+            sort.insert("_id", 1);
+        }
+        sort
+    };
     let Some(raw) = params.get("sort") else {
-        return Ok(default);
+        return Ok(tiebreak(default));
     };
     let fields: Vec<&str> = raw.split(',').collect();
     if fields.is_empty() || !fields.len().is_multiple_of(2) {
@@ -92,7 +103,7 @@ fn sort_doc(
             .ok_or_else(|| AppError::validation("sort direction must be 1 or -1"))?;
         sort.insert(field, dir);
     }
-    Ok(sort)
+    Ok(tiebreak(sort))
 }
 
 fn search_term(params: &HashMap<String, String>) -> Option<String> {
@@ -160,7 +171,9 @@ pub struct UserListParams {
 impl UserListParams {
     pub fn from_query(params: &HashMap<String, String>) -> Result<Self, AppError> {
         let (limit, skip) = paging(params)?;
-        let sort = sort_doc(params, USER_SORTABLE, doc! {"created_at": -1})?;
+        // Alphabetical by default: the users list is a directory to look
+        // somebody up in, not a feed of recent signups.
+        let sort = sort_doc(params, USER_SORTABLE, doc! {"username": 1})?;
         let q = search_term(params);
         Ok(Self {
             limit,
@@ -211,7 +224,7 @@ mod tests {
         let parsed = ListParams::from_query(&params(&[])).unwrap();
         assert_eq!(parsed.limit, 20);
         assert_eq!(parsed.skip, 0);
-        assert_eq!(parsed.sort, doc! {"updated_at": -1});
+        assert_eq!(parsed.sort, doc! {"updated_at": -1, "_id": 1});
         assert!(parsed.q.is_none());
     }
 
@@ -236,7 +249,7 @@ mod tests {
     #[test]
     fn sort_accepts_whitelisted_fields_only() {
         let parsed = ListParams::from_query(&params(&[("sort", "hits,-1,code,1")])).unwrap();
-        assert_eq!(parsed.sort, doc! {"hits": -1, "code": 1});
+        assert_eq!(parsed.sort, doc! {"hits": -1, "code": 1, "_id": 1});
         // Anything not on the whitelist is refused rather than passed to Mongo.
         assert!(ListParams::from_query(&params(&[("sort", "hash_passwd,1")])).is_err());
         assert!(ListParams::from_query(&params(&[("sort", "code")])).is_err());
@@ -284,12 +297,12 @@ mod tests {
     }
 
     #[test]
-    fn users_default_to_newest_first_and_share_the_paging_rules() {
+    fn users_default_to_alphabetical_and_share_the_paging_rules() {
         let parsed = UserListParams::from_query(&params(&[])).unwrap();
         assert_eq!(parsed.limit, 20);
         assert_eq!(parsed.skip, 0);
-        // Not `updated_at`: accounts do not have one.
-        assert_eq!(parsed.sort, doc! {"created_at": -1});
+        // A directory, so alphabetical rather than newest first.
+        assert_eq!(parsed.sort, doc! {"username": 1, "_id": 1});
         assert!(parsed.q.is_none());
 
         assert_eq!(
@@ -306,7 +319,7 @@ mod tests {
     #[test]
     fn users_and_urls_do_not_share_a_sort_whitelist() {
         let parsed = UserListParams::from_query(&params(&[("sort", "username,1")])).unwrap();
-        assert_eq!(parsed.sort, doc! {"username": 1});
+        assert_eq!(parsed.sort, doc! {"username": 1, "_id": 1});
         // Derived from the chain rather than stored, and these rows have no
         // chain — the tree is sorted by its own shape, not by a query string.
         assert!(UserListParams::from_query(&params(&[("sort", "admin_level,1")])).is_err());
@@ -318,7 +331,7 @@ mod tests {
     #[test]
     fn only_the_link_count_forces_a_join_before_paging() {
         let by_count = UserListParams::from_query(&params(&[("sort", "url_count,-1")])).unwrap();
-        assert_eq!(by_count.sort, doc! {"url_count": -1});
+        assert_eq!(by_count.sort, doc! {"url_count": -1, "_id": 1});
         assert!(by_count.sorts_by_join());
 
         assert!(
