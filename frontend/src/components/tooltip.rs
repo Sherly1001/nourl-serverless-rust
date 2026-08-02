@@ -3,7 +3,8 @@ use std::time::Duration;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 
-/// Widest the bubble is allowed to get, matching the `max-w-96` below.
+/// Widest the bubble is allowed to get, matching the `max-w-96` below. Only the
+/// starting guess: what it is actually laid out at is measured once it is up.
 const TOOLTIP_WIDTH_PX: f64 = 384.0;
 /// Gap kept between the bubble and the window edge.
 const VIEWPORT_MARGIN_PX: f64 = 8.0;
@@ -15,8 +16,13 @@ const OPEN_DELAY: Duration = Duration::from_millis(400);
 
 /// Keeps the bubble inside the window: anchored to the cell's left edge, but
 /// pushed back when that would run it off the right side, and never negative.
-fn clamp_left(anchor_left: f64, viewport_width: f64) -> f64 {
-    let rightmost = viewport_width - TOOLTIP_WIDTH_PX - VIEWPORT_MARGIN_PX;
+///
+/// `bubble_width` is how wide the bubble really is, not how wide it may get. A
+/// two-word label on a button at the right edge is a few dozen pixels wide;
+/// clamping it as though it were the full `max-w-96` drags it hundreds of pixels
+/// away from the thing it is pointing at.
+fn clamp_left(anchor_left: f64, bubble_width: f64, viewport_width: f64) -> f64 {
+    let rightmost = viewport_width - bubble_width - VIEWPORT_MARGIN_PX;
     anchor_left.min(rightmost.max(VIEWPORT_MARGIN_PX)).max(0.0)
 }
 
@@ -57,7 +63,17 @@ pub fn Tooltip(
     children: ChildrenFn,
 ) -> impl IntoView {
     let (shown, set_shown) = signal(false);
+    // Where the anchor was when the pointer arrived, in viewport coordinates.
     let (position, set_position) = signal((0.0_f64, 0.0_f64));
+    // How wide the bubble came out. Guessed at the maximum until it is up and
+    // can be measured, which is the only way to know: it depends on the text.
+    let (bubble_width, set_bubble_width) = signal(TOOLTIP_WIDTH_PX);
+    let bubble: NodeRef<leptos::html::Span> = NodeRef::new();
+    Effect::new(move |_| {
+        if let Some(node) = bubble.get() {
+            set_bubble_width.set(f64::from(node.offset_width()));
+        }
+    });
     // Bumped on every enter and leave, so a timer that fires after the pointer
     // has moved on knows it is stale.
     let (hover, set_hover) = signal(0u32);
@@ -76,14 +92,13 @@ pub fn Tooltip(
                     return;
                 }
                 let rect = anchor.get_bounding_client_rect();
-                set_position
-                    .set((clamp_left(rect.left(), viewport_width()), rect.top() - ANCHOR_GAP_PX));
+                set_position.set((rect.left(), rect.top() - ANCHOR_GAP_PX));
                 set_hover.update(|n| *n += 1);
                 let mine = hover.get_untracked();
                 set_timeout(
                     move || {
-                        if hover.get_untracked() == mine {
-                            set_shown.set(true);
+                        if hover.try_get_untracked() == Some(mine) {
+                            set_shown.try_set(true);
                         }
                     },
                     OPEN_DELAY,
@@ -97,10 +112,12 @@ pub fn Tooltip(
             {children()}
             <Show when=move || shown.get()>
                 <span
+                    node_ref=bubble
                     class="fixed z-50 py-1 px-2 text-sm whitespace-normal break-all rounded border shadow-lg -translate-y-full pointer-events-none bg-base-100 border-base-content/10 text-base-content max-w-96 motion-preset-fade motion-duration-150"
                     role="tooltip"
                     style=move || {
                         let (left, top) = position.get();
+                        let left = clamp_left(left, bubble_width.get(), viewport_width());
                         format!("left: {left}px; top: {top}px")
                     }
                 >
@@ -121,16 +138,24 @@ mod tests {
     #[test]
     fn a_bubble_near_the_right_edge_is_pulled_back() {
         // Plenty of room: sits exactly under the cell.
-        assert_eq!(clamp_left(100.0, 1440.0), 100.0);
+        assert_eq!(clamp_left(100.0, 384.0, 1440.0), 100.0);
         // Too close to the edge: pulled left so the whole bubble is visible.
-        assert_eq!(clamp_left(1300.0, 1440.0), 1440.0 - 384.0 - 8.0);
+        assert_eq!(clamp_left(1300.0, 384.0, 1440.0), 1440.0 - 384.0 - 8.0);
+    }
+
+    /// A short label on a button at the right edge: pulling it back by the
+    /// widest a bubble may get would leave it pointing at nothing.
+    #[test]
+    fn a_narrow_bubble_is_only_pulled_back_by_its_own_width() {
+        assert_eq!(clamp_left(1300.0, 48.0, 1440.0), 1300.0);
+        assert_eq!(clamp_left(1420.0, 48.0, 1440.0), 1440.0 - 48.0 - 8.0);
     }
 
     /// On a window narrower than the bubble the clamp would go negative, which
     /// would hide the start of the text off the left edge.
     #[test]
     fn a_narrow_window_still_starts_on_screen() {
-        assert_eq!(clamp_left(10.0, 320.0), 8.0);
-        assert_eq!(clamp_left(0.0, 320.0), 0.0);
+        assert_eq!(clamp_left(10.0, 384.0, 320.0), 8.0);
+        assert_eq!(clamp_left(0.0, 384.0, 320.0), 0.0);
     }
 }

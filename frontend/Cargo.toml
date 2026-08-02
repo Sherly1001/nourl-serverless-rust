@@ -9,6 +9,9 @@ console_error_panic_hook = "0.1"
 gloo-net = { version = "0.6", features = ["http"] }
 wasm-bindgen = "0.2"
 wasm-bindgen-futures = "0.4"
+# Only to hand browser handles — never `Send` — to Leptos' cleanup hook, which
+# is `Send + Sync` for the server rendering this build does not do.
+send_wrapper = "0.6"
 web-sys = { version = "0.3", features = [
   "AbortController",
   "AbortSignal",
@@ -20,11 +23,14 @@ web-sys = { version = "0.3", features = [
   "DomRect",
   "Element",
   "HtmlElement",
+  "HtmlInputElement",
   "Storage",
   "MediaQueryList",
   "Event",
   "EventTarget",
   "KeyboardEvent",
+  "DragEvent",
+  "DataTransfer",
   "Node",
 ] }
 serde = { workspace = true }

@@ -1,5 +1,4 @@
 use std::collections::HashSet;
-use std::time::Duration;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -12,28 +11,12 @@ use crate::clipboard::{copy, origin, short_link};
 use crate::components::avatar::{Avatar, usable_url};
 use crate::components::confirm::ConfirmDialog;
 use crate::components::tooltip::Tooltip;
+use crate::list::{
+    GHOST_DELAY, GHOST_ROWS, GhostRow, LOAD_MORE_MARGIN, SEARCH_DEBOUNCE, Sort, SortHeader,
+    all_selected, list_params, short_datetime,
+};
 use crate::toast::use_toasts;
 use crate::ui::row_input_class;
-
-const PAGE_SIZE: u64 = 20;
-/// Long enough that typing a word is one request, short enough to feel live.
-const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
-/// Distance from the bottom at which the next page starts loading, so the rows
-/// are usually there before the scrollbar reaches the end.
-const LOAD_MORE_MARGIN: f64 = 200.0;
-/// Placeholder rows while the first page of a query is on its way.
-const GHOST_ROWS: usize = 6;
-/// How long a load may take before it is worth showing skeletons. A response
-/// that beats this never draws them, so a fast query does not flash.
-const GHOST_DELAY: Duration = Duration::from_millis(200);
-
-/// A column the server will sort by. Anything outside `backend::query::SORTABLE`
-/// comes back 400, so `Owner` deliberately has no sort control.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct Sort {
-    pub field: &'static str,
-    pub desc: bool,
-}
 
 /// What the table sorts by until told otherwise: most recently touched first,
 /// which is what someone opening the page usually wants to see. The server
@@ -43,74 +26,6 @@ pub const DEFAULT_SORT: Sort = Sort {
     field: "updated_at",
     desc: true,
 };
-
-/// Click cycle for a column: ascending, then descending, then back to no
-/// explicit sort at all. Three clicks return to where you started, so there is
-/// always a way out without hunting for the original column.
-///
-/// `None` means "whatever the server sorts by", which is why the signal holds
-/// an `Option` rather than defaulting to `created_at` here — that would make
-/// the third click on *that* column indistinguishable from the second.
-fn cycled(current: Option<Sort>, field: &'static str) -> Option<Sort> {
-    match current {
-        Some(sort) if sort.field == field => {
-            if sort.desc {
-                None
-            } else {
-                Some(Sort { field, desc: true })
-            }
-        }
-        _ => Some(Sort { field, desc: false }),
-    }
-}
-
-/// Percent-encodes a search term so `&`, `#` and friends cannot break out of
-/// the query string. Hand-rolled rather than `js_sys::encode_uri_component`,
-/// which is a JS binding and panics when the tests run off wasm.
-fn encode(value: &str) -> String {
-    let mut out = String::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match byte {
-            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'_' | b'.' | b'~' => {
-                out.push(*byte as char)
-            }
-            other => out.push_str(&format!("%{other:02X}")),
-        }
-    }
-    out
-}
-
-/// The query string for one page of results. An unset sort is left out so the
-/// server applies its own default.
-fn list_query(page: u64, search: &str, sort: Option<Sort>) -> String {
-    let mut query = format!("limit={PAGE_SIZE}&skip={}", page * PAGE_SIZE);
-    if let Some(sort) = sort {
-        let direction = if sort.desc { -1 } else { 1 };
-        query.push_str(&format!("&sort={},{direction}", sort.field));
-    }
-    if !search.trim().is_empty() {
-        query.push_str(&format!("&q={}", encode(search.trim())));
-    }
-    query
-}
-
-/// `2026-08-01T18:34:37.937Z` reads better as `2026-08-01 18:34`. Anything that
-/// is not the expected shape is shown as-is rather than mangled.
-fn short_datetime(raw: Option<&String>) -> String {
-    let Some(value) = raw else {
-        return "—".into();
-    };
-    match value.split_once('T') {
-        Some((date, time)) if time.len() >= 5 => format!("{date} {}", &time[..5]),
-        _ => value.clone(),
-    }
-}
-
-/// True only when there is something to select and all of it is selected — an
-/// empty table must not show a ticked "select all".
-fn all_selected(codes: &[String], selected: &HashSet<String>) -> bool {
-    !codes.is_empty() && codes.iter().all(|code| selected.contains(code))
-}
 
 /// What the delete dialog says, for one row or for a whole selection.
 fn delete_message(codes: &[String]) -> String {
@@ -123,55 +38,6 @@ fn delete_message(codes: &[String]) -> String {
 
 /// A column header that sorts. Owns the toggle rather than taking a callback,
 /// since the only thing it does is rewrite the shared `Sort`.
-#[component]
-fn SortHeader(
-    field: &'static str,
-    label: &'static str,
-    sort: RwSignal<Option<Sort>>,
-    /// Fixed width for the column, so it does not jump when the cell swaps
-    /// between text, an edit input and a loading skeleton.
-    #[prop(default = "")]
-    width: &'static str,
-) -> impl IntoView {
-    let icon = move || match sort.get() {
-        Some(current) if current.field == field && current.desc => {
-            "icon-[tabler--sort-descending] text-primary"
-        }
-        Some(current) if current.field == field => "icon-[tabler--sort-ascending] text-primary",
-        _ => "icon-[tabler--arrows-sort] opacity-30",
-    };
-
-    view! {
-        <th class=format!("p-0 {width}")>
-            <button
-                class="flex overflow-hidden gap-1 items-center py-3 px-3 w-full text-xs font-semibold tracking-wide uppercase hover:bg-base-200"
-                on:click=move |_| sort.update(|s| *s = cycled(*s, field))
-            >
-                <span class="truncate">{label}</span>
-                <span class=move || format!("{} size-4", icon())></span>
-            </button>
-        </th>
-    }
-}
-
-/// One placeholder row, shown while the first page of a new query loads.
-#[component]
-fn GhostRow(columns: usize) -> impl IntoView {
-    view! {
-        <tr>
-            {(0..columns)
-                .map(|_| {
-                    view! {
-                        <td>
-                            <span class="block w-full h-4 rounded animate-pulse bg-base-content/10"></span>
-                        </td>
-                    }
-                })
-                .collect_view()}
-        </tr>
-    }
-}
-
 #[component]
 pub fn MyUrls() -> impl IntoView {
     let auth = use_auth();
@@ -214,7 +80,7 @@ pub fn MyUrls() -> impl IntoView {
         if auth.user.get_untracked().is_none() {
             return;
         }
-        let query = list_query(index, &debounced.get_untracked(), sort.get_untracked());
+        let params = list_params(index, &debounced.get_untracked(), sort.get_untracked());
 
         // Cancel whatever is still in flight: the answer is about to be wrong.
         inflight.update_value(|slot| {
@@ -230,37 +96,43 @@ pub fn MyUrls() -> impl IntoView {
         let mine = generation.get_untracked();
         set_loading.set(true);
         set_slow.set(false);
+        // `try_` throughout: a timer or a request can outlive the page that
+        // started it, and writing a signal whose owner has been disposed panics
+        // — which in wasm is fatal to the whole app, not just to this page.
         set_timeout(
             move || {
                 // Still the current request, and still waiting.
-                if generation.get_untracked() == mine && loading.get_untracked() {
-                    set_slow.set(true);
+                if generation.try_get_untracked() == Some(mine)
+                    && loading.try_get_untracked() == Some(true)
+                {
+                    set_slow.try_set(true);
                 }
             },
             GHOST_DELAY,
         );
         spawn_local(async move {
-            let result = api::list_urls(&query, signal.as_ref()).await;
+            let result = api::list_urls(params, signal.as_ref()).await;
             // A newer request started while this one was out — including the
-            // one that aborted it, whose error is not worth showing.
-            if generation.get_untracked() != mine {
+            // one that aborted it, whose error is not worth showing. A page
+            // that is gone entirely reads as `None` and stops here too.
+            if generation.try_get_untracked() != Some(mine) {
                 return;
             }
             match result {
                 Ok(response) => {
-                    set_total.set(response.total);
+                    set_total.try_set(response.total);
                     if append {
-                        set_items.update(|rows| rows.extend(response.items));
+                        set_items.try_update(|rows| rows.extend(response.items));
                     } else {
-                        set_items.set(response.items);
+                        set_items.try_set(response.items);
                     }
-                    set_page.set(index);
+                    set_page.try_set(index);
                 }
                 Err(err) => toasts.error(err.message),
             }
-            set_loading.set(false);
-            set_slow.set(false);
-            set_loaded_once.set(true);
+            set_loading.try_set(false);
+            set_slow.try_set(false);
+            set_loaded_once.try_set(true);
         });
     };
 
@@ -305,8 +177,10 @@ pub fn MyUrls() -> impl IntoView {
         let mine = keystroke.get_untracked();
         set_timeout(
             move || {
-                if keystroke.get_untracked() == mine {
-                    set_debounced.set(search.get_untracked());
+                if keystroke.try_get_untracked() == Some(mine)
+                    && let Some(typed) = search.try_get_untracked()
+                {
+                    set_debounced.try_set(typed);
                 }
             },
             SEARCH_DEBOUNCE,
@@ -532,7 +406,7 @@ pub fn MyUrls() -> impl IntoView {
                                 <SortHeader field="code" label="Code" sort=sort width="w-32" />
                                 <SortHeader field="url" label="Destination" sort=sort />
                                 <Show when=move || auth.is_admin()>
-                                    <th class="px-3 w-28">"Owner"</th>
+                                    <th class="px-3 w-36">"Owner"</th>
                                 </Show>
                                 <SortHeader field="hits" label="Hits" sort=sort width="w-24" />
                                 <SortHeader
@@ -727,13 +601,27 @@ pub fn MyUrls() -> impl IntoView {
                                                     {if has_owner {
                                                         let name = owner_name.clone();
                                                         view! {
-                                                            <span class="flex gap-2 items-center">
-                                                                <Avatar
-                                                                    url=owner_avatar.clone()
-                                                                    name=name.clone()
-                                                                    size="size-6"
-                                                                />
-                                                                <span class="opacity-70">{name}</span>
+                                                            // `min-w-0` and the truncation matter in a
+                                                            // fixed-width column: a name nobody chose
+                                                            // to keep short would otherwise run across
+                                                            // the columns beside it.
+                                                            <span class="flex gap-2 items-center min-w-0">
+                                                                <span class="shrink-0">
+                                                                    <Avatar
+                                                                        url=owner_avatar.clone()
+                                                                        name=name.clone()
+                                                                        size="size-6"
+                                                                    />
+                                                                </span>
+                                                                <Tooltip
+                                                                    text=name.clone()
+                                                                    class="block opacity-70 truncate"
+                                                                >
+                                                                    // Cloned rather than moved: the
+                                                                    // children are rebuilt on every
+                                                                    // re-render of the row.
+                                                                    {name.clone()}
+                                                                </Tooltip>
                                                             </span>
                                                         }
                                                             .into_any()
@@ -867,83 +755,6 @@ pub fn MyUrls() -> impl IntoView {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    const BY_CODE: Sort = Sort {
-        field: "code",
-        desc: false,
-    };
-
-    #[test]
-    fn the_query_carries_paging_sort_and_only_a_real_search() {
-        // No sort at all: the server picks, rather than the UI guessing.
-        assert_eq!(list_query(0, "", None), "limit=20&skip=0");
-        assert_eq!(list_query(2, "   ", None), "limit=20&skip=40");
-        assert_eq!(
-            list_query(1, "abc", Some(BY_CODE)),
-            "limit=20&skip=20&sort=code,1&q=abc"
-        );
-        assert_eq!(
-            list_query(
-                0,
-                "",
-                Some(Sort {
-                    field: "hits",
-                    desc: true
-                })
-            ),
-            "limit=20&skip=0&sort=hits,-1"
-        );
-    }
-
-    /// An unencoded `&` or `#` would end the parameter and silently drop the
-    /// rest of the term.
-    #[test]
-    fn the_search_term_is_percent_encoded() {
-        assert!(list_query(0, "a&b", None).ends_with("&q=a%26b"));
-        assert!(list_query(0, "a b", None).ends_with("&q=a%20b"));
-    }
-
-    /// Three clicks on one column return to the starting state.
-    #[test]
-    fn a_column_cycles_ascending_descending_then_off() {
-        let first = cycled(None, "code");
-        assert_eq!(first, Some(BY_CODE));
-        let second = cycled(first, "code");
-        assert_eq!(
-            second,
-            Some(Sort {
-                field: "code",
-                desc: true
-            })
-        );
-        assert_eq!(cycled(second, "code"), None, "the third click clears it");
-    }
-
-    #[test]
-    fn a_different_column_starts_ascending_rather_than_inheriting() {
-        let descending_code = Some(Sort {
-            field: "code",
-            desc: true,
-        });
-        assert_eq!(
-            cycled(descending_code, "hits"),
-            Some(Sort {
-                field: "hits",
-                desc: false
-            })
-        );
-    }
-
-    #[test]
-    fn timestamps_are_shortened_to_the_minute() {
-        assert_eq!(
-            short_datetime(Some(&"2026-08-01T18:34:37.937Z".to_string())),
-            "2026-08-01 18:34"
-        );
-        assert_eq!(short_datetime(None), "—");
-        // Anything unexpected is shown rather than sliced into nonsense.
-        assert_eq!(short_datetime(Some(&"whenever".to_string())), "whenever");
-    }
 
     #[test]
     fn select_all_needs_something_to_select() {

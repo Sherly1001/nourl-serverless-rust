@@ -1042,6 +1042,7 @@ dependencies = [
  "console_error_panic_hook",
  "gloo-net",
  "leptos",
+ "send_wrapper",
  "serde",
  "shared",
  "wasm-bindgen",

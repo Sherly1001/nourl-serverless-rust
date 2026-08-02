@@ -2,9 +2,9 @@ use gloo_net::http::{Request, RequestBuilder, Response};
 use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::{
-    AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods, DeleteUserResponse,
-    LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
-    UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
+    AdminOrphans, AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods,
+    DeleteUserResponse, LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse,
+    UpdateSettingsRequest, UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
 };
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
@@ -80,16 +80,18 @@ pub async fn delete_url(code: &str) -> Result<(), ApiErrorBody> {
     send_empty(Request::delete(&format!("/api/urls/{code}"))).await
 }
 
-/// `query` is the already-encoded query string, without the leading `?`.
+/// `params` are the query parameters, which `gloo_net` encodes and appends —
+/// see [`crate::list::list_params`] for why they are not spliced into the path.
 ///
 /// Takes an abort signal because the search box refires on every pause in
 /// typing: without one, a slow early request can land after a later one and
 /// overwrite the newer results.
 pub async fn list_urls(
-    query: &str,
+    params: Vec<(&'static str, String)>,
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<UrlListResponse, ApiErrorBody> {
-    let resp = Request::get(&format!("/api/urls?{query}"))
+    let resp = Request::get("/api/urls")
+        .query(params)
         .abort_signal(signal)
         .send()
         .await
@@ -119,36 +121,49 @@ pub async fn auth_methods() -> Result<AuthMethods, ApiErrorBody> {
     get_json("/api/auth/methods").await
 }
 
-/// `query` is the already-encoded query string, without the leading `?`. It
-/// pages and searches the ordinary accounts only — the admins come back whole
-/// in the same response, because the tree cannot be paged without losing
+/// `params` page and search the ordinary accounts only — the admins come back
+/// whole in the same response, because the tree cannot be paged without losing
 /// interior nodes.
-pub async fn admin_users(query: &str) -> Result<AdminUserListResponse, ApiErrorBody> {
-    get_json(&format!("/api/admin/users?{query}")).await
+pub async fn admin_users(
+    params: Vec<(&'static str, String)>,
+) -> Result<AdminUserListResponse, ApiErrorBody> {
+    read_json(Request::get("/api/admin/users").query(params)).await
 }
 
 /// Promotes, demotes, or moves — the server treats all three as one write to
 /// the parent pointer. `parent` names who they hang under; `None` means the
 /// caller, which is the ordinary promotion.
+/// `orphans` decides what happens to the admins this account promoted, and is
+/// read by the server only on a demotion.
 pub async fn set_user_admin(
     id: &str,
     is_admin: bool,
     parent: Option<String>,
+    orphans: AdminOrphans,
 ) -> Result<SetAdminResponse, ApiErrorBody> {
     send_json(
         Request::put(&format!("/api/admin/users/{id}")),
         &SetAdminRequest {
             is_admin,
             promoted_by: parent,
+            orphans,
         },
     )
     .await
 }
 
 /// The response says how many links were orphaned and how long they have left,
-/// which is what the confirmation reports back.
-pub async fn delete_user(id: &str) -> Result<DeleteUserResponse, ApiErrorBody> {
-    read_json(Request::delete(&format!("/api/admin/users/{id}"))).await
+/// which is what the confirmation reports back. `orphans` decides what happens
+/// to the admins this account had promoted.
+pub async fn delete_user(
+    id: &str,
+    orphans: AdminOrphans,
+) -> Result<DeleteUserResponse, ApiErrorBody> {
+    let choice = match orphans {
+        AdminOrphans::Demote => "demote",
+        AdminOrphans::Reparent => "reparent",
+    };
+    read_json(Request::delete(&format!("/api/admin/users/{id}")).query([("orphans", choice)])).await
 }
 
 pub async fn admin_settings() -> Result<AdminSettings, ApiErrorBody> {
