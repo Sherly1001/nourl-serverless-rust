@@ -18,6 +18,13 @@ bson = "2"
 chrono = "0.4"
 dotenvy = "0.15"
 futures = "0.3"
+# rustls rather than the default native-tls: the Lambda image ships no system
+# OpenSSL, and the OAuth providers are the only thing this ever calls out to.
+reqwest = { version = "0.12", default-features = false, features = [
+  "json",
+  "rustls-tls",
+] }
+async-trait = "0.1"
 serde = { workspace = true }
 serde_json = { workspace = true }
 shared = { path = "../shared" }

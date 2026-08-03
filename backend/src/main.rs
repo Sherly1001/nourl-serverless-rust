@@ -1,5 +1,7 @@
 use backend::app::{AppState, build_app};
 use backend::config::Config;
+use backend::oauth::Providers;
+use std::sync::Arc;
 
 fn fatal(context: &str, err: impl std::fmt::Display) -> ! {
     tracing::error!(error = %err, "{context}");
@@ -21,6 +23,7 @@ async fn main() {
     let app = build_app(AppState {
         db,
         config: config.clone(),
+        providers: Arc::new(Providers::production()),
     });
 
     if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {

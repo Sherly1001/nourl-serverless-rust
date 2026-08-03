@@ -1,3 +1,5 @@
+use std::sync::Arc;
+
 use axum::Router;
 use axum::extract::State;
 use axum::http::{HeaderMap, Uri};
@@ -7,6 +9,7 @@ use mongodb::Database;
 
 use crate::config::Config;
 use crate::error::AppError;
+use crate::oauth::Providers;
 use crate::routes::admin::{
     delete_user, get_settings, list_users, set_user_admin, update_settings,
 };
@@ -20,6 +23,9 @@ use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
 pub struct AppState {
     pub db: Database,
     pub config: Config,
+    /// One client per provider, so a handler goes straight from a path segment
+    /// to the thing that talks to it — and the tests can swap in a stub.
+    pub providers: Arc<Providers>,
 }
 
 pub fn build_app(state: AppState) -> Router {

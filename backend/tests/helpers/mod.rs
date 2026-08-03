@@ -1,7 +1,10 @@
 #![allow(dead_code)] // each integration-test binary uses a subset of these helpers
 
+use std::sync::Arc;
+
 use backend::app::{AppState, build_app};
 use backend::config::Config;
+use backend::oauth::Providers;
 
 pub const FALLBACK: &str = "https://fallback.example";
 pub const JWT_SECRET: &str = "test-secret-not-used-in-production";
@@ -14,7 +17,12 @@ pub async fn test_db() -> mongodb::Database {
     backend::db::connect(&url, &name).await.unwrap()
 }
 
-pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Database) {
+/// The router with a chosen set of providers — the OAuth tests hand it stubs,
+/// so nothing in the suite ever calls a real provider.
+pub async fn test_app_with_providers(
+    fallback: Option<&str>,
+    providers: Providers,
+) -> (axum::Router, mongodb::Database) {
     let db = test_db().await;
     backend::db::ensure_indexes(&db).await.unwrap();
     let config = Config {
@@ -33,9 +41,16 @@ pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Da
         build_app(AppState {
             db: db.clone(),
             config,
+            providers: Arc::new(providers),
         }),
         db,
     )
+}
+
+/// The router with the real providers. Nothing in the suite drives a flow
+/// through them, so they are never actually called.
+pub async fn test_app_with(fallback: Option<&str>) -> (axum::Router, mongodb::Database) {
+    test_app_with_providers(fallback, Providers::production()).await
 }
 
 pub async fn test_app() -> (axum::Router, mongodb::Database) {
