@@ -10,7 +10,10 @@ pub struct Config {
     /// OAuth callback URL is built from it, and it has to match what is
     /// registered at the provider. Taken from configuration rather than the
     /// request's own `Host` header, which a caller controls. `None` falls back
-    /// to `http://127.0.0.1:8080` — the Trunk dev server, which proxies `/api`.
+    /// to `https://nourl.space`, so a deployment that forgets to set it points
+    /// at the real site rather than at a developer's laptop. Local work against
+    /// a provider has to set it — `http://127.0.0.1:8080` is the Trunk dev
+    /// server, which proxies `/api`.
     pub public_base_url: Option<String>,
     /// HMAC secret for session tokens.
     pub jwt_secret: String,

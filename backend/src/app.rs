@@ -16,6 +16,7 @@ use crate::routes::admin::{
 use crate::routes::auth::{
     change_password, delete_me, login, logout, me, methods, register, update_me,
 };
+use crate::routes::oauth::{callback, start};
 use crate::routes::redirect::{fallback_url, found, redirect};
 use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
 
@@ -36,6 +37,10 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/auth/me", get(me).put(update_me).delete(delete_me))
         .route("/api/auth/methods", get(methods))
         .route("/api/auth/password", put(change_password))
+        // After the fixed segments above. Axum prefers a literal over a
+        // capture whatever the order, but the order says so out loud.
+        .route("/api/auth/{provider}", get(start))
+        .route("/api/auth/{provider}/callback", get(callback))
         .route("/api/admin/users", get(list_users))
         .route(
             "/api/admin/settings",

@@ -7,6 +7,10 @@ port = 8080
 
 [[proxy]]
 backend = "http://127.0.0.1:9669/api/"
+# The OAuth routes answer 302 — to the provider on the way out, to the app on
+# the way back. Without this the dev proxy chases the redirect itself and hands
+# the browser a 500; the browser is the one that has to make the trip.
+no_redirect = true
 
 [[hooks]]
 stage = "pre_build"

@@ -127,6 +127,12 @@ pub async fn find_by_email(db: &Database, email: &str) -> Result<Option<User>, A
     }
 }
 
+/// Attaches a provider identity to an account.
+///
+/// A 409 when the identity is already on another account: the unique index on
+/// the provider field is what settles a race between two callbacks claiming it,
+/// and the loser has to be told the same thing it would have been told had it
+/// arrived a moment later.
 pub async fn link_provider(
     db: &Database,
     id: &str,
@@ -135,7 +141,14 @@ pub async fn link_provider(
 ) -> Result<(), AppError> {
     collection(db)
         .update_one(doc! {"id": id}, doc! {"$set": {kind.field(): provider_id}})
-        .await?;
+        .await
+        .map_err(|err| {
+            if is_duplicate_key(&err) {
+                AppError::conflict("that account is already linked to another user")
+            } else {
+                err.into()
+            }
+        })?;
     Ok(())
 }
 
