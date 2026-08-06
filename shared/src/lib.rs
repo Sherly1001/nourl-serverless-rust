@@ -121,12 +121,20 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
     }
 }
 
+/// The length a username has to land in. Public because the OAuth sign-in
+/// derives one from a provider handle, and a second copy of the numbers would
+/// be free to drift out of step with the check that enforces them.
+pub const USERNAME_MIN: usize = 3;
+pub const USERNAME_MAX: usize = 32;
+
 /// Stricter than `validate_code`: no spaces, because a username is typed into
 /// a login form where leading and trailing whitespace is invisible and
 /// impossible to debug.
 pub fn validate_username(username: &str) -> Result<(), String> {
-    if username.len() < 3 || username.len() > 32 {
-        return Err("username must be 3-32 characters".into());
+    if username.len() < USERNAME_MIN || username.len() > USERNAME_MAX {
+        return Err(format!(
+            "username must be {USERNAME_MIN}-{USERNAME_MAX} characters"
+        ));
     }
     if !username
         .chars()

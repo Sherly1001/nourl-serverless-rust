@@ -4,6 +4,7 @@
 //! learn which one they are talking to and the integration tests can hand the
 //! router a stub instead of a live OAuth app.
 
+pub mod account;
 pub mod facebook;
 pub mod github;
 pub mod google;

@@ -88,6 +88,68 @@ pub async fn find_by_id(db: &Database, id: &str) -> Result<Option<User>, AppErro
     find_one(db, doc! {"id": id}).await
 }
 
+/// The account holding this provider identity, if any. `kind.field()` is the
+/// only source of the field name — it never comes from a request.
+pub async fn find_by_provider(
+    db: &Database,
+    kind: crate::oauth::ProviderKind,
+    provider_id: &str,
+) -> Result<Option<User>, AppError> {
+    find_one(db, doc! {kind.field(): provider_id}).await
+}
+
+/// The single account holding this address, compared case-insensitively.
+///
+/// `None` when nobody holds it *and* when more than one account does: email is
+/// not unique in this collection, and picking one of several would decide an
+/// account takeover by document order.
+pub async fn find_by_email(db: &Database, email: &str) -> Result<Option<User>, AppError> {
+    let lowered = email.trim().to_lowercase();
+    if lowered.is_empty() {
+        return Ok(None);
+    }
+    // Escaped, or an address containing regex syntax would match addresses it
+    // does not equal — and the match is what decides who gets signed in.
+    let pattern = format!("^{}$", regex::escape(&lowered));
+    let mut matches: Vec<Document> = collection(db)
+        .find(doc! {"email": {"$regex": pattern, "$options": "i"}})
+        // Two is enough to know it is not one.
+        .limit(2)
+        .await?
+        .try_collect()
+        .await?;
+    if matches.len() == 1 {
+        Ok(Some(
+            bson::from_document(matches.remove(0)).map_err(AppError::internal)?,
+        ))
+    } else {
+        Ok(None)
+    }
+}
+
+pub async fn link_provider(
+    db: &Database,
+    id: &str,
+    kind: crate::oauth::ProviderKind,
+    provider_id: &str,
+) -> Result<(), AppError> {
+    collection(db)
+        .update_one(doc! {"id": id}, doc! {"$set": {kind.field(): provider_id}})
+        .await?;
+    Ok(())
+}
+
+pub async fn unlink_provider(
+    db: &Database,
+    id: &str,
+    kind: crate::oauth::ProviderKind,
+) -> Result<(), AppError> {
+    collection(db)
+        .update_one(doc! {"id": id}, doc! {"$unset": {kind.field(): ""}})
+        .await?;
+    Ok(())
+}
+
 /// Everything a new account can be born with. `hash_passwd` is optional
 /// because phase 2b creates OAuth-only accounts that never have a password,
 /// and the profile fields are optional because password signups supply none of
@@ -113,6 +175,18 @@ impl NewUser {
             username: username.to_string(),
             hash_passwd: Some(hash_passwd),
             ..Default::default()
+        }
+    }
+
+    /// An account born from a provider profile. No password: these accounts
+    /// sign in through the provider until their owner sets one.
+    pub fn from_profile(username: String, profile: &crate::oauth::Profile) -> Self {
+        Self {
+            username,
+            hash_passwd: None,
+            display_name: profile.display_name.clone(),
+            email: profile.email.clone(),
+            avatar_url: profile.avatar_url.clone(),
         }
     }
 }
