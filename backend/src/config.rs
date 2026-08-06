@@ -6,6 +6,12 @@ pub struct Config {
     /// Explicit override for the not-found redirect target. When `None`, the
     /// redirect falls back to the request's own host (`https://{host}`).
     pub notfound_fallback_url: Option<String>,
+    /// Origin the provider redirects back to, e.g. `https://nourl.space`. The
+    /// OAuth callback URL is built from it, and it has to match what is
+    /// registered at the provider. Taken from configuration rather than the
+    /// request's own `Host` header, which a caller controls. `None` falls back
+    /// to `http://127.0.0.1:8080` — the Trunk dev server, which proxies `/api`.
+    pub public_base_url: Option<String>,
     /// HMAC secret for session tokens.
     pub jwt_secret: String,
     /// Lifetime of a session token and its cookie. Both must agree, or the
@@ -51,6 +57,9 @@ impl Config {
                 .and_then(|p| p.parse().ok())
                 .unwrap_or(9669),
             notfound_fallback_url: std::env::var("NOTFOUND_FALLBACK_URL")
+                .ok()
+                .filter(|v| !v.is_empty()),
+            public_base_url: std::env::var("PUBLIC_BASE_URL")
                 .ok()
                 .filter(|v| !v.is_empty()),
             jwt_secret: std::env::var("JWT_SECRET")

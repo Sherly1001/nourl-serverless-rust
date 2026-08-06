@@ -42,6 +42,7 @@ mod tests {
             db_name: "t".into(),
             port: 0,
             notfound_fallback_url: None,
+            public_base_url: None,
             jwt_secret: "s".into(),
             session_days,
             cookie_secure: secure,

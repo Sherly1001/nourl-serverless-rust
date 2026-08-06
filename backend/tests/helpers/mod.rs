@@ -30,6 +30,7 @@ pub async fn test_app_with_providers(
         db_name: db.name().to_string(),
         port: 0,
         notfound_fallback_url: fallback.map(String::from),
+        public_base_url: Some("https://test.example".into()),
         jwt_secret: JWT_SECRET.into(),
         session_days: SESSION_DAYS,
         cookie_secure: false,
