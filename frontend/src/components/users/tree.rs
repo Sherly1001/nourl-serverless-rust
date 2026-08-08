@@ -61,6 +61,19 @@ pub fn may_manage(
     descends_from(row.promoted_by.as_deref(), &actor.id, parent_of)
 }
 
+/// Whether this row is the actor giving up their own flag.
+///
+/// The one thing [`may_manage`] refuses that the server allows: resigning has a
+/// route of its own, and needs no permission — the flag was a favour, and
+/// whoever granted it can grant it again.
+///
+/// A root is refused, matching the server. Nobody is above them to put it back,
+/// and the cascade would take every admin on the system down with them, leaving
+/// the admin pages reachable only by editing the collection.
+pub fn may_resign(actor: &UserInfo, row: &AdminUserInfo) -> bool {
+    actor.is_admin && !actor.is_root && actor.id == row.id && row.is_admin
+}
+
 /// Whether this row may be moved under `parent`, mirroring the server's rules
 /// for a re-parent: the destination has to be an admin the caller controls, and
 /// must not sit inside the branch being moved.
@@ -300,6 +313,29 @@ pub mod fixtures {
 mod tests {
     use super::fixtures::*;
     use super::*;
+
+    /// Giving up the flag is the one thing `may_manage` refuses that the server
+    /// allows — it has a route of its own, `resign`, and only a root is turned
+    /// away there.
+    #[test]
+    fn an_admin_may_give_up_their_own_flag_but_a_root_may_not() {
+        let admins = tree();
+
+        let mut me = actor("left", true);
+        assert!(may_resign(&me, &row(&admins, "left")));
+
+        // Only your own row, and only while you hold the flag.
+        assert!(!may_resign(&me, &row(&admins, "right")));
+        assert!(!may_resign(&me, &plain("left")));
+
+        // Nobody is above a root to give it back, and the cascade would take
+        // every admin below them with it.
+        me.is_root = true;
+        assert!(!may_resign(&me, &row(&admins, "left")));
+
+        // Nothing to give up.
+        assert!(!may_resign(&actor("nobody", false), &plain("nobody")));
+    }
 
     #[test]
     fn an_admin_manages_their_own_subtree_and_nothing_else() {

@@ -13,7 +13,7 @@ use crate::components::tooltip::Tooltip;
 use crate::dropdown::dismiss_on_outside_click;
 use crate::list::short_datetime;
 
-use super::tree::{may_manage, may_move_under};
+use super::tree::{may_manage, may_move_under, may_resign};
 
 /// What `<For>` keys a row by.
 ///
@@ -139,6 +139,11 @@ pub fn UserRow(
         .user
         .get_untracked()
         .is_some_and(|me| may_manage(&me, &user, &parent_of));
+    // Your own row is not manageable, but you may still stand down from it.
+    let resignable = auth
+        .user
+        .get_untracked()
+        .is_some_and(|me| may_resign(&me, &user));
     let is_admin = user.is_admin;
     let level = user.admin_level.unwrap_or(0);
     // Only a row the server would let this admin re-parent is worth picking up.
@@ -229,10 +234,16 @@ pub fn UserRow(
     // What each control does, for the hover hint. An icon on its own says
     // nothing, and the action differs by row: a switch that grants for one
     // account withdraws for the next.
-    let admin_hint = match (manageable, is_admin) {
-        (false, _) => "Not yours to change",
-        (true, true) => "Remove admin",
-        (true, false) => "Make admin",
+    let admin_hint = match (manageable, resignable, is_admin) {
+        (true, _, true) => "Remove admin",
+        (true, _, false) => "Make admin",
+        // Standing down reads differently from taking someone else's flag: it
+        // needs nobody's permission, and it is not something to do by accident.
+        (false, true, _) => "Give up admin",
+        (false, false, _) if mine && is_admin => {
+            "The top admin's flag can only be removed in the database"
+        }
+        (false, false, _) => "Not yours to change",
     };
     let delete_hint = if manageable {
         "Delete account"
@@ -436,7 +447,7 @@ pub fn UserRow(
                             class="switch switch-sm"
                             aria-label=move || admin_label.get_value()
                             prop:checked=is_admin
-                            disabled=!manageable
+                            disabled=!(manageable || resignable)
                             on:change=move |ev: leptos::ev::Event| {
                                 if let Some(box_) = ev
                                     .target()

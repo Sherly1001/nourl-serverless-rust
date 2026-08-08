@@ -21,7 +21,10 @@ use crate::list::{
 use crate::toast::use_toasts;
 
 use row::{UserRow, row_key};
-use text::{GRACE_DAYS, bulk_delete_warning, bulk_demote_warning, delete_warning, demote_warning};
+use text::{
+    GRACE_DAYS, bulk_delete_warning, bulk_demote_warning, delete_warning, demote_warning,
+    resign_warning,
+};
 use tree::{
     descendants, has_children, matches, may_manage, orphaned_admins, parents, search_tree,
     tree_order, visible_rows,
@@ -199,6 +202,19 @@ pub fn Users() -> impl IntoView {
                         _ => done.to_string(),
                     };
                     toasts.success(note);
+                    // Standing down takes this page away along with the flag.
+                    // The session in hand still claims to hold it, so refresh
+                    // it before leaving — otherwise the navbar keeps offering
+                    // tabs whose every request now answers 403.
+                    let stood_down =
+                        !is_admin && auth.user.get_untracked().is_some_and(|me| me.id == id);
+                    if stood_down {
+                        auth.user.try_set(api::me().await.ok());
+                        if let Some(window) = web_sys::window() {
+                            let _ = window.location().set_hash("/");
+                        }
+                        return;
+                    }
                     reload();
                 }
                 Err(err) => toasts.error(err.message),
@@ -339,9 +355,19 @@ pub fn Users() -> impl IntoView {
 
     // The dialog's wording depends on which action opened it, and the cascade
     // count comes from the tree already loaded.
+    // Whether a one-row demote is aimed at the signed-in admin. Resigning is a
+    // different act from taking someone else's flag, and the dialog has to say
+    // so — see `resign_warning`.
+    let resigning = move || match pending.get() {
+        Some(Pending::Demote(rows)) if rows.len() == 1 => {
+            auth.user.get().is_some_and(|me| me.id == rows[0].id)
+        }
+        _ => false,
+    };
     let dialog_title = move || match pending.get() {
         Some(Pending::Delete(rows)) if rows.len() == 1 => "Delete account".to_string(),
         Some(Pending::Delete(rows)) => format!("Delete {} accounts", rows.len()),
+        _ if resigning() => "Give up admin".to_string(),
         _ => "Remove admin".to_string(),
     };
     let dialog_message = move || match pending.get() {
@@ -357,7 +383,11 @@ pub fn Users() -> impl IntoView {
             } else {
                 descendants(&rows[0].id, &admins.get()).len()
             };
-            demote_warning(&rows[0], below)
+            if resigning() {
+                resign_warning(below)
+            } else {
+                demote_warning(&rows[0], below)
+            }
         }
         Some(Pending::Demote(rows)) if has_orphans() => bulk_demote_warning(&rows, 0),
         Some(Pending::Demote(rows)) => {

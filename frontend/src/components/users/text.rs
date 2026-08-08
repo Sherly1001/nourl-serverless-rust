@@ -43,6 +43,18 @@ pub fn demote_warning(user: &AdminUserInfo, below: usize) -> String {
     }
 }
 
+/// The same dialog aimed at yourself. Worth its own wording: the server calls
+/// this resigning and treats it as a different act — it needs nobody's
+/// permission — and "Remove admin from sher?" asked of sher reads as though
+/// somebody else were doing it.
+pub fn resign_warning(below: usize) -> String {
+    match below {
+        0 => "Give up your own admin flag? You will lose the admin pages.".to_string(),
+        1 => "Give up your own admin flag? The 1 admin you promoted loses it too.".to_string(),
+        n => format!("Give up your own admin flag? The {n} admins below you lose it too."),
+    }
+}
+
 /// What a bulk delete warns about: how many accounts, and how many links they
 /// leave behind between them.
 pub fn bulk_delete_warning(users: &[AdminUserInfo], grace_days: u32) -> String {
@@ -132,5 +144,21 @@ mod tests {
         assert!(one.contains("The 1 admin they promoted"), "{one}");
         assert!(!one.contains("1 admins"), "singular: {one}");
         assert!(demote_warning(&plain("top"), 3).contains("The 3 admins below them"));
+    }
+
+    /// Resigning is addressed to the person doing it, so it never names them
+    /// in the third person and always says what they are about to lose.
+    #[test]
+    fn resigning_is_worded_as_your_own_decision() {
+        for below in [0, 1, 3] {
+            let text = resign_warning(below);
+            assert!(text.contains("your own admin flag"), "{text}");
+            assert!(!text.contains("them?"), "not about somebody else: {text}");
+        }
+        assert!(resign_warning(0).contains("lose the admin pages"));
+        let one = resign_warning(1);
+        assert!(one.contains("The 1 admin you promoted"), "{one}");
+        assert!(!one.contains("1 admins"), "singular: {one}");
+        assert!(resign_warning(3).contains("The 3 admins below you"));
     }
 }
