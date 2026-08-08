@@ -582,3 +582,105 @@ async fn a_stale_session_does_not_break_the_flow() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_provider_can_be_disconnected_but_never_the_last_way_in() {
+    let (app, db) = test_app_with_providers(
+        Some(FALLBACK),
+        stubbed(Profile {
+            email: None,
+            email_verified: false,
+            ..verified("gh-55", "solo", "")
+        }),
+    )
+    .await;
+    enable(&db, "github").await;
+
+    // An account that exists only through the provider.
+    let landed = flow(&app, "github", "code=ok", None).await;
+    let session = session_cookie(&landed).unwrap();
+
+    // Removing it would leave no way to sign in at all.
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            "/api/auth/github",
+            &session,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    assert_eq!(
+        body_json(refused).await["error"]["code"],
+        "last_login_method"
+    );
+
+    // With a password set, it may go. Setting one bumps `token_version`, and
+    // the response carries the replacement cookie.
+    let with_password = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/auth/password",
+            &session,
+            json!({"new_password": "hunter2hunter2"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(with_password.status(), StatusCode::OK);
+    let session = session_cookie(&with_password).unwrap();
+
+    let removed = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            "/api/auth/github",
+            &session,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(removed.status(), StatusCode::OK);
+    assert!(
+        body_json(removed).await["providers"]
+            .as_array()
+            .unwrap()
+            .is_empty(),
+        "the answer should already show it gone"
+    );
+
+    assert_eq!(
+        provider_id(&db, "solo", "github_id").await,
+        None,
+        "the identity should be off the account, not merely hidden"
+    );
+
+    // Gone means gone: asking again is a 404, not a second success.
+    let again = app
+        .clone()
+        .oneshot(authed_request(
+            "DELETE",
+            "/api/auth/github",
+            &session,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::NOT_FOUND);
+
+    // And a name that is not a provider at all never reaches the database.
+    let nonsense = app
+        .oneshot(authed_request(
+            "DELETE",
+            "/api/auth/myspace",
+            &session,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(nonsense.status(), StatusCode::NOT_FOUND);
+
+    db.drop().await.unwrap();
+}

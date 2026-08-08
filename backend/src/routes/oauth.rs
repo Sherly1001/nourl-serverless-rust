@@ -5,13 +5,15 @@
 //! that navigation is a dead end — the login page is the only place with
 //! anything useful to say.
 
+use axum::Json;
 use axum::extract::{Path, Query, State};
 use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use serde::Deserialize;
+use shared::UserInfo;
 
 use crate::app::AppState;
-use crate::auth::extract::OptionalUser;
+use crate::auth::extract::{CurrentUser, OptionalUser};
 use crate::auth::{cookie, jwt};
 use crate::error::AppError;
 use crate::oauth::account::{Decision, decide, username_candidates};
@@ -286,4 +288,41 @@ fn redirect_uri(app: &AppState, kind: ProviderKind) -> String {
         base.trim_end_matches('/'),
         kind.as_str()
     )
+}
+
+/// `DELETE /api/auth/{provider}` — takes an identity off the caller's account.
+///
+/// Refused when it is the last way in. The account would still exist, with
+/// links attached to it, and nobody able to reach it: the same lockout rule the
+/// settings page enforces for login methods.
+///
+/// Unlike the two routes above this one answers with JSON. It is called from a
+/// page by `fetch`, not walked into by a browser, so there is no navigation to
+/// land anywhere.
+pub async fn disconnect(
+    State(app): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    Path(provider): Path<String>,
+) -> Result<Json<UserInfo>, AppError> {
+    let kind =
+        ProviderKind::parse(&provider).ok_or_else(|| AppError::not_found("no such provider"))?;
+    let connected = user.providers();
+    if !connected.iter().any(|p| p == kind.as_str()) {
+        return Err(AppError::not_found("that provider is not connected"));
+    }
+    // Whether anything would be left to sign in with afterwards. A password
+    // counts; another provider counts; nothing else does.
+    if user.hash_passwd.is_none() && connected.len() == 1 {
+        return Err(AppError {
+            status: axum::http::StatusCode::BAD_REQUEST,
+            code: "last_login_method",
+            message: "that is the only way into this account — set a password first".into(),
+            field: None,
+        });
+    }
+    users::unlink_provider(&app.db, &user.id, kind).await?;
+    let reloaded = users::find_by_id(&app.db, &user.id)
+        .await?
+        .ok_or_else(|| AppError::internal("user vanished mid-update"))?;
+    Ok(Json(reloaded.to_info()))
 }
