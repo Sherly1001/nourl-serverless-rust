@@ -53,7 +53,11 @@ fn ToastCard(toast: Toast) -> impl IntoView {
         }
     });
 
-    let icon = format!("{} size-5 shrink-0", toast.kind.icon_class());
+    // `mt-0.5` centres it on the *first* line rather than on the message as a
+    // whole, which is what a three-line error needs. The 2px is the gap between
+    // the 20px icon and the 24px line box the message inherits; the ✕ beside it
+    // is 24px and so needs none.
+    let icon = format!("{} size-5 shrink-0 mt-0.5", toast.kind.icon_class());
     let message = toast.message.clone();
 
     view! {

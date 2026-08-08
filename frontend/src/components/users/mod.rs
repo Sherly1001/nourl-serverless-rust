@@ -721,7 +721,7 @@ pub fn Users() -> impl IntoView {
                                     <input
                                         type="radio"
                                         name="orphans"
-                                        class="mt-1 radio radio-sm"
+                                        class="radio radio-sm"
                                         prop:checked=move || orphans.get() == AdminOrphans::Demote
                                         on:change=move |_| orphans.set(AdminOrphans::Demote)
                                     />
@@ -733,7 +733,7 @@ pub fn Users() -> impl IntoView {
                                     <input
                                         type="radio"
                                         name="orphans"
-                                        class="mt-1 radio radio-sm"
+                                        class="radio radio-sm"
                                         prop:checked=move || orphans.get() == AdminOrphans::Reparent
                                         on:change=move |_| orphans.set(AdminOrphans::Reparent)
                                     />

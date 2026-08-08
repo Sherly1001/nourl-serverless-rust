@@ -34,6 +34,19 @@ pub fn row_key(user: &AdminUserInfo, branching: bool, matched: bool) -> String {
     )
 }
 
+/// Whether a row that draws no chevron still has to reserve its width.
+///
+/// Every admin does, roots included: a root with a branch draws a chevron and a
+/// root without one does not, and without the gutter those two sit at different
+/// depths while both being level 0. The tree is read by where a row starts, so
+/// that misalignment says the wrong thing about the chain.
+///
+/// Accounts with no rank are a flat list where nothing branches, so they keep
+/// the edge.
+pub fn needs_gutter(is_admin: bool) -> bool {
+    is_admin
+}
+
 /// Space kept between a menu and the button it hangs off, and the most menu
 /// that will ever be drawn before it starts scrolling inside itself.
 const MENU_GAP: f64 = 4.0;
@@ -327,14 +340,19 @@ pub fn UserRow(
                         })
                         .collect_view()}
                     <span class="flex overflow-hidden gap-2 items-center py-2 pl-1 min-w-0">
-                        // The gutter only earns its space where a sibling
-                        // might have a chevron: below the top level. A row
-                        // sitting flush left — a root, or anyone with no rank
-                        // at all — starts at the edge instead.
+                        // The gutter earns its space wherever a sibling might
+                        // have a chevron — see `needs_gutter`.
                         <Show
                             when=move || branching
                             fallback=move || {
-                                (level > 0).then(|| view! { <span class="shrink-0 size-5"></span> })
+                                needs_gutter(is_admin)
+                                    .then(|| {
+                                        // `size-6`, matching the chevron button exactly:
+                                        // `btn-xs btn-square` is `--size-field * 6` =
+                                        // 24px, and a 20px spacer would start this row's
+                                        // name 4px left of a sibling that has a chevron.
+                                        view! { <span class="shrink-0 size-6"></span> }
+                                    })
                             }
                         >
                             <Tooltip text=fold_hint class="inline-flex" only_when_clipped=false>
@@ -522,6 +540,14 @@ pub fn UserRow(
 mod tests {
     use super::super::tree::fixtures::*;
     use super::*;
+
+    /// Two roots, one with a branch and one without, have to start at the same
+    /// depth — otherwise the childless one reads as sitting above the other.
+    #[test]
+    fn every_admin_reserves_the_chevrons_width_even_at_the_top_level() {
+        assert!(needs_gutter(true), "a root with no children still lines up");
+        assert!(!needs_gutter(false), "accounts with no rank keep the edge");
+    }
 
     #[test]
     fn the_row_key_changes_when_a_move_changes_the_row() {
