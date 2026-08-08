@@ -6,6 +6,7 @@ use shared::{
 
 use crate::api;
 use crate::auth::use_auth;
+use crate::components::password_input::PasswordInput;
 use crate::toast::use_toasts;
 use crate::ui::input_class;
 
@@ -265,26 +266,24 @@ pub fn Login() -> impl IntoView {
                             <label class="mb-2 text-lg font-semibold label-text" for="password">
                                 "Password"
                             </label>
-                            <input
+                            <PasswordInput
                                 id="password"
-                                type="password"
-                                class=move || input_class(password_error.get().is_some())
-                                autocomplete=move || {
+                                value=password
+                                invalid=Signal::derive(move || password_error.get().is_some())
+                                describedby="password-error"
+                                autocomplete=Signal::derive(move || {
                                     if registering.get() {
-                                        "new-password"
+                                        "new-password".to_string()
                                     } else {
-                                        "current-password"
+                                        "current-password".to_string()
                                     }
-                                }
-                                aria-invalid=move || password_error.get().is_some().to_string()
-                                aria-describedby="password-error"
-                                prop:value=password
-                                on:input=move |ev| {
-                                    set_password.set(event_target_value(&ev));
+                                })
+                                on_input=Callback::new(move |value| {
+                                    set_password.set(value);
                                     set_touched.set(true);
                                     set_server_error.set(None);
-                                }
-                                on:blur=move |_| set_touched.set(true)
+                                })
+                                on_blur=Callback::new(move |()| set_touched.set(true))
                             />
                             <p
                                 id="password-error"
