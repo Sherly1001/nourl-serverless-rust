@@ -133,19 +133,32 @@ the admin flag and deletes accounts, `#/settings` turns login methods on and off
 and holds the OAuth credentials.
 
 Admins form a chain — whoever grants the flag owns that branch, and an admin can
-act only on accounts below their own. Nobody may act on their own row, which is
-what stops the last admin demoting or deleting themselves and locking everyone
-out. The account promoted by hand above is the root of that chain: it answers to
-nobody, cannot be reached through the API, and is the only one the settings page
-opens for.
+act only on accounts below their own. The account promoted by hand above is the
+root of that chain: it answers to nobody, cannot be reached through the API, and
+is the only one the settings page opens for.
 
-Removing an admin, or deleting their account, asks what becomes of the admins
-they promoted — demote that whole branch, or hand it to their own parent so it
-keeps the flag one level shallower.
+The one thing an admin may do to their own row is **give up the flag**. Nobody
+should have to ask permission to stop being responsible for something, and
+whoever promoted them can put it back. Everything else aimed at yourself stays
+refused — promoting yourself resets your own place in the chain, moving yourself
+leaves the branch you were put in, and deleting yourself is what would let the
+last admin lock everyone out. A **root cannot resign either**: nothing sits above
+them to restore it, so the flag comes off in the database, which is where it went
+on.
 
-Deleting a user never deletes their links. They become unowned and get
-`expires_at = min(existing, now + 7 days)`, so an orphaned code frees itself
-within a week unless somebody claims it by re-creating or editing it.
+Removing an admin, giving up your own flag, or deleting an admin's account all
+ask what becomes of the admins they promoted — demote that whole branch, or hand
+it to their own parent so it keeps the flag one level shallower.
+
+An admin deleting _someone else_ never deletes their links. They become unowned
+and get `expires_at = min(existing, now + 7 days)`, so an orphaned code frees
+itself within a week unless somebody claims it by re-creating or editing it.
+
+**Closing your own account** is the one place that choice is yours: `#/account`
+asks whether your links go with you — gone the moment the account is — or stay
+up, unowned, on that same one-week clock. An admin must give up the flag before
+closing their account, so the branch below them is dealt with in the open rather
+than as a side effect.
 
 ## Layout
 
