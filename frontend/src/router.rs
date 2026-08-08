@@ -5,6 +5,7 @@ use wasm_bindgen::prelude::*;
 pub enum Route {
     Shorten,
     Login,
+    Account,
     MyUrls,
     Users,
     Settings,
@@ -25,6 +26,7 @@ pub fn parse_route(hash: &str) -> Route {
     match path.trim_start_matches('#').trim_start_matches('/') {
         "" => Route::Shorten,
         "login" => Route::Login,
+        "account" => Route::Account,
         "urls" => Route::MyUrls,
         "users" => Route::Users,
         "settings" => Route::Settings,
@@ -53,6 +55,11 @@ mod tests {
         assert_eq!(parse_route("#/"), Route::Shorten);
         assert_eq!(parse_route("#"), Route::Shorten);
         assert_eq!(parse_route("#/whatever"), Route::NotFound);
+    }
+
+    #[test]
+    fn parses_the_account_route() {
+        assert_eq!(parse_route("#/account"), Route::Account);
     }
 
     #[test]

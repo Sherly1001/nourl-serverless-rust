@@ -1,4 +1,5 @@
 pub mod account;
+pub mod account_page;
 pub mod avatar;
 pub mod confirm;
 pub mod login;

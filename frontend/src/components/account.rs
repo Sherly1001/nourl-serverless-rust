@@ -94,6 +94,17 @@ pub fn AccountMenu() -> impl IntoView {
                             </p>
                         </li>
                         <li class="mt-1">
+                            <a
+                                href="#/account"
+                                class="flex gap-2 items-center py-2 px-3 w-full text-left rounded-md hover:bg-base-200"
+                                role="menuitem"
+                                on:click=move |_| set_open.set(false)
+                            >
+                                <span class="icon-[tabler--user-cog] size-5"></span>
+                                "Account"
+                            </a>
+                        </li>
+                        <li>
                             <button
                                 class="flex gap-2 items-center py-2 px-3 w-full text-left rounded-md hover:bg-base-200"
                                 role="menuitem"

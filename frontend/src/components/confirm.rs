@@ -25,6 +25,11 @@ pub fn ConfirmDialog(
     /// because the dialog's body is rebuilt every time it opens.
     #[prop(optional, into)]
     extra: Option<ViewFn>,
+    /// Holds the confirm button shut while `extra` is still missing something
+    /// it asked for — a password, say. Cancel always stays live: a dialog you
+    /// cannot answer must still be one you can leave.
+    #[prop(optional, into)]
+    confirm_disabled: Signal<bool>,
     on_confirm: Callback<()>,
 ) -> impl IntoView {
     let card: NodeRef<leptos::html::Div> = NodeRef::new();
@@ -54,7 +59,11 @@ pub fn ConfirmDialog(
                         </button>
                         <button
                             class=move || format!("btn {}", confirm_class.get())
+                            disabled=move || confirm_disabled.get()
                             on:click=move |_| {
+                                if confirm_disabled.get_untracked() {
+                                    return;
+                                }
                                 open.set(false);
                                 on_confirm.run(());
                             }

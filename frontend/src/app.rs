@@ -2,6 +2,7 @@ use leptos::prelude::*;
 
 use crate::auth::provide_auth;
 use crate::components::account::AccountMenu;
+use crate::components::account_page::AccountPage;
 use crate::components::login::Login;
 use crate::components::my_urls::MyUrls;
 use crate::components::settings::Settings;
@@ -98,6 +99,7 @@ pub fn App() -> impl IntoView {
             {move || match route.get() {
                 Route::Shorten => view! { <Shorten /> }.into_any(),
                 Route::Login => view! { <Login /> }.into_any(),
+                Route::Account => view! { <AccountPage /> }.into_any(),
                 Route::MyUrls => view! { <MyUrls /> }.into_any(),
                 Route::Users => view! { <Users /> }.into_any(),
                 Route::Settings => view! { <Settings /> }.into_any(),
