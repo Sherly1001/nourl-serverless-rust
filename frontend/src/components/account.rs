@@ -124,6 +124,7 @@ mod tests {
             is_admin: false,
             is_root: false,
             has_password: true,
+            providers: Vec::new(),
         }
     }
 

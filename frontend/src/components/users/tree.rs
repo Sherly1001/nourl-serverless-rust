@@ -276,6 +276,7 @@ pub mod fixtures {
             is_admin,
             is_root: false,
             has_password: true,
+            providers: Vec::new(),
         }
     }
 

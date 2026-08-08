@@ -178,6 +178,11 @@ pub struct UserInfo {
     /// the server uses the same fact to skip the current-password check.
     #[serde(default)]
     pub has_password: bool,
+    /// Which providers are connected, as `"github"`, `"google"`, `"facebook"`.
+    /// The account page renders a row per provider from this, so it never has
+    /// to ask a second time. Never the provider ids themselves.
+    #[serde(default)]
+    pub providers: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

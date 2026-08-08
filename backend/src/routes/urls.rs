@@ -292,6 +292,9 @@ mod tests {
             is_admin: false,
             promoted_by: None,
             token_version: 0,
+            github_id: None,
+            google_id: None,
+            facebook_id: None,
         };
         let other = User {
             id: "u2".into(),

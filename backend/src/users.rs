@@ -42,9 +42,36 @@ pub struct User {
     /// an int64, which would then no longer deserialize into the struct.
     #[serde(default)]
     pub token_version: i64,
+    /// Provider identities, each with its own partial unique index. `None` when
+    /// that provider was never connected.
+    ///
+    /// `skip_serializing_if` matters: [`create`] serialises this struct straight
+    /// into Mongo, and three explicit nulls would collide on those indexes the
+    /// second time an account is made without providers.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub github_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub google_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub facebook_id: Option<String>,
 }
 
 impl User {
+    /// Connected providers, always in the same order — the account page renders
+    /// a row per provider from this. The ids themselves stay here: knowing
+    /// somebody's GitHub id is a step towards finding their account.
+    pub fn providers(&self) -> Vec<String> {
+        crate::oauth::ProviderKind::ALL
+            .into_iter()
+            .filter(|kind| match kind {
+                crate::oauth::ProviderKind::Github => self.github_id.is_some(),
+                crate::oauth::ProviderKind::Google => self.google_id.is_some(),
+                crate::oauth::ProviderKind::Facebook => self.facebook_id.is_some(),
+            })
+            .map(|kind| kind.as_str().to_string())
+            .collect()
+    }
+
     pub fn to_info(&self) -> UserInfo {
         UserInfo {
             id: self.id.clone(),
@@ -55,6 +82,7 @@ impl User {
             is_admin: self.is_admin,
             is_root: self.is_admin && self.promoted_by.is_none(),
             has_password: self.hash_passwd.is_some(),
+            providers: self.providers(),
         }
     }
 }
@@ -217,6 +245,12 @@ pub async fn create(db: &Database, new: NewUser) -> Result<User, AppError> {
         is_admin: false,
         promoted_by: None,
         token_version: 0,
+        // Left off the document entirely rather than written as nulls — see the
+        // `skip_serializing_if` on the fields. The OAuth callback links the
+        // identity in a second write.
+        github_id: None,
+        google_id: None,
+        facebook_id: None,
     };
     let mut doc = bson::to_document(&user).map_err(AppError::internal)?;
     doc.insert("created_at", bson::DateTime::now());
@@ -581,4 +615,58 @@ pub async fn admins(
 /// rather than claiming the whole collection.
 pub async fn count(db: &Database, filter: Document) -> Result<u64, AppError> {
     Ok(collection(db).count_documents(filter).await?)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_info_lists_every_connected_provider_in_a_stable_order() {
+        let mut user = User {
+            id: "u1".into(),
+            username: "someone".into(),
+            display_name: None,
+            email: None,
+            avatar_url: None,
+            hash_passwd: None,
+            is_admin: false,
+            promoted_by: None,
+            token_version: 0,
+            github_id: None,
+            google_id: None,
+            facebook_id: None,
+        };
+        assert!(user.to_info().providers.is_empty());
+
+        user.google_id = Some("g".into());
+        user.github_id = Some("gh".into());
+        // Always the same order, whatever order they were connected in: the
+        // account page renders one row per provider from this list.
+        assert_eq!(user.to_info().providers, vec!["github", "google"]);
+    }
+
+    /// The ids themselves are not the account page's business — knowing that
+    /// somebody's GitHub id is 1234 is a step towards finding their account.
+    #[test]
+    fn the_info_never_carries_the_provider_ids_themselves() {
+        let user = User {
+            id: "u1".into(),
+            username: "someone".into(),
+            display_name: None,
+            email: None,
+            avatar_url: None,
+            hash_passwd: Some("$argon2id$secret".into()),
+            is_admin: false,
+            promoted_by: None,
+            token_version: 0,
+            github_id: Some("gh-1234".into()),
+            google_id: None,
+            facebook_id: None,
+        };
+        let json = serde_json::to_string(&user.to_info()).unwrap();
+        assert!(!json.contains("gh-1234"), "{json}");
+        assert!(!json.contains("argon2"), "{json}");
+        assert!(json.contains("github"), "but it says the provider is on");
+    }
 }

@@ -3,8 +3,9 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::{
     AdminOrphans, AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods,
-    DeleteUserResponse, LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse,
-    UpdateSettingsRequest, UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
+    ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest, RegisterRequest,
+    SetAdminRequest, SetAdminResponse, UpdateProfileRequest, UpdateSettingsRequest, UrlEntry,
+    UrlListResponse, UrlUpsertRequest, UserInfo,
 };
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
@@ -119,6 +120,33 @@ pub async fn me() -> Result<UserInfo, ApiErrorBody> {
 
 pub async fn auth_methods() -> Result<AuthMethods, ApiErrorBody> {
     get_json("/api/auth/methods").await
+}
+
+/// Where a provider flow starts. A plain URL rather than a request: the browser
+/// has to navigate there itself, since `fetch` cannot follow a cross-origin
+/// redirect and the provider needs a top-level page to show its consent screen.
+pub fn oauth_start(provider: &str) -> String {
+    format!("/api/auth/{provider}")
+}
+
+pub async fn update_me(body: &UpdateProfileRequest) -> Result<UserInfo, ApiErrorBody> {
+    send_json(Request::put("/api/auth/me"), body).await
+}
+
+pub async fn change_password(body: &ChangePasswordRequest) -> Result<UserInfo, ApiErrorBody> {
+    send_json(Request::put("/api/auth/password"), body).await
+}
+
+/// Carries a body — the caller says what should happen to the links the account
+/// owns, and confirms with their password if they have one.
+pub async fn close_account(
+    body: &DeleteAccountRequest,
+) -> Result<DeleteUserResponse, ApiErrorBody> {
+    send_json(Request::delete("/api/auth/me"), body).await
+}
+
+pub async fn disconnect_provider(provider: &str) -> Result<UserInfo, ApiErrorBody> {
+    read_json(Request::delete(&format!("/api/auth/{provider}"))).await
 }
 
 /// `params` page and search the ordinary accounts only — the admins come back
