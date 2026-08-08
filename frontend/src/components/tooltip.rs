@@ -2,6 +2,7 @@ use std::time::Duration;
 
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
+use wasm_bindgen::prelude::Closure;
 
 /// Widest the bubble is allowed to get, matching the `max-w-96` below. Only the
 /// starting guess: what it is actually laid out at is measured once it is up.
@@ -24,6 +25,27 @@ const OPEN_DELAY: Duration = Duration::from_millis(400);
 fn clamp_left(anchor_left: f64, bubble_width: f64, viewport_width: f64) -> f64 {
     let rightmost = viewport_width - bubble_width - VIEWPORT_MARGIN_PX;
     anchor_left.min(rightmost.max(VIEWPORT_MARGIN_PX)).max(0.0)
+}
+
+/// The arrow's width, and how close to a corner it may get before the rounded
+/// border starts cutting into it.
+const ARROW_SIZE_PX: f64 = 8.0;
+const ARROW_INSET_PX: f64 = 8.0;
+
+/// Where the arrow sits along the bubble's own width, measured from its left
+/// edge.
+///
+/// It cannot be a fixed inset. [`clamp_left`] slides the bubble left to keep it
+/// on screen — by hundreds of pixels for a wide one near the right edge — and an
+/// arrow that stays put then points at whatever happens to be under it instead
+/// of at the thing being described. So it tracks the anchor, and only stops at
+/// the bubble's own corners.
+fn arrow_left(anchor_left: f64, bubble_left: f64, bubble_width: f64) -> f64 {
+    // Aimed a little into the anchor rather than at its very edge, so the arrow
+    // lands over the control instead of beside it.
+    let target = anchor_left + ARROW_INSET_PX - bubble_left;
+    let rightmost = bubble_width - ARROW_SIZE_PX - ARROW_INSET_PX;
+    target.clamp(ARROW_INSET_PX, rightmost.max(ARROW_INSET_PX))
 }
 
 fn viewport_width() -> f64 {
@@ -79,6 +101,63 @@ pub fn Tooltip(
     let (hover, set_hover) = signal(0u32);
     let body = text.clone();
 
+    // While the bubble is up, anything that moves the anchor takes it down.
+    //
+    // It is `position: fixed` at coordinates measured when the pointer arrived,
+    // so once the page scrolls it hangs over whatever slid underneath. The
+    // pointer leaving cannot be relied on to notice: a wheel, a keystroke or a
+    // dragged scrollbar moves the anchor without moving the pointer, so
+    // `mouseleave` never fires.
+    //
+    // Registered only while it is showing. Hover means one bubble at a time, so
+    // this is one listener — where registering per instance would leave a table
+    // of rows with a listener each, all woken by every scroll event.
+    //
+    // The capture phase is what makes it work at all: `scroll` does not bubble,
+    // so a listener on the document hears a scrolling table body on the way
+    // down or not at all.
+    type Listener = send_wrapper::SendWrapper<(web_sys::Document, Closure<dyn FnMut()>)>;
+    let listener: StoredValue<Option<Listener>> = StoredValue::new(None);
+    let unlisten = move || {
+        listener.update_value(|slot| {
+            if let Some(held) = slot.take() {
+                let (document, hide) = held.take();
+                for event in ["scroll", "resize"] {
+                    let _ = document.remove_event_listener_with_callback_and_bool(
+                        event,
+                        hide.as_ref().unchecked_ref(),
+                        true,
+                    );
+                }
+            }
+        });
+    };
+    Effect::new(move |_| {
+        let up = shown.get();
+        unlisten();
+        if !up {
+            return;
+        }
+        let Some(document) = web_sys::window().and_then(|w| w.document()) else {
+            return;
+        };
+        let hide = Closure::<dyn FnMut()>::new(move || {
+            set_hover.try_update(|n| *n += 1);
+            set_shown.try_set(false);
+        });
+        for event in ["scroll", "resize"] {
+            let _ = document.add_event_listener_with_callback_and_bool(
+                event,
+                hide.as_ref().unchecked_ref(),
+                true,
+            );
+        }
+        listener.set_value(Some(send_wrapper::SendWrapper::new((document, hide))));
+    });
+    // A leaked listener outlives the signals it writes to and panics on the next
+    // scroll anywhere on the page.
+    on_cleanup(unlisten);
+
     view! {
         <span
             class=class
@@ -122,9 +201,18 @@ pub fn Tooltip(
                     }
                 >
                     {body.clone()}
-                    // A rotated square peeking out of the bottom edge, near the
-                    // left so it points at the start of what it describes.
-                    <span class="absolute -bottom-1 left-4 border-r border-b rotate-45 size-2 bg-base-100 border-base-content/10"></span>
+                    // A rotated square peeking out of the bottom edge, kept over
+                    // the anchor however far the bubble had to slide — see
+                    // `arrow_left`.
+                    <span
+                        class="absolute -bottom-1 border-r border-b rotate-45 size-2 bg-base-100 border-base-content/10"
+                        style=move || {
+                            let (anchor, _) = position.get();
+                            let width = bubble_width.get();
+                            let bubble = clamp_left(anchor, width, viewport_width());
+                            format!("left: {}px", arrow_left(anchor, bubble, width))
+                        }
+                    ></span>
                 </span>
             </Show>
         </span>
@@ -157,5 +245,31 @@ mod tests {
     fn a_narrow_window_still_starts_on_screen() {
         assert_eq!(clamp_left(10.0, 384.0, 320.0), 8.0);
         assert_eq!(clamp_left(0.0, 384.0, 320.0), 0.0);
+    }
+
+    /// The case from the admin table: a wide bubble on a control near the right
+    /// edge. The bubble slides left to stay on screen, and the arrow has to
+    /// follow it or it points at a different row's cell.
+    #[test]
+    fn the_arrow_follows_the_anchor_when_the_bubble_slides() {
+        let (anchor, width, viewport) = (975.0, 402.0, 1225.0);
+        let bubble = clamp_left(anchor, width, viewport);
+        assert!(bubble < anchor, "this case only matters once it slides");
+        // Still over the anchor, not stuck at the bubble's left corner.
+        let arrow = arrow_left(anchor, bubble, width);
+        assert_eq!(bubble + arrow, anchor + 8.0);
+        assert!(arrow > 8.0, "not pinned to the corner: {arrow}");
+    }
+
+    #[test]
+    fn the_arrow_never_leaves_the_bubble() {
+        // Room to spare: sits at the near corner, where it always used to.
+        assert_eq!(arrow_left(100.0, 100.0, 384.0), 8.0);
+        // An anchor past the bubble's far edge — a very wide control — keeps
+        // the arrow inside, clear of the rounded corner.
+        assert_eq!(arrow_left(900.0, 100.0, 384.0), 384.0 - 8.0 - 8.0);
+        // A bubble narrower than its own margins cannot satisfy both, and the
+        // near corner wins rather than the value going negative.
+        assert_eq!(arrow_left(900.0, 100.0, 12.0), 8.0);
     }
 }
