@@ -1,6 +1,8 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{ApiErrorBody, LoginRequest, RegisterRequest, validate_password, validate_username};
+use shared::{
+    ApiErrorBody, AuthMethods, LoginRequest, RegisterRequest, validate_password, validate_username,
+};
 
 use crate::api;
 use crate::auth::use_auth;
@@ -42,6 +44,69 @@ fn check_password(value: &str, registering: bool) -> Option<String> {
     None
 }
 
+/// One provider button: the path segment the flow starts at, the label, and
+/// the icon class.
+pub struct ProviderButton {
+    pub name: &'static str,
+    pub label: &'static str,
+    pub icon: &'static str,
+}
+
+/// The providers worth drawing a button for. `AuthMethods` already reports a
+/// provider as available only when it is switched on *and* holds both halves of
+/// its credential, so a button here always leads somewhere.
+pub fn enabled_providers(methods: &AuthMethods) -> Vec<ProviderButton> {
+    [
+        (
+            methods.github,
+            "github",
+            "GitHub",
+            "icon-[tabler--brand-github]",
+        ),
+        (
+            methods.google,
+            "google",
+            "Google",
+            "icon-[tabler--brand-google]",
+        ),
+        (
+            methods.facebook,
+            "facebook",
+            "Facebook",
+            "icon-[tabler--brand-facebook]",
+        ),
+    ]
+    .into_iter()
+    .filter(|(on, ..)| *on)
+    .map(|(_, name, label, icon)| ProviderButton { name, label, icon })
+    .collect()
+}
+
+/// Plain words for the `?error=` the callback redirects with. The provider's
+/// own message never reaches here — it is not ours to show — so this is the
+/// whole explanation the user gets, and it has to be worth reading.
+pub fn oauth_error_message(code: &str) -> &'static str {
+    match code {
+        "oauth_disabled" => "That sign-in method is switched off.",
+        "oauth_denied" => "You cancelled the sign-in.",
+        "oauth_state" => "That sign-in took too long or was interrupted. Try again.",
+        "oauth_exchange" => "The provider could not confirm who you are. Try again.",
+        "oauth_taken" => "Another account is already connected to that login.",
+        _ => "Something went wrong with that sign-in.",
+    }
+}
+
+/// Splits `#/login?error=code` into the route to stay on and the code to
+/// report. Separate from the effect that acts on it so the parsing can be
+/// tested without a browser.
+fn error_in_hash(hash: &str) -> Option<(&str, &str)> {
+    let (path, query) = hash.split_once('?')?;
+    let code = query
+        .split('&')
+        .find_map(|pair| pair.strip_prefix("error="))?;
+    Some((path, code))
+}
+
 #[component]
 pub fn Login() -> impl IntoView {
     let auth = use_auth();
@@ -52,6 +117,17 @@ pub fn Login() -> impl IntoView {
         if auth.user.get().is_some() {
             go_to_my_urls();
         }
+    });
+
+    // Which buttons to draw. Defaults to nothing rather than to everything, so
+    // a failed load shows no button that leads to a switched-off provider.
+    let (methods, set_methods) = signal(AuthMethods::default());
+    Effect::new(move |_| {
+        spawn_local(async move {
+            if let Ok(found) = api::auth_methods().await {
+                set_methods.try_set(found);
+            }
+        });
     });
 
     let (registering, set_registering) = signal(false);
@@ -84,6 +160,21 @@ pub fn Login() -> impl IntoView {
             toasts.error(err.message);
         }
     });
+    // The callback can only report failure through the URL, since it redirects
+    // rather than answering the page. Read it once, say it, and take it back out
+    // of the address bar so a refresh does not repeat it.
+    Effect::new(move |_| {
+        let Some(window) = web_sys::window() else {
+            return;
+        };
+        let hash = window.location().hash().unwrap_or_default();
+        let Some((path, code)) = error_in_hash(&hash) else {
+            return;
+        };
+        toasts.error(oauth_error_message(code).to_string());
+        let _ = window.location().set_hash(path);
+    });
+
     let can_submit = Memo::new(move |_| {
         !busy.get()
             && check_username(&username.get()).is_none()
@@ -141,99 +232,143 @@ pub fn Login() -> impl IntoView {
                     {move || if registering.get() { "Create an account" } else { "Sign in" }}
                 </h2>
 
-                <form class="flex flex-col gap-3" novalidate on:submit=submit>
-                    <div class="w-full">
-                        <label class="mb-2 text-lg font-semibold label-text" for="username">
-                            "Username"
-                        </label>
-                        <input
-                            id="username"
-                            node_ref=username_input
-                            class=move || input_class(username_error.get().is_some())
-                            autocomplete="username"
-                            aria-invalid=move || username_error.get().is_some().to_string()
-                            aria-describedby="username-error"
-                            prop:value=username
-                            on:input=move |ev| {
-                                set_username.set(event_target_value(&ev));
-                                set_touched.set(true);
-                                set_server_error.set(None);
-                            }
-                            on:blur=move |_| set_touched.set(true)
-                        />
-                        <p
-                            id="username-error"
-                            class="mt-1 text-base min-h-6 text-error motion-preset-slide-down motion-duration-200"
-                        >
-                            {move || username_error.get().unwrap_or_default()}
-                        </p>
-                    </div>
+                <Show when=move || methods.get().password>
+                    <form class="flex flex-col gap-3" novalidate on:submit=submit>
+                        <div class="w-full">
+                            <label class="mb-2 text-lg font-semibold label-text" for="username">
+                                "Username"
+                            </label>
+                            <input
+                                id="username"
+                                node_ref=username_input
+                                class=move || input_class(username_error.get().is_some())
+                                autocomplete="username"
+                                aria-invalid=move || username_error.get().is_some().to_string()
+                                aria-describedby="username-error"
+                                prop:value=username
+                                on:input=move |ev| {
+                                    set_username.set(event_target_value(&ev));
+                                    set_touched.set(true);
+                                    set_server_error.set(None);
+                                }
+                                on:blur=move |_| set_touched.set(true)
+                            />
+                            <p
+                                id="username-error"
+                                class="mt-1 text-base min-h-6 text-error motion-preset-slide-down motion-duration-200"
+                            >
+                                {move || username_error.get().unwrap_or_default()}
+                            </p>
+                        </div>
 
-                    <div class="w-full">
-                        <label class="mb-2 text-lg font-semibold label-text" for="password">
-                            "Password"
-                        </label>
-                        <input
-                            id="password"
-                            type="password"
-                            class=move || input_class(password_error.get().is_some())
-                            autocomplete=move || {
-                                if registering.get() { "new-password" } else { "current-password" }
-                            }
-                            aria-invalid=move || password_error.get().is_some().to_string()
-                            aria-describedby="password-error"
-                            prop:value=password
-                            on:input=move |ev| {
-                                set_password.set(event_target_value(&ev));
-                                set_touched.set(true);
-                                set_server_error.set(None);
-                            }
-                            on:blur=move |_| set_touched.set(true)
-                        />
-                        <p
-                            id="password-error"
-                            class="mt-1 text-base min-h-6 text-error motion-preset-slide-down motion-duration-200"
+                        <div class="w-full">
+                            <label class="mb-2 text-lg font-semibold label-text" for="password">
+                                "Password"
+                            </label>
+                            <input
+                                id="password"
+                                type="password"
+                                class=move || input_class(password_error.get().is_some())
+                                autocomplete=move || {
+                                    if registering.get() {
+                                        "new-password"
+                                    } else {
+                                        "current-password"
+                                    }
+                                }
+                                aria-invalid=move || password_error.get().is_some().to_string()
+                                aria-describedby="password-error"
+                                prop:value=password
+                                on:input=move |ev| {
+                                    set_password.set(event_target_value(&ev));
+                                    set_touched.set(true);
+                                    set_server_error.set(None);
+                                }
+                                on:blur=move |_| set_touched.set(true)
+                            />
+                            <p
+                                id="password-error"
+                                class="mt-1 text-base min-h-6 text-error motion-preset-slide-down motion-duration-200"
+                            >
+                                {move || password_error.get().unwrap_or_default()}
+                            </p>
+                        </div>
+
+                        <button
+                            class="h-14 text-xl font-semibold btn btn-primary active:scale-[.98]"
+                            type="submit"
+                            disabled=move || !can_submit.get()
                         >
-                            {move || password_error.get().unwrap_or_default()}
-                        </p>
-                    </div>
+                            <Show when=move || busy.get()>
+                                <span class="loading loading-spinner loading-sm"></span>
+                            </Show>
+                            {move || {
+                                match (registering.get(), busy.get()) {
+                                    (true, true) => "Creating…",
+                                    (true, false) => "Create account",
+                                    (false, true) => "Signing in…",
+                                    (false, false) => "Sign in",
+                                }
+                            }}
+                        </button>
+                    </form>
 
                     <button
-                        class="h-14 text-xl font-semibold btn btn-primary active:scale-[.98]"
-                        type="submit"
-                        disabled=move || !can_submit.get()
+                        class="btn btn-text"
+                        type="button"
+                        on:click=move |_| {
+                            set_registering.update(|r| *r = !*r);
+                            set_server_error.set(None);
+                            set_touched.set(false);
+                        }
                     >
-                        <Show when=move || busy.get()>
-                            <span class="loading loading-spinner loading-sm"></span>
-                        </Show>
                         {move || {
-                            match (registering.get(), busy.get()) {
-                                (true, true) => "Creating…",
-                                (true, false) => "Create account",
-                                (false, true) => "Signing in…",
-                                (false, false) => "Sign in",
+                            if registering.get() {
+                                "Already have an account? Sign in"
+                            } else {
+                                "Need an account? Create one"
                             }
                         }}
                     </button>
-                </form>
+                </Show>
 
-                <button
-                    class="btn btn-text"
-                    type="button"
-                    on:click=move |_| {
-                        set_registering.update(|r| *r = !*r);
-                        set_server_error.set(None);
-                        set_touched.set(false);
-                    }
-                >
-                    {move || {
-                        if registering.get() {
-                            "Already have an account? Sign in"
-                        } else {
-                            "Need an account? Create one"
-                        }
-                    }}
-                </button>
+                <Show when=move || !enabled_providers(&methods.get()).is_empty()>
+                    <Show when=move || methods.get().password>
+                        <div class="text-xs text-center uppercase text-base-content/40">"or"</div>
+                    </Show>
+                    <div class="flex flex-col gap-2">
+                        {move || {
+                            enabled_providers(&methods.get())
+                                .into_iter()
+                                .map(|provider| {
+                                    view! {
+                                        // A link, not a button: the provider needs a
+                                        // top-level navigation to show its consent
+                                        // screen, and `fetch` cannot follow a
+                                        // cross-origin redirect.
+                                        <a
+                                            href=api::oauth_start(provider.name)
+                                            class="gap-2 w-full btn btn-soft"
+                                        >
+                                            <span class=format!("{} size-5", provider.icon)></span>
+                                            {format!("Continue with {}", provider.label)}
+                                        </a>
+                                    }
+                                })
+                                .collect_view()
+                        }}
+                    </div>
+                </Show>
+
+                // Not a failure of this page: an admin has switched everything
+                // off. Saying so beats an empty card.
+                <Show when=move || {
+                    !methods.get().password && enabled_providers(&methods.get()).is_empty()
+                }>
+                    <p class="py-6 text-center text-base-content/60">
+                        "No sign-in method is switched on. Ask an admin."
+                    </p>
+                </Show>
             </div>
         </div>
     }
@@ -298,5 +433,54 @@ mod tests {
         assert_eq!(error_for(&anonymous, "username"), None);
         assert_eq!(error_for(&anonymous, "password"), None);
         assert_eq!(error_for(&None, "username"), None);
+    }
+
+    #[test]
+    fn only_configured_providers_get_a_button() {
+        let methods = AuthMethods {
+            password: true,
+            github: true,
+            google: false,
+            facebook: true,
+        };
+        let names: Vec<&str> = enabled_providers(&methods).iter().map(|p| p.name).collect();
+        assert_eq!(names, vec!["github", "facebook"]);
+        assert!(enabled_providers(&AuthMethods::default()).is_empty());
+    }
+
+    /// Every code `routes::oauth::refuse` can redirect with. A code with no arm
+    /// here falls through to the catch-all, which is honest but says nothing
+    /// useful, so the list is worth keeping in step by hand.
+    #[test]
+    fn every_callback_failure_has_words_of_its_own() {
+        for code in [
+            "oauth_disabled",
+            "oauth_denied",
+            "oauth_state",
+            "oauth_exchange",
+            "oauth_taken",
+        ] {
+            let message = oauth_error_message(code);
+            assert!(!message.is_empty(), "{code} has no wording");
+            assert!(!message.contains('_'), "{code} leaked its code: {message}");
+        }
+        // Anything unrecognised still says something honest.
+        assert!(!oauth_error_message("something-else").is_empty());
+    }
+
+    #[test]
+    fn the_error_is_read_out_of_the_hash_and_the_rest_of_it_kept() {
+        assert_eq!(
+            error_in_hash("#/login?error=oauth_denied"),
+            Some(("#/login", "oauth_denied"))
+        );
+        // Not necessarily the only parameter, nor the first.
+        assert_eq!(
+            error_in_hash("#/login?from=x&error=oauth_state"),
+            Some(("#/login", "oauth_state"))
+        );
+        for quiet in ["", "#/login", "#/login?from=x", "#/login?errorish=1"] {
+            assert_eq!(error_in_hash(quiet), None, "{quiet} should say nothing");
+        }
     }
 }
