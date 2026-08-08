@@ -145,6 +145,109 @@ pub fn validate_username(username: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// Longest address RFC 5321 allows on the wire.
+pub const EMAIL_MAX: usize = 254;
+
+/// Shape only. Whether an address exists, and whether it belongs to whoever
+/// typed it, is a question only a confirmation mail can answer — this rejects
+/// what is obviously not an address, and nothing more.
+pub fn validate_email(email: &str) -> Result<(), String> {
+    if email.len() > EMAIL_MAX {
+        return Err(format!("email must be at most {EMAIL_MAX} characters"));
+    }
+    let Some((local, domain)) = email.split_once('@') else {
+        return Err("email must look like name@example.com".into());
+    };
+    // A second `@` puts the split in the wrong place, and the halves either
+    // side of it would then be checked as though it were not there.
+    let plausible = !local.is_empty()
+        && !domain.contains('@')
+        && !email.chars().any(char::is_whitespace)
+        && domain
+            .rsplit_once('.')
+            .is_some_and(|(host, suffix)| !host.is_empty() && suffix.len() >= 2);
+    if plausible {
+        Ok(())
+    } else {
+        Err("email must look like name@example.com".into())
+    }
+}
+
+/// How long an inline avatar may be. Generous enough for a small picture,
+/// short enough that it cannot bloat every response the account appears in —
+/// `UserInfo` carries this field, and the admin list carries one per row.
+pub const AVATAR_DATA_URI_MAX: usize = 200_000;
+
+/// A `data:` avatar. Has to be an image: `data:text/html` in an `<img src>` is
+/// inert in every current browser, but the value is echoed into pages other
+/// people load, and "inert today" is not a property worth depending on.
+///
+/// Both encodings are allowed. Base64 is what a file picker produces; percent-
+/// encoded is what an inline SVG is normally written as, and re-encoding it to
+/// base64 only to store it would be busywork.
+fn is_image_data_uri(raw: &str) -> bool {
+    let Some(rest) = raw.strip_prefix("data:image/") else {
+        return false;
+    };
+    let Some((meta, payload)) = rest.split_once(',') else {
+        return false;
+    };
+    // `image/svg+xml;base64` and `image/svg+xml` alike: the subtype is
+    // whatever precedes the parameters, and `;base64` is the only one that
+    // changes how the payload is read.
+    let subtype = meta.strip_suffix(";base64").unwrap_or(meta);
+    !subtype.is_empty() && !subtype.contains(';') && !payload.is_empty()
+}
+
+/// Longest an avatar link may be, matching [`validate_url`].
+pub const AVATAR_URL_MAX: usize = 2048;
+
+/// Anything a browser will load into an `<img src>`, and nothing else.
+///
+/// Deliberately looser than [`validate_url`], which exists to stop a *short
+/// link* pointing somewhere only its author can reach. An avatar is only ever
+/// fetched by the page that displays it, so `http://localhost:3000/me.png` and
+/// a path relative to this site are both fine — while `javascript:` and every
+/// other scheme stay out, since the field is rendered into other people's
+/// pages.
+pub fn validate_avatar_url(raw: &str) -> Result<(), String> {
+    if raw.starts_with("data:") {
+        if !is_image_data_uri(raw) {
+            return Err("an inline avatar must look like data:image/png;base64,…".into());
+        }
+        if raw.len() > AVATAR_DATA_URI_MAX {
+            return Err(format!(
+                "an inline avatar must be at most {AVATAR_DATA_URI_MAX} characters"
+            ));
+        }
+        return Ok(());
+    }
+    if raw.len() > AVATAR_URL_MAX {
+        return Err(format!(
+            "avatar url must be at most {AVATAR_URL_MAX} characters"
+        ));
+    }
+    if raw.chars().any(char::is_whitespace) {
+        return Err("avatar url must not contain spaces".into());
+    }
+    // `/me.png` against this site, `//host/me.png` against whatever scheme the
+    // page was loaded over. The browser resolves both; there is nothing here to
+    // parse.
+    if raw.starts_with('/') {
+        return Ok(());
+    }
+    let parsed = url::Url::parse(raw).map_err(|_| {
+        "avatar must be an image url, a path like /me.png, or an inline data: image".to_string()
+    })?;
+    if !matches!(parsed.scheme(), "http" | "https") {
+        return Err("avatar url must start with http:// or https://".into());
+    }
+    if parsed.host().is_none() {
+        return Err("avatar url must include a host".into());
+    }
+    Ok(())
+}
+
 pub fn validate_password(password: &str) -> Result<(), String> {
     if password.len() < 8 {
         return Err("password must be at least 8 characters".into());
@@ -518,5 +621,55 @@ mod tests {
         assert!(validate_url("http://[::1]:8080").is_ok());
         // Internationalised domains are punycoded before we see them.
         assert!(validate_url("https://пример.рф").is_ok());
+    }
+
+    #[test]
+    fn email_rejects_what_is_plainly_not_an_address() {
+        assert!(validate_email("sher@example.com").is_ok());
+        assert!(validate_email("first.last+tag@mail.example.co.uk").is_ok());
+
+        assert!(validate_email("sher").is_err(), "no @");
+        assert!(validate_email("@example.com").is_err(), "no local part");
+        assert!(validate_email("sher@example").is_err(), "no suffix");
+        assert!(validate_email("sher@.com").is_err(), "no host");
+        assert!(validate_email("a@b@example.com").is_err(), "two @");
+        assert!(validate_email("sher @example.com").is_err(), "whitespace");
+        assert!(validate_email(&format!("{}@example.com", "a".repeat(250))).is_err());
+    }
+
+    /// Anything an `<img src>` would load. Looser than [`validate_url`] on
+    /// purpose — see that function's note on why a short link is judged harder
+    /// than a picture.
+    #[test]
+    fn an_avatar_is_anything_an_img_tag_would_load() {
+        assert!(validate_avatar_url("https://example.com/me.png").is_ok());
+        // A host only this machine can reach is fine for a picture.
+        assert!(validate_avatar_url("http://localhost:3000/me.png").is_ok());
+        assert!(validate_avatar_url("http://127.0.0.1:8080/me.png").is_ok());
+        // Relative to the page, and protocol-relative.
+        assert!(validate_avatar_url("/favicon.png").is_ok());
+        assert!(validate_avatar_url("//cdn.example.com/me.png").is_ok());
+
+        // Both data: encodings, base64 and percent-encoded, and svg either way.
+        assert!(validate_avatar_url("data:image/png;base64,iVBORw0K").is_ok());
+        assert!(validate_avatar_url("data:image/svg+xml;base64,PHN2Zz4=").is_ok());
+        assert!(validate_avatar_url("data:image/svg+xml,%3Csvg%2F%3E").is_ok());
+        assert!(validate_avatar_url("data:image/gif,rawbytes").is_ok());
+
+        // Not an image, or carrying nothing at all.
+        assert!(validate_avatar_url("data:text/html,<b>hi</b>").is_err());
+        assert!(validate_avatar_url("data:image/png;base64,").is_err());
+        assert!(validate_avatar_url("data:image/,x").is_err());
+        // The field is rendered into other people's pages, so no other scheme.
+        assert!(validate_avatar_url("javascript:alert(1)").is_err());
+        assert!(validate_avatar_url("vbscript:msgbox(1)").is_err());
+        assert!(validate_avatar_url("file:///etc/passwd").is_err());
+        assert!(validate_avatar_url("not a url").is_err());
+        // Too big to carry in every response the account appears in.
+        let huge = format!("data:image/png;base64,{}", "A".repeat(AVATAR_DATA_URI_MAX));
+        assert!(validate_avatar_url(&huge).is_err());
+        assert!(
+            validate_avatar_url(&format!("https://x.io/{}", "a".repeat(AVATAR_URL_MAX))).is_err()
+        );
     }
 }

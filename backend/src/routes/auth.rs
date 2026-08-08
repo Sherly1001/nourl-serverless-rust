@@ -4,7 +4,8 @@ use axum::response::{IntoResponse, Response};
 use axum_extra::extract::CookieJar;
 use shared::{
     AuthMethods, ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest,
-    RegisterRequest, UpdateProfileRequest, UserInfo, validate_password, validate_username,
+    RegisterRequest, UpdateProfileRequest, UserInfo, validate_avatar_url, validate_email,
+    validate_password, validate_username,
 };
 
 use crate::app::AppState;
@@ -101,6 +102,16 @@ pub async fn update_me(
             }
         }
         None => {}
+    }
+    // Both are echoed back to other people — the avatar into an `<img src>` on
+    // the admin list, the email into the rules that decide which account an
+    // OAuth identity joins — so neither is taken on trust from the page that
+    // happens to be checking them too.
+    if let Some(email) = body.email.as_deref().filter(|value| !value.is_empty()) {
+        validate_email(email).map_err(|e| AppError::validation(e).on_field("email"))?;
+    }
+    if let Some(avatar) = body.avatar_url.as_deref().filter(|value| !value.is_empty()) {
+        validate_avatar_url(avatar).map_err(|e| AppError::validation(e).on_field("avatar_url"))?;
     }
 
     users::update_profile(&state.db, &user.id, body).await?;
