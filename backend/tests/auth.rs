@@ -823,6 +823,30 @@ async fn an_admin_cannot_close_their_own_account() {
     let refused = close().await;
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 
+    // The password is checked first. A caller who has not proved who they are
+    // is told that and nothing else — not what standing the account holds, nor
+    // what it would have to give up to close it.
+    let unproven = app
+        .clone()
+        .oneshot(helpers::authed_request(
+            "DELETE",
+            "/api/auth/me",
+            &cookie,
+            json!({"links": "orphan", "current_password": null}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(unproven.status(), StatusCode::UNAUTHORIZED);
+    let body = body_json(unproven).await;
+    assert_eq!(body["error"]["field"], "current_password");
+    assert!(
+        !body["error"]["message"]
+            .as_str()
+            .unwrap_or_default()
+            .contains("admin"),
+        "the flag must not be mentioned before the password is proved"
+    );
+
     let still_there = app
         .clone()
         .oneshot(helpers::authed_get("/api/auth/me", &cookie))

@@ -182,17 +182,13 @@ pub async fn delete_me(
     CurrentUser(user): CurrentUser,
     AppJson(body): AppJson<DeleteAccountRequest>,
 ) -> Result<Response, AppError> {
-    if user.is_admin {
-        // Named differently for a root, because "resign first" is advice they
-        // cannot act on: only the database can take a root's flag away.
-        return Err(AppError::forbidden(if user.promoted_by.is_some() {
-            "you are an admin so cannot close your own account — give up the admin flag first"
-        } else {
-            "you are the top admin so cannot close your own account"
-        }));
-    }
-    // Holding the session is not enough for something irreversible. An account
-    // with no password has nothing to prove, so the session is the whole check.
+    // Before anything else, including the check below. Holding the session is
+    // not enough for something irreversible, and a caller who cannot prove who
+    // they are gets told that and nothing else — not what standing the account
+    // has, nor what it would have to give up first.
+    //
+    // An account with no password has nothing to prove, so for those the
+    // session is the whole check, exactly as in [`change_password`].
     if let Some(stored) = user.hash_passwd.as_deref() {
         let current = body.current_password.as_deref().ok_or_else(|| {
             AppError::unauthorized("current password is required").on_field("current_password")
@@ -201,6 +197,15 @@ pub async fn delete_me(
             return Err(AppError::unauthorized("current password is incorrect")
                 .on_field("current_password"));
         }
+    }
+    if user.is_admin {
+        // Named differently for a root, because "resign first" is advice they
+        // cannot act on: only the database can take a root's flag away.
+        return Err(AppError::forbidden(if user.promoted_by.is_some() {
+            "you are an admin so cannot close your own account — give up the admin flag first"
+        } else {
+            "you are the top admin so cannot close your own account"
+        }));
     }
 
     let links = users::delete_with_cascade(
