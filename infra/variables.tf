@@ -43,3 +43,10 @@ variable "notfound_fallback_url" {
   type    = string
   default = ""
 }
+
+# Applies to both the Lambda's CloudWatch group and the CloudFront log bucket,
+# so "how far back can I look" has one answer rather than two.
+variable "log_retention_days" {
+  type    = number
+  default = 90
+}

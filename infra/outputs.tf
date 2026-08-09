@@ -17,3 +17,7 @@ output "cloudfront_domain" {
 output "site_url" {
   value = local.site_url
 }
+
+output "logs_bucket" {
+  value = aws_s3_bucket.logs.bucket
+}

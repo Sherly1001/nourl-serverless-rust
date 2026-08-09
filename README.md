@@ -111,6 +111,54 @@ through to the Lambda, which is what makes `GET /{code}` redirects work. A
 request for a static file that does not exist returns 403, not 404 — that is
 S3 through OAC declining to confirm the key is missing.
 
+### Logs
+
+Two of them, answering different questions.
+
+**The Lambda's own group**, `/aws/lambda/nourl-<env>-api`, holds one line per
+request — method, path, status, duration, caller IP, user agent — plus a
+`REPORT` line per invocation with duration, memory and billed time. It arrives
+within seconds, so it is the one to watch while something is going wrong:
+
+```sh
+aws logs tail /aws/lambda/nourl-dev-api --region ap-northeast-1 --follow
+```
+
+The request line carries the **path only, never the query string**: an OAuth
+callback arrives with the authorization code and the state nonce in it, and a
+log line is the last place either belongs.
+
+The IP is the visitor's, not a proxy's. Requests arrive browser → Cloudflare →
+CloudFront → API Gateway, each hop appending what it saw to `x-forwarded-for`,
+so the caller is that header's first entry — but a browser can send that header
+itself and Cloudflare appends to it rather than replacing it. So
+`cf-connecting-ip` is preferred: Cloudflare writes it over anything the client
+sent, and the distribution forwards it because the origin request policy is
+`AllViewerExceptHostHeader`. It is absent only for a request that skipped
+Cloudflare by hitting the CloudFront domain directly, and then the forwarded
+chain is all there is.
+
+**CloudFront access logs** hold a line per request — static files and API
+alike, since everything reaches the site through CloudFront. They land in
+`s3://nourl-<env>-logs-<account>/` in W3C format, partitioned `/{yyyy}/{MM}/{dd}`,
+through standard logging v2 rather than the legacy `logging_config`: v2 delivers
+as a service principal against a bucket policy, so the bucket keeps ACLs
+disabled like the static one. Delivery is **batched, not live** — expect a few
+minutes behind, occasionally longer. There is no way to make these live; that
+is what real-time logs (Kinesis, billed per line) exist for.
+
+Both keep `var.log_retention_days` (90) — CloudWatch retention on one, an S3
+lifecycle rule on the other.
+
+Lambda creates its log group by itself on first invocation, with no expiry, so
+in an environment that ran before this was added the group has to be imported
+once before the first apply:
+
+```sh
+terraform import -var-file=envs/dev.tfvars \
+  aws_cloudwatch_log_group.lambda /aws/lambda/nourl-dev-api
+```
+
 ## Accounts
 
 Anyone can register; the account owns every link it creates. Links with no
