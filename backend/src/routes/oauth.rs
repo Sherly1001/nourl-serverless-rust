@@ -252,7 +252,11 @@ fn sign_in(app: &AppState, jar: CookieJar, user: &User) -> Result<Response, AppE
         user.token_version,
         app.config.session_days,
     )?;
-    Ok((jar.add(cookie::session(&app.config, token)), found("/")).into_response())
+    // `/#/`, not `/`: Facebook hangs a `#_=_` fragment on the callback URL, and
+    // a browser following a redirect whose target names no fragment keeps the
+    // one it already had. It would ride through to the site root, where the
+    // router reads it as a route nobody has and renders the 404 page.
+    Ok((jar.add(cookie::session(&app.config, token)), found("/#/")).into_response())
 }
 
 fn method(settings: &settings::AuthSettings, kind: ProviderKind) -> MethodConfig {

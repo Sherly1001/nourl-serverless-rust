@@ -256,7 +256,9 @@ async fn the_callback_creates_an_account_then_signs_the_same_one_in() {
 
     let landed = flow(&app, "github", "code=ok", None).await;
     assert_eq!(landed.status(), StatusCode::FOUND);
-    assert_eq!(location(&landed), "/");
+    // Carrying a fragment of its own, so Facebook's `#_=_` on the callback URL
+    // is replaced rather than left over the site root as an unknown route.
+    assert_eq!(location(&landed), "/#/");
     let session = session_cookie(&landed).expect("a callback signs you in");
     // Single use: the state is spent, so a replayed callback has nothing to
     // match against.
@@ -488,7 +490,7 @@ async fn a_signed_in_browser_links_the_identity_instead_of_forking_an_account() 
     let session = session_cookie(&registered).unwrap();
 
     let landed = flow(&app, "github", "code=ok", Some(&session)).await;
-    assert_eq!(location(&landed), "/");
+    assert_eq!(location(&landed), "/#/");
 
     let me = app
         .clone()
@@ -567,7 +569,7 @@ async fn a_stale_session_does_not_break_the_flow() {
 
     let landed = flow(&app, "github", "code=ok", Some(&stale)).await;
     assert_eq!(landed.status(), StatusCode::FOUND);
-    assert_eq!(location(&landed), "/");
+    assert_eq!(location(&landed), "/#/");
     let session = session_cookie(&landed).expect("it should still sign in");
 
     let me = app
