@@ -45,8 +45,6 @@ fn check_password(value: &str, registering: bool) -> Option<String> {
     None
 }
 
-/// One provider button: the path segment the flow starts at, the label, and
-/// the icon class.
 pub struct ProviderButton {
     pub name: &'static str,
     pub label: &'static str,
@@ -161,9 +159,8 @@ pub fn Login() -> impl IntoView {
             toasts.error(err.message);
         }
     });
-    // The callback can only report failure through the URL, since it redirects
-    // rather than answering the page. Read it once, say it, and take it back out
-    // of the address bar so a refresh does not repeat it.
+    // The callback reports failure through the URL, since it redirects rather
+    // than answering. Say it once, then take it back out of the address bar.
     Effect::new(move |_| {
         let Some(window) = web_sys::window() else {
             return;
@@ -341,10 +338,8 @@ pub fn Login() -> impl IntoView {
                                 .into_iter()
                                 .map(|provider| {
                                     view! {
-                                        // A link, not a button: the provider needs a
-                                        // top-level navigation to show its consent
-                                        // screen, and `fetch` cannot follow a
-                                        // cross-origin redirect.
+                                        // A link, not a button: the consent screen
+                                        // needs a top-level navigation.
                                         <a
                                             href=api::oauth_start(provider.name)
                                             class="gap-2 w-full btn btn-soft"
@@ -359,8 +354,7 @@ pub fn Login() -> impl IntoView {
                     </div>
                 </Show>
 
-                // Not a failure of this page: an admin has switched everything
-                // off. Saying so beats an empty card.
+                // Not a failure of this page: an admin switched everything off.
                 <Show when=move || {
                     !methods.get().password && enabled_providers(&methods.get()).is_empty()
                 }>

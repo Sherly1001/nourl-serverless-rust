@@ -202,10 +202,8 @@ pub fn Users() -> impl IntoView {
                         _ => done.to_string(),
                     };
                     toasts.success(note);
-                    // Standing down takes this page away along with the flag.
-                    // The session in hand still claims to hold it, so refresh
-                    // it before leaving — otherwise the navbar keeps offering
-                    // tabs whose every request now answers 403.
+                    // The session in hand still claims the flag, so refresh it
+                    // before leaving or the navbar keeps offering 403s.
                     let stood_down =
                         !is_admin && auth.user.get_untracked().is_some_and(|me| me.id == id);
                     if stood_down {
@@ -355,9 +353,8 @@ pub fn Users() -> impl IntoView {
 
     // The dialog's wording depends on which action opened it, and the cascade
     // count comes from the tree already loaded.
-    // Whether a one-row demote is aimed at the signed-in admin. Resigning is a
-    // different act from taking someone else's flag, and the dialog has to say
-    // so — see `resign_warning`.
+    // Whether a one-row demote is aimed at the signed-in admin: a different
+    // act from taking someone else's flag — see `resign_warning`.
     let resigning = move || match pending.get() {
         Some(Pending::Demote(rows)) if rows.len() == 1 => {
             auth.user.get().is_some_and(|me| me.id == rows[0].id)

@@ -36,13 +36,9 @@ pub fn row_key(user: &AdminUserInfo, branching: bool, matched: bool) -> String {
 
 /// Whether a row that draws no chevron still has to reserve its width.
 ///
-/// Every admin does, roots included: a root with a branch draws a chevron and a
-/// root without one does not, and without the gutter those two sit at different
-/// depths while both being level 0. The tree is read by where a row starts, so
-/// that misalignment says the wrong thing about the chain.
-///
-/// Accounts with no rank are a flat list where nothing branches, so they keep
-/// the edge.
+/// Every admin does, roots included: without it a childless root starts at a
+/// different depth from a branching one, and the tree is read by where a row
+/// starts. Accounts with no rank never branch, so they keep the edge.
 pub fn needs_gutter(is_admin: bool) -> bool {
     is_admin
 }

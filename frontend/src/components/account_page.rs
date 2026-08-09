@@ -19,7 +19,6 @@ use crate::components::users::text::GRACE_DAYS;
 use crate::toast::use_toasts;
 use crate::ui::input_class;
 
-/// Whether this provider is on the account.
 pub fn connected(user: &UserInfo, provider: &str) -> bool {
     user.providers.iter().any(|p| p == provider)
 }
@@ -33,9 +32,8 @@ pub fn can_disconnect(user: &UserInfo, provider: &str) -> bool {
     user.has_password || user.providers.len() > 1
 }
 
-/// What to show beside the avatar. Read from the field being typed in rather
-/// than from the session, and falling back to the handle the way the navbar
-/// does — a display name is optional, and may be being cleared right now.
+/// What to show beside the avatar: the field being typed in rather than the
+/// session, falling back to the handle the way the navbar does.
 pub fn shown_name(display_name: &str, username: &str) -> String {
     let trimmed = display_name.trim();
     if trimmed.is_empty() {
@@ -51,13 +49,11 @@ const PROVIDERS: [(&str, &str, &str); 3] = [
     ("facebook", "Facebook", "icon-[tabler--brand-facebook]"),
 ];
 
-/// Why the disconnect button is disabled — the same reason the server would
-/// give, said before the request rather than after it.
+/// The reason the server would give for refusing, said before the request.
 const LAST_WAY_IN: &str = "Set a password first, or connect another provider";
 
-/// What the close dialog warns about. The link count is the part worth
-/// knowing: the choice below it is only meaningful once you know how much it
-/// applies to.
+/// What the close dialog warns about. The count is what makes the choice
+/// below it mean anything.
 pub fn close_warning(links: u64) -> String {
     match links {
         0 => "This deletes your account. It cannot be undone.".to_string(),
@@ -66,8 +62,6 @@ pub fn close_warning(links: u64) -> String {
     }
 }
 
-/// The two answers, worded by what each does to the links rather than by the
-/// name of the variant.
 pub fn link_choice_label(links: LinkDisposition, grace_days: u32) -> String {
     match links {
         LinkDisposition::Delete => {
@@ -91,20 +85,16 @@ pub fn AccountPage() -> impl IntoView {
     let avatar_url = RwSignal::new(String::new());
     let current_password = RwSignal::new(String::new());
     let new_password = RwSignal::new(String::new());
-    // Its own field rather than the one above: proving who you are in order to
-    // close the account is a different act from changing a password, and
-    // borrowing that box would have the dialog read a value the user typed for
-    // something else.
+    // Its own field rather than the one above: borrowing that box would have
+    // the dialog read a value typed for something else.
     let closing_password = RwSignal::new(String::new());
     let confirm_open = RwSignal::new(false);
     let saving = RwSignal::new(false);
-    // What to do with the links. `Orphan` to start with: it is the answer that
-    // breaks nothing for whoever is following them, and the destructive one
-    // should be reached on purpose rather than by not reading.
+    // `Orphan` to start with: it breaks nothing for whoever is following the
+    // links, and the destructive answer should be reached on purpose.
     let links = RwSignal::new(LinkDisposition::Orphan);
-    // How many there are to decide about. Asked for one row, because only the
-    // total is wanted, and scoped with `mine` — an admin's unscoped list is
-    // every link on the site, which is not what closing this account touches.
+    // Scoped with `mine`: an admin's unscoped list is every link on the site,
+    // which is not what closing this account touches.
     let link_count = RwSignal::new(0u64);
 
     // Fill the form from the session, and refill it whenever the session
@@ -125,8 +115,6 @@ pub fn AccountPage() -> impl IntoView {
         });
     });
     Effect::new(move |_| {
-        // Only for signed-in callers: the endpoint is authenticated, and the
-        // page shows nothing to anyone else.
         if auth.user.get().is_none() {
             return;
         }
@@ -143,12 +131,10 @@ pub fn AccountPage() -> impl IntoView {
         (!trimmed.is_empty()).then_some(trimmed)
     };
 
-    // The same rules the server applies, so a bad handle is caught before the
-    // round trip. Uniqueness is not among them — only the server knows that,
-    // and it answers 409 on the field.
+    // The server's own rules, minus uniqueness — only it knows that, and it
+    // answers 409 on the field.
     let username_error = Memo::new(move |_| validate_username(&username.get()).err());
-    // Both are optional, so blank is not an error — it is the field being
-    // cleared, which is what `blank_to_none` sends.
+    // Both optional, so blank is the field being cleared, not an error.
     let email_error = Memo::new(move |_| {
         let typed = email.get();
         let typed = typed.trim();
@@ -163,8 +149,6 @@ pub fn AccountPage() -> impl IntoView {
             .then(|| validate_avatar_url(typed).err())
             .flatten()
     });
-    // Blank is not "no change" for the handle: the field is filled from the
-    // session, so an empty box is someone clearing it, which is not a thing.
     let profile_ready = Memo::new(move |_| {
         !saving.get()
             && username_error.get().is_none()
@@ -179,8 +163,7 @@ pub fn AccountPage() -> impl IntoView {
         }
         saving.set(true);
         let body = UpdateProfileRequest {
-            // Re-sending the current handle is a no-op server-side, so this
-            // does not have to work out whether it changed.
+            // Re-sending an unchanged handle is a server-side no-op.
             username: blank_to_none(username.get_untracked()),
             display_name: blank_to_none(display_name.get_untracked()),
             email: blank_to_none(email.get_untracked()),
@@ -209,8 +192,6 @@ pub fn AccountPage() -> impl IntoView {
         }
     };
 
-    // Only once something has been typed: a blank box the user has not reached
-    // yet is not an error, it is a box.
     let new_password_error = Memo::new(move |_| {
         let typed = new_password.get();
         (!typed.is_empty())
@@ -219,9 +200,8 @@ pub fn AccountPage() -> impl IntoView {
     });
     let password_ready = Memo::new(move |_| {
         let typed = new_password.get();
-        // The current one is only proof when there is one to prove. The server
-        // makes the same distinction, and asking for a password the account has
-        // never had would lock a provider-only account out of setting one.
+        // Asking for a current password an account never had would lock a
+        // provider-only account out of setting one. The server agrees.
         let proven = !has_password() || !current_password.get().trim().is_empty();
         !typed.is_empty() && new_password_error.get().is_none() && proven
     });
@@ -260,18 +240,14 @@ pub fn AccountPage() -> impl IntoView {
         });
     };
 
-    // The server refuses a blank one with a 401 on an account that has a
-    // password, so offering the button would only spend a round trip to be told
-    // what the page already knows.
+    // A blank one is a 401 on an account that has a password, so the button
+    // would only spend a round trip to learn what the page knows.
     let close_ready = move || !has_password() || !closing_password.get().trim().is_empty();
-    // Out of the view for the same reason as `has_password`: a `>` inside an
-    // attribute reads as the element's closing bracket.
+    // Out of the view for the same reason as `has_password`.
     let owns_links = move || link_count.get() != 0;
 
     let close_account = Callback::new(move |()| {
         spawn_local(async move {
-            // The links are the account holder's own, so they get the choice an
-            // admin acting on someone else never does.
             let body = DeleteAccountRequest {
                 links: links.get_untracked(),
                 current_password: blank_to_none(closing_password.get_untracked()),
@@ -307,13 +283,7 @@ pub fn AccountPage() -> impl IntoView {
                 <div class="border shadow-sm card bg-base-200 border-base-content/10">
                     <div class="gap-4 p-6 card-body">
                         <h3 class="text-xl font-semibold">"Profile"</h3>
-                        // A form, so Enter in any field saves rather than doing
-                        // nothing — the shape every browser already promises.
                         <form class="contents" novalidate on:submit=save_profile>
-                            // Follows the url box as it is typed, so a wrong
-                            // address shows itself before it is saved. The
-                            // component falls back to the initial on a url that
-                            // does not load.
                             <div class="flex gap-4 items-center">
                                 {move || {
                                     let name = shown_name(&display_name.get(), &username.get());
@@ -396,9 +366,6 @@ pub fn AccountPage() -> impl IntoView {
                     <div class="gap-4 p-6 card-body">
                         <h3 class="text-xl font-semibold">{password_heading}</h3>
                         <form class="contents" novalidate on:submit=save_password>
-                            // Only asked for when there is one to prove; the
-                            // server skips the check on an account that has
-                            // never had a password.
                             <Show when=has_password>
                                 <label class="flex flex-col gap-1">
                                     <span class="text-sm font-semibold">"Current password"</span>
@@ -456,11 +423,9 @@ pub fn AccountPage() -> impl IntoView {
                                 let removable = move || {
                                     auth.user.get().is_some_and(|me| can_disconnect(&me, name))
                                 };
-                                // A provider the site does not offer is not a
-                                // row at all — unless the account is already on
-                                // it, which has to stay visible or there would
-                                // be no way to disconnect what an admin has
-                                // since switched off.
+                                // A provider the site does not offer is no row
+                                // at all — unless already connected, or there
+                                // would be no way to disconnect it.
                                 view! {
                                     <Show when=move || offered() || is_connected()>
                                         <div class="flex gap-3 justify-between items-center">
@@ -472,9 +437,6 @@ pub fn AccountPage() -> impl IntoView {
                                                 when=is_connected
                                                 fallback=move || {
                                                     view! {
-                                                        // Nothing to offer for a provider the
-                                                        // site has switched off: the button
-                                                        // would only lead to `oauth_disabled`.
                                                         <Show when=offered>
                                                             <a href=api::oauth_start(name) class="btn btn-soft btn-sm">
                                                                 "Connect"
@@ -487,9 +449,8 @@ pub fn AccountPage() -> impl IntoView {
                                                     when=removable
                                                     fallback=move || {
                                                         view! {
-                                                            // Wrapped only while it is refused:
-                                                            // a bubble on a button that works
-                                                            // explains nothing.
+                                                            // Only while refused: a bubble on a
+                                                            // working button explains nothing.
                                                             <Tooltip
                                                                 text=LAST_WAY_IN
                                                                 class="inline-flex"
@@ -542,10 +503,8 @@ pub fn AccountPage() -> impl IntoView {
                 confirm_disabled=Signal::derive(move || !close_ready())
                 extra=move || {
                     view! {
-                        // Only worth asking when there is something to decide
-                        // about. With no links either answer does the same
-                        // thing, and a radio pair that changes nothing is a
-                        // question the reader has to work out is pointless.
+                        // With no links either answer does the same thing, and
+                        // a question that changes nothing still has to be read.
                         <Show when=owns_links>
                             <fieldset class="flex flex-col gap-2 mb-6">
                                 <legend class="mb-1 text-sm font-semibold">"Your links"</legend>
@@ -554,11 +513,10 @@ pub fn AccountPage() -> impl IntoView {
                                     .map(|choice| {
                                         view! {
                                             <label class="flex gap-3 items-start text-sm cursor-pointer">
-                                                // No nudge: `radio-sm` is 20px
-                                                // and `text-sm` has a 20px line
-                                                // box, so `items-start` already
-                                                // lands it on the first line. A
-                                                // margin here only pushes it off.
+                                                // No nudge: `radio-sm` and the
+                                                // `text-sm` line box are both
+                                                // 20px, so `items-start` lands
+                                                // it right.
                                                 <input
                                                     type="radio"
                                                     name="closing-links"
@@ -574,11 +532,9 @@ pub fn AccountPage() -> impl IntoView {
                             </fieldset>
                         </Show>
                         <Show when=has_password>
-                            // A form, not a bare label: a password field loose in
-                            // the document makes browsers warn, and password
-                            // managers need one to offer what they have stored.
-                            // Enter does nothing here on purpose — this is not a
-                            // dialog to answer by accident.
+                            // A form, not a bare label: browsers warn about a
+                            // loose password field. Enter stays inert on
+                            // purpose.
                             <form
                                 class="mb-6"
                                 on:submit=move |ev: leptos::ev::SubmitEvent| ev.prevent_default()

@@ -148,9 +148,8 @@ pub fn validate_username(username: &str) -> Result<(), String> {
 /// Longest address RFC 5321 allows on the wire.
 pub const EMAIL_MAX: usize = 254;
 
-/// Shape only. Whether an address exists, and whether it belongs to whoever
-/// typed it, is a question only a confirmation mail can answer — this rejects
-/// what is obviously not an address, and nothing more.
+/// Shape only. Whether an address exists, and belongs to whoever typed it,
+/// only a confirmation mail can answer.
 pub fn validate_email(email: &str) -> Result<(), String> {
     if email.len() > EMAIL_MAX {
         return Err(format!("email must be at most {EMAIL_MAX} characters"));
@@ -173,18 +172,16 @@ pub fn validate_email(email: &str) -> Result<(), String> {
     }
 }
 
-/// How long an inline avatar may be. Generous enough for a small picture,
-/// short enough that it cannot bloat every response the account appears in —
-/// `UserInfo` carries this field, and the admin list carries one per row.
+/// How long an inline avatar may be: enough for a small picture, little
+/// enough not to bloat every response — the admin list carries one per row.
 pub const AVATAR_DATA_URI_MAX: usize = 200_000;
 
 /// A `data:` avatar. Has to be an image: `data:text/html` in an `<img src>` is
 /// inert in every current browser, but the value is echoed into pages other
-/// people load, and "inert today" is not a property worth depending on.
+/// people load, and "inert today" is not worth depending on.
 ///
-/// Both encodings are allowed. Base64 is what a file picker produces; percent-
-/// encoded is what an inline SVG is normally written as, and re-encoding it to
-/// base64 only to store it would be busywork.
+/// Both encodings: base64 is what a file picker produces, percent-encoded is
+/// how an inline SVG is normally written.
 fn is_image_data_uri(raw: &str) -> bool {
     let Some(rest) = raw.strip_prefix("data:image/") else {
         return false;
@@ -204,12 +201,10 @@ pub const AVATAR_URL_MAX: usize = 2048;
 
 /// Anything a browser will load into an `<img src>`, and nothing else.
 ///
-/// Deliberately looser than [`validate_url`], which exists to stop a *short
-/// link* pointing somewhere only its author can reach. An avatar is only ever
-/// fetched by the page that displays it, so `http://localhost:3000/me.png` and
-/// a path relative to this site are both fine — while `javascript:` and every
-/// other scheme stay out, since the field is rendered into other people's
-/// pages.
+/// Looser than [`validate_url`], which stops a *short link* pointing somewhere
+/// only its author can reach. An avatar is fetched by the page displaying it,
+/// so a localhost or site-relative one is fine — but `javascript:` and every
+/// other scheme stay out, since this is rendered into other people's pages.
 pub fn validate_avatar_url(raw: &str) -> Result<(), String> {
     if raw.starts_with("data:") {
         if !is_image_data_uri(raw) {

@@ -1,8 +1,7 @@
 //! A password box with a reveal toggle, shared by every page that asks for one.
 //!
 //! The toggle exists because a password typed blind is a password typed wrong,
-//! and the usual answer — a second "confirm" box — asks for the same mistake
-//! twice.
+//! and a second "confirm" box only asks for the same mistake twice.
 
 use leptos::prelude::*;
 
@@ -54,9 +53,8 @@ pub fn PasswordInput(
             <input
                 id=id
                 node_ref=node_ref.unwrap_or_default()
-                // `pe-12` keeps the text clear of the button sitting on top of
-                // it, which is inside the box rather than beside it so the
-                // field still reads as one control.
+                // `pe-12` keeps the text clear of the button, which sits
+                // inside the box so the field reads as one control.
                 class=move || format!("{} pe-12", input_class(invalid.get()))
                 type=move || field_type(shown.get())
                 autocomplete=move || autocomplete.get()
@@ -70,8 +68,7 @@ pub fn PasswordInput(
                     }
                 }
             />
-            // `type=button`: inside a form, a bare button submits it, so
-            // revealing the password would send it.
+            // `type=button`: a bare one submits the form it is in.
             <button
                 type="button"
                 class="flex absolute inset-y-0 right-0 items-center px-4 rounded-e-md text-base-content/60 hover:text-base-content"

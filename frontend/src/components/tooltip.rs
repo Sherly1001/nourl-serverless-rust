@@ -18,10 +18,8 @@ const OPEN_DELAY: Duration = Duration::from_millis(400);
 /// Keeps the bubble inside the window: anchored to the cell's left edge, but
 /// pushed back when that would run it off the right side, and never negative.
 ///
-/// `bubble_width` is how wide the bubble really is, not how wide it may get. A
-/// two-word label on a button at the right edge is a few dozen pixels wide;
-/// clamping it as though it were the full `max-w-96` drags it hundreds of pixels
-/// away from the thing it is pointing at.
+/// `bubble_width` is what it really is, not the maximum — clamping a two-word
+/// label as though it were `max-w-96` drags it hundreds of pixels off target.
 fn clamp_left(anchor_left: f64, bubble_width: f64, viewport_width: f64) -> f64 {
     let rightmost = viewport_width - bubble_width - VIEWPORT_MARGIN_PX;
     anchor_left.min(rightmost.max(VIEWPORT_MARGIN_PX)).max(0.0)
@@ -35,14 +33,11 @@ const ARROW_INSET_PX: f64 = 8.0;
 /// Where the arrow sits along the bubble's own width, measured from its left
 /// edge.
 ///
-/// It cannot be a fixed inset. [`clamp_left`] slides the bubble left to keep it
-/// on screen — by hundreds of pixels for a wide one near the right edge — and an
-/// arrow that stays put then points at whatever happens to be under it instead
-/// of at the thing being described. So it tracks the anchor, and only stops at
-/// the bubble's own corners.
+/// Not a fixed inset: [`clamp_left`] slides the bubble left to keep it on
+/// screen, and an arrow that stays put then points at whatever happens to be
+/// under it. So it tracks the anchor, stopping at the bubble's own corners.
 fn arrow_left(anchor_left: f64, bubble_left: f64, bubble_width: f64) -> f64 {
-    // Aimed a little into the anchor rather than at its very edge, so the arrow
-    // lands over the control instead of beside it.
+    // A little into the anchor, so the arrow lands over it rather than beside.
     let target = anchor_left + ARROW_INSET_PX - bubble_left;
     let rightmost = bubble_width - ARROW_SIZE_PX - ARROW_INSET_PX;
     target.clamp(ARROW_INSET_PX, rightmost.max(ARROW_INSET_PX))
@@ -87,8 +82,7 @@ pub fn Tooltip(
     let (shown, set_shown) = signal(false);
     // Where the anchor was when the pointer arrived, in viewport coordinates.
     let (position, set_position) = signal((0.0_f64, 0.0_f64));
-    // How wide the bubble came out. Guessed at the maximum until it is up and
-    // can be measured, which is the only way to know: it depends on the text.
+    // Guessed at the maximum until it is up and can be measured.
     let (bubble_width, set_bubble_width) = signal(TOOLTIP_WIDTH_PX);
     let bubble: NodeRef<leptos::html::Span> = NodeRef::new();
     Effect::new(move |_| {
@@ -96,26 +90,20 @@ pub fn Tooltip(
             set_bubble_width.set(f64::from(node.offset_width()));
         }
     });
-    // Bumped on every enter and leave, so a timer that fires after the pointer
-    // has moved on knows it is stale.
+    // Bumped on enter and leave, so a late timer knows it is stale.
     let (hover, set_hover) = signal(0u32);
     let body = text.clone();
 
-    // While the bubble is up, anything that moves the anchor takes it down.
+    // While the bubble is up, anything that moves the anchor takes it down. It
+    // is `position: fixed` at coordinates measured on hover, so a scroll leaves
+    // it hanging over whatever slid underneath — and a wheel or a dragged
+    // scrollbar moves the anchor without moving the pointer, so `mouseleave`
+    // never fires.
     //
-    // It is `position: fixed` at coordinates measured when the pointer arrived,
-    // so once the page scrolls it hangs over whatever slid underneath. The
-    // pointer leaving cannot be relied on to notice: a wheel, a keystroke or a
-    // dragged scrollbar moves the anchor without moving the pointer, so
-    // `mouseleave` never fires.
-    //
-    // Registered only while it is showing. Hover means one bubble at a time, so
-    // this is one listener — where registering per instance would leave a table
-    // of rows with a listener each, all woken by every scroll event.
-    //
-    // The capture phase is what makes it work at all: `scroll` does not bubble,
-    // so a listener on the document hears a scrolling table body on the way
-    // down or not at all.
+    // Registered only while showing, so a table of rows costs one listener
+    // rather than one each. The capture phase is what makes it work at all:
+    // `scroll` does not bubble, so a listener on the document hears a scrolling
+    // table body on the way down or not at all.
     type Listener = send_wrapper::SendWrapper<(web_sys::Document, Closure<dyn FnMut()>)>;
     let listener: StoredValue<Option<Listener>> = StoredValue::new(None);
     let unlisten = move || {
@@ -201,8 +189,7 @@ pub fn Tooltip(
                     }
                 >
                     {body.clone()}
-                    // A rotated square peeking out of the bottom edge, kept over
-                    // the anchor however far the bubble had to slide — see
+                    // Kept over the anchor however far the bubble slid — see
                     // `arrow_left`.
                     <span
                         class="absolute -bottom-1 border-r border-b rotate-45 size-2 bg-base-100 border-base-content/10"

@@ -253,8 +253,7 @@ fn sign_in(app: &AppState, jar: CookieJar, user: &User) -> Result<Response, AppE
         app.config.session_days,
     )?;
     // `/#/`, not `/`: Facebook hangs a `#_=_` fragment on the callback URL, and
-    // a browser following a redirect whose target names no fragment keeps the
-    // one it already had. It would ride through to the site root, where the
+    // a redirect naming no fragment of its own leaves it in place — where the
     // router reads it as a route nobody has and renders the 404 page.
     Ok((jar.add(cookie::session(&app.config, token)), found("/#/")).into_response())
 }
@@ -296,13 +295,12 @@ fn redirect_uri(app: &AppState, kind: ProviderKind) -> String {
 
 /// `DELETE /api/auth/{provider}` — takes an identity off the caller's account.
 ///
-/// Refused when it is the last way in. The account would still exist, with
-/// links attached to it, and nobody able to reach it: the same lockout rule the
+/// Refused when it is the last way in: the account would still exist, with
+/// links attached and nobody able to reach it. The same lockout rule the
 /// settings page enforces for login methods.
 ///
-/// Unlike the two routes above this one answers with JSON. It is called from a
-/// page by `fetch`, not walked into by a browser, so there is no navigation to
-/// land anywhere.
+/// Answers with JSON, unlike the two routes above — it is called by `fetch`,
+/// so there is no navigation to land anywhere.
 pub async fn disconnect(
     State(app): State<AppState>,
     CurrentUser(user): CurrentUser,
@@ -314,8 +312,7 @@ pub async fn disconnect(
     if !connected.iter().any(|p| p == kind.as_str()) {
         return Err(AppError::not_found("that provider is not connected"));
     }
-    // Whether anything would be left to sign in with afterwards. A password
-    // counts; another provider counts; nothing else does.
+    // Whether anything would be left to sign in with afterwards.
     if user.hash_passwd.is_none() && connected.len() == 1 {
         return Err(AppError {
             status: axum::http::StatusCode::BAD_REQUEST,
