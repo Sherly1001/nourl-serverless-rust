@@ -680,6 +680,28 @@ async fn admins_see_everything_and_search_narrows_it() {
     assert_eq!(body["total"], 1);
     assert_eq!(body["items"][0]["code"], "alpha");
 
+    // `mine` puts an admin back in the ordinary view. The account page counts
+    // through this endpoint to say how many links closing the account would
+    // take with it, and closing an account only ever touches its owner's.
+    let mine = app
+        .clone()
+        .oneshot(authed_get("/api/urls?mine=true", &admin))
+        .await
+        .unwrap();
+    let mine = body_json(mine).await;
+    assert_eq!(mine["total"], 0, "the admin owns none of these links");
+
+    let theirs = app
+        .clone()
+        .oneshot(authed_get("/api/urls?mine=true", &user))
+        .await
+        .unwrap();
+    assert_eq!(
+        body_json(theirs).await["total"],
+        2,
+        "an ordinary account is already scoped, so mine changes nothing"
+    );
+
     // A rejected sort field must not reach Mongo.
     let bad_sort = app
         .oneshot(authed_get("/api/urls?sort=hash_passwd,1", &admin))

@@ -219,8 +219,12 @@ pub async fn list_urls(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<UrlListResponse>, AppError> {
     let parsed = ListParams::from_query(&params)?;
-    // Admins see every link; everyone else sees only their own.
-    let owner = (!user.is_admin).then_some(user.id.as_str());
+    // Admins see every link; everyone else sees only their own. `mine=true`
+    // asks for the ordinary view regardless, which is what the account page
+    // needs: closing an account takes its owner's links with it, and for an
+    // admin the unscoped total is the whole site's.
+    let mine = params.get("mine").is_some_and(|v| v == "true");
+    let owner = (!user.is_admin || mine).then_some(user.id.as_str());
     let filter = parsed.filter(owner);
 
     let urls = state.db.collection::<Document>("urls");

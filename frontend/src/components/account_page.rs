@@ -103,7 +103,8 @@ pub fn AccountPage() -> impl IntoView {
     // should be reached on purpose rather than by not reading.
     let links = RwSignal::new(LinkDisposition::Orphan);
     // How many there are to decide about. Asked for one row, because only the
-    // total is wanted.
+    // total is wanted, and scoped with `mine` — an admin's unscoped list is
+    // every link on the site, which is not what closing this account touches.
     let link_count = RwSignal::new(0u64);
 
     // Fill the form from the session, and refill it whenever the session
@@ -130,7 +131,8 @@ pub fn AccountPage() -> impl IntoView {
             return;
         }
         spawn_local(async move {
-            if let Ok(page) = api::list_urls(vec![("limit", "1".to_string())], None).await {
+            let scoped = vec![("limit", "1".to_string()), ("mine", "true".to_string())];
+            if let Ok(page) = api::list_urls(scoped, None).await {
                 link_count.try_set(page.total);
             }
         });
