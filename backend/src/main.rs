@@ -10,7 +10,15 @@ fn fatal(context: &str, err: impl std::fmt::Display) -> ! {
 
 #[tokio::main]
 async fn main() {
-    tracing_subscriber::fmt().with_target(false).init();
+    let in_lambda = std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok();
+    let logs = tracing_subscriber::fmt().with_target(false);
+    if in_lambda {
+        // CloudWatch stamps every line with its own arrival time, and colour
+        // codes reach it as escape sequences rather than as colour.
+        logs.without_time().with_ansi(false).init();
+    } else {
+        logs.init();
+    }
     let config = Config::from_env().unwrap_or_else(|err| fatal("invalid configuration", err));
     let db = backend::db::connect(&config.mongo_url, &config.db_name)
         .await
@@ -26,7 +34,7 @@ async fn main() {
         providers: Arc::new(Providers::production()),
     });
 
-    if std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok() {
+    if in_lambda {
         if let Err(err) = lambda_http::run(app).await {
             fatal("lambda runtime failed", err);
         }

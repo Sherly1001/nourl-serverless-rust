@@ -7,6 +7,7 @@ use axum::response::{IntoResponse, Response};
 use axum::routing::{get, post, put};
 use mongodb::Database;
 
+use crate::access_log::access_log;
 use crate::config::Config;
 use crate::error::AppError;
 use crate::oauth::Providers;
@@ -63,6 +64,7 @@ pub fn build_app(state: AppState) -> Router {
                 field: None,
             }
         })
+        .layer(axum::middleware::from_fn(access_log))
         .with_state(state)
 }
 

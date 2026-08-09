@@ -1,3 +1,4 @@
+pub mod access_log;
 pub mod app;
 pub mod auth;
 pub mod config;
