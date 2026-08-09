@@ -258,12 +258,24 @@ pub async fn create(db: &Database, new: NewUser) -> Result<User, AppError> {
     Ok(user)
 }
 
-/// Stores an **already hashed** password. Like [`NewUser`], nothing here
-/// hashes — the caller must have run it through
+/// Stores an **already hashed** password and revokes every outstanding token.
+/// Like [`NewUser`], nothing here hashes — the caller must have run it through
 /// [`crate::auth::password::hash`].
+///
+/// One update, not a store followed by a [`bump_token_version`]. Between two
+/// there is a moment where the new password is live and the old sessions are
+/// too, which is exactly the window somebody changing their password because it
+/// leaked is trying to close. A dropped connection in that gap would leave it
+/// open indefinitely, and there are no transactions here to roll it back.
 pub async fn set_password(db: &Database, id: &str, hash_passwd: &str) -> Result<(), AppError> {
     collection(db)
-        .update_one(doc! {"id": id}, doc! {"$set": {"hash_passwd": hash_passwd}})
+        .update_one(
+            doc! {"id": id},
+            doc! {
+                "$set": {"hash_passwd": hash_passwd},
+                "$inc": {"token_version": 1},
+            },
+        )
         .await?;
     Ok(())
 }

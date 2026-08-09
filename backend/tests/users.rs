@@ -173,6 +173,32 @@ async fn token_version_survives_promotion_past_i32() {
     db.drop().await.unwrap();
 }
 
+/// Storing the password and revoking the old sessions is one update. Two would
+/// leave a window where the new password works and every session signed under
+/// the old one still does — the thing a password change is meant to end.
+#[tokio::test]
+async fn setting_a_password_revokes_outstanding_tokens_in_the_same_update() {
+    let db = helpers::test_db().await;
+    backend::db::ensure_indexes(&db).await.unwrap();
+
+    let user = users::create(
+        &db,
+        users::NewUser::with_password_hash("rotator", FAKE_HASH.into()),
+    )
+    .await
+    .unwrap();
+
+    users::set_password(&db, &user.id, "second-hash")
+        .await
+        .unwrap();
+
+    let reloaded = users::find_by_id(&db, &user.id).await.unwrap().unwrap();
+    assert_eq!(reloaded.hash_passwd.as_deref(), Some("second-hash"));
+    assert_eq!(reloaded.token_version, user.token_version + 1);
+
+    db.drop().await.unwrap();
+}
+
 #[tokio::test]
 async fn bump_token_version_invalidates_old_snapshots() {
     let db = helpers::test_db().await;

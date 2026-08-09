@@ -161,7 +161,6 @@ pub async fn change_password(
 
     let hash = password::hash(&body.new_password)?;
     users::set_password(&state.db, &user.id, &hash).await?;
-    users::bump_token_version(&state.db, &user.id).await?;
 
     let reloaded = users::find_by_id(&state.db, &user.id)
         .await?
