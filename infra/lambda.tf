@@ -47,9 +47,9 @@ resource "aws_lambda_function" "api" {
       JWT_SECRET            = data.aws_ssm_parameter.jwt_secret.value
       NOTFOUND_FALLBACK_URL = local.notfound_fallback_url
       # What the OAuth callback URL is built from, and what has to be
-      # registered at each provider. Derived from the domain this environment
-      # already serves, so the two cannot drift apart.
-      PUBLIC_BASE_URL = "https://${var.domain_name}"
+      # registered at each provider. Derived from wherever this environment
+      # answers, so the two cannot drift apart.
+      PUBLIC_BASE_URL = local.site_url
     }
   }
 }

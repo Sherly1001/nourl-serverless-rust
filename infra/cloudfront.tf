@@ -22,6 +22,11 @@ locals {
   api_origin_id = "apigw"
   api_domain    = replace(aws_apigatewayv2_api.http.api_endpoint, "https://", "")
 
+  # Where this environment actually answers. With no domain of its own that is
+  # the distribution's URL, which is a real origin OAuth can be registered
+  # against — "https://" with the hostname left out is not.
+  site_url = local.has_domain ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+
   # Frontend assets live at the bucket root (Trunk uses the default public_url
   # so dev and prod URLs match). Short codes can never contain a dot
   # (`validate_code`), so the *.ext patterns cannot shadow a redirect.

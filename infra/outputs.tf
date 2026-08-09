@@ -15,5 +15,5 @@ output "cloudfront_domain" {
 }
 
 output "site_url" {
-  value = local.has_domain ? "https://${var.domain_name}" : "https://${aws_cloudfront_distribution.main.domain_name}"
+  value = local.site_url
 }
