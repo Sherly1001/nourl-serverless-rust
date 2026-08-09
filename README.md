@@ -160,6 +160,108 @@ up, unowned, on that same one-week clock. An admin must give up the flag before
 closing their account, so the branch below them is dealt with in the open rather
 than as a side effect.
 
+## Sign-in methods
+
+Four ways in: a password, GitHub, Google and Facebook. Each is toggled at
+`#/settings`, which only the root admin can open. A provider counts as on only
+once it is enabled **and** has both a client id and a secret, so a half-filled
+form leaves the button off the login page rather than producing a broken
+redirect.
+
+Credentials live in the Mongo `settings` document — never in Terraform, the
+repo, or an environment variable. The settings page never sends a secret back
+to the browser, only whether one is stored; leaving the field blank keeps what
+is already there, so saving an unrelated change cannot wipe it.
+
+### Callback URLs
+
+The callback is always `{PUBLIC_BASE_URL}/api/auth/{provider}/callback`. The
+origin comes from configuration, never from the request's `Host` header — a
+forged host would otherwise redirect the provider's code somewhere else.
+
+| Environment | `PUBLIC_BASE_URL`         | Callback to register                               |
+| ----------- | ------------------------- | -------------------------------------------------- |
+| local       | `http://127.0.0.1:8080`   | `http://127.0.0.1:8080/api/auth/github/callback`   |
+| dev         | `https://dev.nourl.space` | `https://dev.nourl.space/api/auth/github/callback` |
+| prod        | `https://nourl.space`     | `https://nourl.space/api/auth/github/callback`     |
+
+Locally that is the Trunk origin, not the backend's 9669: the browser talks to
+Trunk, which proxies `/api` through. Unset, it falls back to
+`https://nourl.space` — production, because a stray default that silently
+pointed at localhost would be the wrong way round. Terraform sets it from
+`domain_name`, so OAuth needs that variable filled in; the bare CloudFront URL
+has no hostname to register.
+
+### Getting the credentials
+
+Each provider hands out a client id and a secret from its own console. The
+wording in all three moves around; what follows is what to look for rather than
+a guaranteed sequence of button labels. Paste both into `#/settings` on the
+matching environment as soon as you have them — the secret is the part that is
+hard or impossible to see again.
+
+**GitHub** — scopes `read:user user:email`.
+
+1. <https://github.com/settings/developers> → **OAuth Apps** → **New OAuth App**.
+   Not a GitHub App: that is a different product with a different flow.
+2. Homepage URL is the site's origin; **Authorization callback URL** is the one
+   from the table above.
+3. Save. The **Client ID** is on the page; the secret needs **Generate a new
+   client secret** and is shown **once**. Lose it and you generate another.
+4. A GitHub OAuth App holds exactly **one** callback URL, so local, dev and prod
+   each need their own app — three apps, three pairs of credentials.
+
+The email comes from `/user/emails` and counts as verified only when it is the
+primary address and GitHub says it is verified.
+
+**Google** — scopes `openid email profile`.
+
+1. <https://console.cloud.google.com> → pick or create a project.
+2. **APIs & Services** → **OAuth consent screen**: user type **External**, then
+   an app name and a support email. Nothing here needs an API to be enabled —
+   the scopes are the non-sensitive ones, so no verification review.
+3. While the consent screen is unpublished only accounts listed under **Test
+   users** can sign in, and the sign-in page says so. Add your own address.
+4. **Credentials** → **Create credentials** → **OAuth client ID** → application
+   type **Web application**. Under **Authorized redirect URIs** add all three
+   rows from the table — Google accepts a list, so one client covers every
+   environment.
+5. The client id and secret appear on save and stay readable from the client's
+   own page afterwards.
+
+**Facebook** — scope `email`.
+
+1. <https://developers.facebook.com/apps> → **Create app**, use case
+   **Authenticate and request data from users with Facebook Login**.
+2. Add the **Facebook Login** product, then its **Settings** → **Valid OAuth
+   Redirect URIs** → the URL from the table. HTTPS only: `127.0.0.1` is
+   refused, so a local flow cannot be tested against Facebook at all. Dev is the
+   lowest environment it works on.
+3. **App settings** → **Basic**: the **App ID** is the client id, and **App
+   secret** → **Show** is the secret. Both stay readable.
+4. A new app is in development mode and admits only accounts with a role on it
+   — admins, developers, testers, added under **App roles**. Going live to
+   everybody else needs App Review and business verification for `email`.
+
+Facebook's email is **always** treated as unverified here, whatever the response
+claims, so it never links to an existing account.
+
+### What an identity attaches to
+
+An account is found by the provider's own user id first. Failing that, a
+**verified** email matches an existing account and links to it. An unverified
+one never does — it would let anyone who can type your address into a provider
+walk into your account — so it creates a new account instead. Facebook
+therefore never links by email at all.
+
+Signing in while already logged in attaches the identity to the account you are
+holding rather than switching accounts. Which of the two it is riding on the
+signed state cookie, not on a query parameter, so a caller cannot pick.
+
+Disconnecting is refused when it is the last way in: an account with no password
+and one provider would still exist with nobody able to reach it. Set a password
+first, then disconnect.
+
 ## Layout
 
 - `shared/` — DTOs + validation used by backend and frontend
