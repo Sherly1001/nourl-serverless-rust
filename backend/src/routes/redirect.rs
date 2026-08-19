@@ -34,22 +34,23 @@ pub async fn redirect(
     headers: HeaderMap,
 ) -> Response {
     let fallback = fallback_url(&state.config, &headers);
-    let doc = match state
+    let now = bson::DateTime::now();
+    let visited = state
         .db
         .collection::<Document>("urls")
-        .find_one(doc! {"code": &code})
-        .await
-    {
-        Ok(Some(d)) => d,
-        _ => return found(&fallback),
-    };
-    if let Ok(exp) = doc.get_datetime("expires_at") {
-        if *exp < bson::DateTime::now() {
-            return found(&fallback);
-        }
-    }
-    match doc.get_str("url") {
-        Ok(url) => found(url),
-        Err(_) => found(&fallback),
+        .find_one_and_update(
+            doc! {
+                "code": &code,
+                "$or": [{"expires_at": null}, {"expires_at": {"$gt": now}}],
+            },
+            doc! {"$inc": {"hits": 1}, "$set": {"last_hit_at": now}},
+        )
+        .await;
+    match visited {
+        Ok(Some(doc)) => match doc.get_str("url") {
+            Ok(url) => found(url),
+            Err(_) => found(&fallback),
+        },
+        _ => found(&fallback),
     }
 }

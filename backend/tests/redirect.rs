@@ -10,6 +10,88 @@ fn get(uri: &str) -> Request<Body> {
     Request::builder().uri(uri).body(Body::empty()).unwrap()
 }
 
+async fn stored(db: &mongodb::Database, code: &str) -> mongodb::bson::Document {
+    db.collection::<mongodb::bson::Document>("urls")
+        .find_one(doc! {"code": code})
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+#[tokio::test]
+async fn every_visit_is_counted_and_stamped() {
+    let (app, db) = test_app().await;
+    db.collection("urls")
+        .insert_one(doc! {"code": "hit", "url": "https://target.example"})
+        .await
+        .unwrap();
+
+    for _ in 0..3 {
+        let resp = app.clone().oneshot(get("/hit")).await.unwrap();
+        assert_eq!(resp.headers()["location"], "https://target.example");
+    }
+
+    let row = stored(&db, "hit").await;
+    assert_eq!(row.get_i32("hits").unwrap(), 3);
+    assert!(
+        row.get_datetime("last_hit_at").is_ok(),
+        "a visit stamps when it happened"
+    );
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_link_with_time_left_still_counts() {
+    let (app, db) = test_app().await;
+    let future = bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() + 3_600_000);
+    db.collection("urls")
+        .insert_one(doc! {"code": "soon", "url": "https://target.example", "expires_at": future})
+        .await
+        .unwrap();
+
+    let resp = app.oneshot(get("/soon")).await.unwrap();
+    assert_eq!(resp.headers()["location"], "https://target.example");
+    assert_eq!(stored(&db, "soon").await.get_i32("hits").unwrap(), 1);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_expired_link_counts_nothing() {
+    let (app, db) = test_app().await;
+    let past = bson::DateTime::from_millis(bson::DateTime::now().timestamp_millis() - 60_000);
+    db.collection("urls")
+        .insert_one(
+            doc! {"code": "gone", "url": "https://target.example", "expires_at": past, "hits": 5},
+        )
+        .await
+        .unwrap();
+
+    let resp = app.oneshot(get("/gone")).await.unwrap();
+    assert_eq!(resp.headers()["location"], FALLBACK);
+    let row = stored(&db, "gone").await;
+    assert_eq!(
+        row.get_i32("hits").unwrap(),
+        5,
+        "an expired link is not hit"
+    );
+    assert!(row.get("last_hit_at").is_none());
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_explicit_null_expiry_is_no_expiry() {
+    let (app, db) = test_app().await;
+    db.collection("urls")
+        .insert_one(doc! {"code": "nulled", "url": "https://target.example", "expires_at": null})
+        .await
+        .unwrap();
+
+    let resp = app.oneshot(get("/nulled")).await.unwrap();
+    assert_eq!(resp.headers()["location"], "https://target.example");
+    assert_eq!(stored(&db, "nulled").await.get_i32("hits").unwrap(), 1);
+    db.drop().await.unwrap();
+}
+
 #[tokio::test]
 async fn redirects_302_to_stored_url() {
     let (app, db) = test_app().await;
