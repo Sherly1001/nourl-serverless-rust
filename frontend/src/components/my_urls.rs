@@ -320,9 +320,9 @@ pub fn MyUrls() -> impl IntoView {
     // Kept out of the view: leptosfmt reads the `>` of a comparison inside an
     // attribute as the element's closing bracket and mangles the markup.
     let has_selection = move || selected_count() > 0;
-    // Checkbox, code, destination, hits, last hit, created, updated, actions —
-    // plus the admin-only owner column.
-    let column_count = move || if auth.is_admin() { 9 } else { 8 };
+    // Checkbox, code, destination, hits, last hit, expires, created, updated,
+    // actions — plus the admin-only owner column.
+    let column_count = move || if auth.is_admin() { 10 } else { 9 };
 
     view! {
         <Show
@@ -389,7 +389,7 @@ pub fn MyUrls() -> impl IntoView {
                     // The header carries its own background, which separates it
                     // from the rows — so the first row needs no rule above it.
                     // FlyonUI already leaves the last row without one below.
-                    <table class="table table-fixed min-w-[68rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
+                    <table class="table table-fixed table-pinned min-w-[77rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead class="sticky top-0 z-10 bg-base-200">
                             <tr>
                                 <th class="px-3 w-10">
@@ -412,6 +412,12 @@ pub fn MyUrls() -> impl IntoView {
                                 <SortHeader
                                     field="last_hit_at"
                                     label="Last hit"
+                                    sort=sort
+                                    width="w-36"
+                                />
+                                <SortHeader
+                                    field="expires_at"
+                                    label="Expires"
                                     sort=sort
                                     width="w-36"
                                 />
@@ -471,6 +477,7 @@ pub fn MyUrls() -> impl IntoView {
                                     let has_owner = entry.owner.is_some();
                                     let hits = entry.hits;
                                     let last = short_datetime(entry.last_hit_at.as_ref());
+                                    let expires = short_datetime(entry.expires_at.as_ref());
                                     let created = short_datetime(entry.created_at.as_ref());
                                     let updated = short_datetime(entry.updated_at.as_ref());
                                     let is_editing = move || {
@@ -635,6 +642,7 @@ pub fn MyUrls() -> impl IntoView {
                                             </Show>
                                             <td>{hits}</td>
                                             <td class="whitespace-nowrap opacity-70">{last}</td>
+                                            <td class="whitespace-nowrap opacity-70">{expires}</td>
                                             <td class="whitespace-nowrap opacity-70">{created}</td>
                                             <td class="whitespace-nowrap opacity-70">{updated}</td>
                                             <td class="whitespace-nowrap">

@@ -51,6 +51,67 @@
   }
 }
 
+/* A wide table scrolls sideways inside its own box, and the columns worth
+   keeping are the ones that say which row this is and what can be done to it:
+   the checkbox, the code, the destination, and the actions. Only the columns
+   between them scroll away.
+
+   The offsets are the widths of the columns to the left, so they have to track
+   the header classes in `my_urls.rs` — hence the names beside each one. Every
+   column but the destination is a fixed width, and `table-layout: fixed` hands
+   the slack to the one auto column, so these two never drift.
+
+   The rule lives here rather than on the markup because the skeleton rows are
+   built by a shared component that never sees this table's classes. */
+@layer components {
+  .table-pinned {
+    --pin-code: 2.5rem; /* w-10, the checkbox */
+    --pin-destination: 10.5rem; /* + w-32, the code */
+  }
+
+  .table-pinned :is(th, td):nth-child(-n + 3),
+  .table-pinned :is(th, td):last-child {
+    position: sticky;
+    z-index: 1;
+    background-color: var(--color-base-100);
+  }
+
+  .table-pinned :is(th, td):nth-child(1) {
+    left: 0;
+  }
+
+  .table-pinned :is(th, td):nth-child(2) {
+    left: var(--pin-code);
+  }
+
+  .table-pinned :is(th, td):nth-child(3) {
+    left: var(--pin-destination);
+  }
+
+  .table-pinned :is(th, td):last-child {
+    right: 0;
+  }
+
+  /* Only the innermost of each group is an edge, so only it gets the rule that
+     separates what is pinned from what is sliding under it. */
+  .table-pinned :is(th, td):nth-child(3) {
+    box-shadow: 1px 0 0
+      color-mix(in oklab, var(--color-base-content) 10%, transparent);
+  }
+
+  .table-pinned :is(th, td):last-child {
+    box-shadow: -1px 0 0
+      color-mix(in oklab, var(--color-base-content) 10%, transparent);
+  }
+
+  /* The header is sticky in its own right, so its pinned cells take its colour
+     rather than the rows'. */
+  .table-pinned thead :is(th, td):nth-child(-n + 3),
+  .table-pinned thead :is(th, td):last-child {
+    background-color: var(--color-base-200);
+  }
+}
+
 @media (prefers-reduced-motion: reduce) {
   *,
   *::before,

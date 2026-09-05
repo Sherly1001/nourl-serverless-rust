@@ -88,10 +88,13 @@ pub fn App() -> impl IntoView {
         </div>
 
         // The table needs room; a form reads better narrow, so the width
-        // follows the route rather than being one compromise for both.
+        // follows the route rather than being one compromise for both. The URL
+        // table is the widest of them — nine columns and an action pair — and
+        // anything narrower than this scrolls the actions out of reach.
         <main class=move || {
             let width = match route.get() {
-                Route::MyUrls | Route::Users => "max-w-6xl",
+                Route::MyUrls => "max-w-[86rem]",
+                Route::Users => "max-w-6xl",
                 _ => "max-w-2xl",
             };
             format!("container py-10 px-4 mx-auto {width}")
