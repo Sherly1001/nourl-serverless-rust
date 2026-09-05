@@ -10,6 +10,8 @@ use crate::auth::use_auth;
 use crate::clipboard::{copy, origin, short_link};
 use crate::components::avatar::{Avatar, usable_url};
 use crate::components::confirm::ConfirmDialog;
+use crate::components::conflict::ReplacementDetails;
+use crate::components::conflict::other_owner;
 use crate::components::datepicker::DateTimePicker;
 use crate::components::tooltip::Tooltip;
 use crate::datetime::{
@@ -64,6 +66,12 @@ pub fn MyUrls() -> impl IntoView {
     let (draft_code, set_draft_code) = signal(String::new());
     let (draft_url, set_draft_url) = signal(String::new());
     let (draft_expiry, set_draft_expiry) = signal(String::new());
+    // The row being saved, the link it collided with, and whether landing on
+    // it would destroy that link rather than replace this one.
+    let (conflict, set_conflict) = signal(None::<(String, UrlEntry, bool)>);
+    let reset_hits = RwSignal::new(false);
+    let claim_owner = RwSignal::new(false);
+    let conflict_open = RwSignal::new(false);
     // Which field failed local validation, if any. Only a red border: the rule
     // it broke is the same one the placeholder implies, and a message per row
     // would push the table around.
@@ -253,7 +261,7 @@ pub fn MyUrls() -> impl IntoView {
         set_invalid_field.set(None);
     };
 
-    let save_edit = move |original: String| {
+    let save_edit = move |original: String, overwrite: bool| {
         let code = draft_code.get_untracked().trim().to_string();
         let url = draft_url.get_untracked().trim().to_string();
         // The same rules the server enforces, checked here so a typo costs no
@@ -284,11 +292,17 @@ pub fn MyUrls() -> impl IntoView {
         };
         set_invalid_field.set(None);
         set_saving.set(true);
+        let reset = overwrite && reset_hits.get_untracked();
+        let claim = overwrite && claim_owner.get_untracked();
+        let renaming = code != original;
         spawn_local(async move {
             let request = UrlUpsertRequest {
                 code,
                 url,
                 expires_at: Some(expires_at),
+                overwrite: overwrite.then_some(true),
+                reset_hits: reset.then_some(true),
+                claim: claim.then_some(true),
             };
             match api::update_url(&original, &request).await {
                 Ok(updated) => {
@@ -309,7 +323,17 @@ pub fn MyUrls() -> impl IntoView {
                     set_invalid_field.set(None);
                     toasts.success("Link saved");
                 }
-                Err(err) => toasts.error(err.message),
+                // A code the caller already owns is an offer, not a refusal:
+                // the dialog says what would go and sends this again.
+                Err(err) => match err.conflict {
+                    Some(existing) => {
+                        reset_hits.set(false);
+                        claim_owner.set(false);
+                        set_conflict.set(Some((original, *existing, renaming)));
+                        conflict_open.set(true);
+                    }
+                    None => toasts.error(err.message),
+                },
             }
             set_saving.set(false);
         });
@@ -318,7 +342,7 @@ pub fn MyUrls() -> impl IntoView {
     // Enter commits the row, Escape abandons it — the two keys a keyboard user
     // reaches for once a table cell has turned into an input.
     let edit_keys = move |ev: &leptos::ev::KeyboardEvent, original: &str| match ev.key().as_str() {
-        "Enter" => save_edit(original.to_string()),
+        "Enter" => save_edit(original.to_string(), false),
         "Escape" => cancel_edit(),
         _ => {}
     };
@@ -747,7 +771,7 @@ pub fn MyUrls() -> impl IntoView {
                                                                 class="btn btn-primary btn-sm btn-square"
                                                                 aria-label="Save changes"
                                                                 disabled=move || saving.get()
-                                                                on:click=move |_| { save_edit(code.get_value()) }
+                                                                on:click=move |_| { save_edit(code.get_value(), false) }
                                                             >
                                                                 <span class="icon-[tabler--check] size-4"></span>
                                                             </button>
@@ -813,6 +837,77 @@ pub fn MyUrls() -> impl IntoView {
                 message=Signal::derive(move || delete_message(&pending_delete.get()))
                 confirm_label="Delete"
                 on_confirm=delete_confirmed
+            />
+
+            // A rename onto a code you own deletes the link that was there, so
+            // it is the destructive one; saving over the row you are editing
+            // only changes where it points.
+            <ConfirmDialog
+                open=conflict_open
+                title=Signal::derive(move || {
+                    match conflict.get() {
+                        Some((.., true)) => "Replace the other link?".to_string(),
+                        _ => "Replace this link?".to_string(),
+                    }
+                })
+                message=Signal::derive(move || {
+                    conflict
+                        .get()
+                        .map(|(_, existing, renaming)| {
+                            match (other_owner(&existing, &auth), renaming) {
+                                (Some(name), true) => {
+                                    format!(
+                                        "/{} belongs to {name}. Moving this link onto it deletes theirs.",
+                                        existing.code,
+                                    )
+                                }
+                                (Some(name), false) => {
+                                    format!("/{} belongs to {name}.", existing.code)
+                                }
+                                (None, true) => {
+                                    format!(
+                                        "/{} already exists. Moving this link onto it deletes it.",
+                                        existing.code,
+                                    )
+                                }
+                                (None, false) => format!("You already use /{}.", existing.code),
+                            }
+                        })
+                        .unwrap_or_default()
+                })
+                confirm_label="Replace"
+                confirm_class=Signal::derive(move || {
+                    match conflict.get() {
+                        Some((.., true)) => "btn-error".to_string(),
+                        _ => "btn-primary".to_string(),
+                    }
+                })
+                extra=ViewFn::from(move || {
+                    conflict
+                        .get()
+                        .map(|(_, existing, renaming)| {
+                            let owner = other_owner(&existing, &auth)
+                                .and_then(|_| existing.owner.clone());
+                            let claim = (!renaming && owner.is_some()).then_some(claim_owner);
+                            // Nothing to take when the link is about to be
+                            // deleted rather than replaced.
+                            view! {
+                                <ReplacementDetails
+                                    existing=existing
+                                    url=draft_url
+                                    expires=draft_expiry
+                                    reset_hits=reset_hits
+                                    claim=claim
+                                    other_owner=owner
+                                />
+                            }
+                        })
+                })
+                on_confirm=Callback::new(move |_| {
+                    if let Some((original, ..)) = conflict.get_untracked() {
+                        save_edit(original, true);
+                    }
+                })
             />
         </Show>
     }

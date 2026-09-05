@@ -508,8 +508,9 @@ async fn admins_may_edit_anyones_link() {
         "an admin edit must not steal the link"
     );
 
-    // Editing someone's link in place is allowed; moving another link on top of
-    // it — which would delete it — is not. Admins get the same 403 as anyone.
+    // Editing someone's link in place is allowed. Moving another link on top of
+    // it deletes theirs, so it is asked about rather than done — but an admin
+    // may answer, where anyone else gets a 403.
     app.clone()
         .oneshot(authed_request(
             "POST",
@@ -528,7 +529,7 @@ async fn admins_may_edit_anyones_link() {
         ))
         .await
         .unwrap();
-    assert_eq!(onto_theirs.status(), StatusCode::FORBIDDEN);
+    assert_eq!(onto_theirs.status(), StatusCode::CONFLICT);
 
     db.drop().await.unwrap();
 }
@@ -1074,6 +1075,402 @@ async fn a_rename_carries_the_expiry_across() {
     let body = body_json(renamed).await;
     assert_eq!(body["code"], "after");
     assert_eq!(body["expires_at"], was);
+
+    db.drop().await.unwrap();
+}
+
+/// The 409 carries the link it collided with, so the UI can offer to replace
+/// it rather than only naming what is in the way.
+#[tokio::test]
+async fn an_own_code_conflict_carries_the_whole_link() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "collider").await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "dup2", "url": "https://first.example", "expires_at": tomorrow()}),
+        ))
+        .await
+        .unwrap();
+
+    let again = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "dup2", "url": "https://second.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::CONFLICT);
+    let conflict = body_json(again).await["error"]["conflict"].clone();
+    assert_eq!(conflict["code"], "dup2");
+    assert_eq!(conflict["url"], "https://first.example");
+    assert!(conflict["expires_at"].is_string());
+
+    db.drop().await.unwrap();
+}
+
+/// Sending the same write back with `overwrite` is how the owner says yes.
+#[tokio::test]
+async fn overwrite_replaces_a_code_you_own() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "replacer").await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "over", "url": "https://first.example"}),
+        ))
+        .await
+        .unwrap();
+    db.collection::<mongodb::bson::Document>("urls")
+        .update_one(doc! {"code": "over"}, doc! {"$set": {"hits": 41}})
+        .await
+        .unwrap();
+
+    let replaced = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "over", "url": "https://second.example", "overwrite": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let body = body_json(replaced).await;
+    assert_eq!(body["url"], "https://second.example");
+    assert_eq!(body["hits"], 41, "replacing the target keeps the history");
+
+    db.drop().await.unwrap();
+}
+
+/// The counter restarts only when asked, and the last visit goes with it —
+/// a date with no visits behind it is a date about nothing.
+#[tokio::test]
+async fn overwrite_can_reset_the_hit_count() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "resetter").await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({"code": "fresh", "url": "https://first.example"}),
+        ))
+        .await
+        .unwrap();
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    urls.update_one(
+        doc! {"code": "fresh"},
+        doc! {"$set": {"hits": 9, "last_hit_at": mongodb::bson::DateTime::now()}},
+    )
+    .await
+    .unwrap();
+
+    let replaced = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &cookie,
+            json!({
+                "code": "fresh",
+                "url": "https://second.example",
+                "overwrite": true,
+                "reset_hits": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), StatusCode::OK);
+    assert_eq!(body_json(replaced).await["hits"], 0);
+
+    let stored = urls
+        .find_one(doc! {"code": "fresh"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.get("last_hit_at").is_none());
+
+    db.drop().await.unwrap();
+}
+
+/// `overwrite` is not a way past someone else's link. The answer stays the
+/// same 403, with nothing in it worth harvesting.
+#[tokio::test]
+async fn overwrite_does_not_open_someone_elses_code() {
+    let (app, db) = test_app().await;
+    let owner = account(&app, "owner5").await;
+    let other = account(&app, "other5").await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &owner,
+            json!({"code": "walled", "url": "https://secret.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let attempt = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &other,
+            json!({"code": "walled", "url": "https://x.example", "overwrite": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(attempt.status(), StatusCode::FORBIDDEN);
+    let body = body_json(attempt).await;
+    assert!(body["error"]["conflict"].is_null());
+    assert!(!body["error"]["message"].to_string().contains("secret"));
+
+    db.drop().await.unwrap();
+}
+
+/// A rename onto a code you already use destroys the link that was there, so
+/// it asks first — and answers with what would be destroyed.
+#[tokio::test]
+async fn a_rename_onto_your_own_code_asks_before_it_destroys() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "mover").await;
+    for (code, url) in [
+        ("from", "https://from.example"),
+        ("onto", "https://onto.example"),
+    ] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &cookie,
+                json!({"code": code, "url": url}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/from",
+            &cookie,
+            json!({"code": "onto", "url": "https://from.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::CONFLICT);
+    let conflict = body_json(refused).await["error"]["conflict"].clone();
+    assert_eq!(conflict["code"], "onto");
+    assert_eq!(conflict["url"], "https://onto.example");
+
+    let moved = app
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/from",
+            &cookie,
+            json!({"code": "onto", "url": "https://from.example", "overwrite": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), StatusCode::OK);
+    assert_eq!(body_json(moved).await["url"], "https://from.example");
+
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    assert_eq!(
+        urls.count_documents(doc! {"code": "onto"}).await.unwrap(),
+        1
+    );
+    assert_eq!(
+        urls.count_documents(doc! {"code": "from"}).await.unwrap(),
+        0
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// Makes `username` an admin, the way the first admin is made in production.
+async fn promote(db: &mongodb::Database, username: &str) {
+    db.collection::<mongodb::bson::Document>("users")
+        .update_one(
+            doc! {"username": username},
+            doc! {"$set": {"is_admin": true}},
+        )
+        .await
+        .unwrap();
+}
+
+/// An admin may write over anyone's link, which until now they did in silence.
+/// The link comes back with its owner attached, because that is the fact that
+/// makes the decision serious.
+#[tokio::test]
+async fn an_admin_creating_over_someone_elses_code_is_asked_first() {
+    let (app, db) = test_app().await;
+    let owner = account(&app, "victim").await;
+    let admin = account(&app, "overlord").await;
+    promote(&db, "overlord").await;
+
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &owner,
+            json!({"code": "theirs2", "url": "https://theirs.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let asked = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &admin,
+            json!({"code": "theirs2", "url": "https://mine.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(asked.status(), StatusCode::CONFLICT);
+    let conflict = body_json(asked).await["error"]["conflict"].clone();
+    assert_eq!(conflict["url"], "https://theirs.example");
+    assert_eq!(conflict["owner"]["username"], "victim");
+
+    db.drop().await.unwrap();
+}
+
+/// Replacing where a link points does not take it, and taking it is a separate
+/// thing to ask for.
+#[tokio::test]
+async fn an_admin_overwrite_leaves_the_owner_alone_unless_it_claims() {
+    let (app, db) = test_app().await;
+    let owner = account(&app, "victim2").await;
+    let admin = account(&app, "overlord2").await;
+    promote(&db, "overlord2").await;
+
+    for (code, url) in [
+        ("kept", "https://a.example"),
+        ("taken", "https://b.example"),
+    ] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &owner,
+                json!({"code": code, "url": url}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let replaced = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &admin,
+            json!({"code": "kept", "url": "https://fixed.example", "overwrite": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(replaced.status(), StatusCode::OK);
+    let body = body_json(replaced).await;
+    assert_eq!(body["url"], "https://fixed.example");
+    assert_eq!(body["owner"]["username"], "victim2");
+
+    let claimed = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &admin,
+            json!({
+                "code": "taken",
+                "url": "https://fixed.example",
+                "overwrite": true,
+                "claim": true,
+            }),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(claimed.status(), StatusCode::OK);
+    assert_eq!(
+        body_json(claimed).await["owner"]["username"],
+        "overlord2",
+        "claiming is the one way the owner changes"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// The destructive one: the other user's link is deleted so this one can take
+/// its code. Refused until the admin says yes.
+#[tokio::test]
+async fn an_admin_renames_onto_someone_elses_code_only_after_confirming() {
+    let (app, db) = test_app().await;
+    let owner = account(&app, "victim3").await;
+    let admin = account(&app, "overlord3").await;
+    promote(&db, "overlord3").await;
+
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &owner,
+            json!({"code": "wanted", "url": "https://theirs.example"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &admin,
+            json!({"code": "mine3", "url": "https://mine.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let asked = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/mine3",
+            &admin,
+            json!({"code": "wanted", "url": "https://mine.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(asked.status(), StatusCode::CONFLICT);
+    assert_eq!(
+        body_json(asked).await["error"]["conflict"]["owner"]["username"],
+        "victim3"
+    );
+
+    let moved = app
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/mine3",
+            &admin,
+            json!({"code": "wanted", "url": "https://mine.example", "overwrite": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(moved.status(), StatusCode::OK);
+    let body = body_json(moved).await;
+    assert_eq!(body["url"], "https://mine.example");
+    assert_eq!(
+        body["owner"]["username"], "overlord3",
+        "the link that moved keeps its own owner; the one it landed on is gone"
+    );
+
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    assert_eq!(
+        urls.count_documents(doc! {"code": "mine3"}).await.unwrap(),
+        0
+    );
 
     db.drop().await.unwrap();
 }

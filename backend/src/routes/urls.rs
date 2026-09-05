@@ -63,13 +63,33 @@ fn owned_error(code: &str) -> AppError {
     .on_field("code")
 }
 
-/// The caller's own code. They may see their current target, and the message
-/// points them at the edit path instead.
-fn own_code_conflict(code: &str, url: &str) -> AppError {
-    AppError::conflict(format!(
-        "you already use code '{code}' for {url} — edit it instead of recreating it"
-    ))
-    .on_field("code")
+/// A code that is taken, by someone the caller is allowed to write over: their
+/// own link, or — for an admin — anyone's.
+///
+/// The whole link rides along rather than just its url, because a client
+/// offering to replace it has to show what is being replaced, and who it
+/// belongs to. Only ever reached after [`may_write`] has passed, which is what
+/// keeps it out of the answer someone gets for a link that is not theirs to
+/// see.
+///
+/// The message names the flag because it is read by API callers alone — the
+/// web UI reads `conflict` and asks the question in a dialog — and an
+/// unchanged request sent again returns this same error.
+fn code_in_use(entry: UrlEntry, yours: bool) -> AppError {
+    let message = if yours {
+        format!(
+            "you already use code '{}' for {} — edit it, or resend with overwrite=true to replace it",
+            entry.code, entry.url
+        )
+    } else {
+        format!(
+            "code '{}' belongs to someone else — resend with overwrite=true to replace it",
+            entry.code
+        )
+    };
+    AppError::conflict(message)
+        .on_field("code")
+        .on_conflict(entry)
 }
 
 /// Who may write to an existing document: nobody owns it, the caller owns it,
@@ -115,6 +135,7 @@ async fn upsert(
     validate_code(&body.code).map_err(|e| AppError::validation(e).on_field("code"))?;
     validate_url(&body.url).map_err(|e| AppError::validation(e).on_field("url"))?;
     let expires = parse_expiry(body.expires_at.as_deref())?;
+    let overwrite = body.overwrite.unwrap_or(false);
 
     let urls = state.db.collection::<Document>("urls");
     let existing = urls.find_one(doc! {"code": code}).await?;
@@ -122,16 +143,17 @@ async fn upsert(
         .as_ref()
         .and_then(|doc| owner_id(doc).map(str::to_string));
     if let Some(existing) = &existing {
-        let owned_by_caller = existing_owner
-            .as_deref()
-            .zip(user)
-            .is_some_and(|(owner, u)| owner == u.id);
-        if owned_by_caller && conflict_on_own {
-            let current = existing.get_str("url").unwrap_or_default();
-            return Err(own_code_conflict(code, current));
-        }
+        // Permission first, so a link that is not the caller's to touch answers
+        // 403 with nothing in it rather than a 409 describing it.
         if !may_write(existing, user) {
             return Err(owned_error(code));
+        }
+        // Creating over a link that already exists replaces it, which is worth
+        // asking about — but only when someone owns it. A link nobody owns is
+        // already deletable by anyone, so the question would be rhetorical.
+        if conflict_on_own && !overwrite && existing_owner.is_some() {
+            let yours = existing_owner.as_deref() == user.map(|u| u.id.as_str());
+            return Err(code_in_use(fetch_entry(state, code).await?, yours));
         }
     }
 
@@ -148,17 +170,20 @@ async fn upsert(
             None => {
                 urls.delete_one(doc! {"code": &body.code}).await?;
             }
-            // Your own link. Same situation as re-creating a code you own, and
-            // it answers the same way rather than quietly destroying the other
-            // one.
-            Some(owner) if user.is_some_and(|u| u.id == owner) => {
-                let current = target.get_str("url").unwrap_or_default();
-                return Err(own_code_conflict(&body.code, current));
+            // Someone's link, and this rename would delete it. Whoever may
+            // write to it may do that — but never as a side effect, so it is
+            // refused until the caller has been shown whose link it is and
+            // sends the write back.
+            Some(owner) => {
+                if !may_write(&target, user) {
+                    return Err(owned_error(&body.code));
+                }
+                if !overwrite {
+                    let yours = user.is_some_and(|u| u.id == owner);
+                    return Err(code_in_use(fetch_entry(state, &body.code).await?, yours));
+                }
+                urls.delete_one(doc! {"code": &body.code}).await?;
             }
-            // Someone else's. Admins are not excepted: they may edit that link
-            // in place, but "may write" is not "may destroy it as a side effect
-            // of moving another one".
-            Some(_) => return Err(owned_error(&body.code)),
         }
     }
 
@@ -172,6 +197,12 @@ async fn upsert(
     // `$unset` rather than a stored null: the TTL index is partial on
     // `expires_at` existing, and a null in it is a date the reaper cannot read.
     let mut unset = Document::new();
+    // The last visit goes with the count it belongs to — a date with no visits
+    // behind it describes nothing.
+    if body.reset_hits.unwrap_or(false) {
+        set.insert("hits", 0);
+        unset.insert("last_hit_at", "");
+    }
     match expires {
         Expiry::Leave => {}
         Expiry::Clear => {
@@ -193,7 +224,10 @@ async fn upsert(
     // both makes Mongo reject the update for a conflicting path.
     let mut on_insert = doc! {"created_at": bson::DateTime::now()};
     if let Some(user) = user {
-        if conflict_on_own && existing_owner.is_none() {
+        // `claim` is the third way to become the owner, and the only one that
+        // takes a link off somebody: it is asked for explicitly, and only
+        // reached once `may_write` has allowed the write at all.
+        if body.claim.unwrap_or(false) || (conflict_on_own && existing_owner.is_none()) {
             set.insert("owner", &user.id);
         } else {
             on_insert.insert("owner", &user.id);
@@ -368,10 +402,47 @@ mod tests {
         assert!(!err.message.contains("http"));
     }
 
+    fn an_entry(code: &str, url: &str) -> UrlEntry {
+        UrlEntry {
+            code: code.into(),
+            url: url.into(),
+            owner: None,
+            hits: 4,
+            last_hit_at: None,
+            created_at: None,
+            updated_at: None,
+            expires_at: None,
+        }
+    }
+
     #[test]
-    fn own_code_conflict_is_409_and_shows_the_url() {
-        let err = own_code_conflict("abc", "https://example.com");
+    fn a_taken_code_is_409_that_carries_the_link() {
+        let err = code_in_use(an_entry("abc", "https://example.com"), true);
         assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
         assert!(err.message.contains("https://example.com"));
+        // The whole link, not just what the sentence happened to mention: a
+        // client offering to replace it has to show what it is replacing.
+        assert_eq!(err.conflict.map(|c| c.hits), Some(4));
+    }
+
+    /// Someone else's link still rides along — this error only reaches a caller
+    /// allowed to write over it — but the sentence stops claiming it is theirs.
+    #[test]
+    fn a_taken_code_that_is_not_yours_says_so() {
+        let err = code_in_use(an_entry("abc", "https://example.com"), false);
+        assert!(err.message.contains("belongs to someone else"));
+        assert!(!err.message.contains("you already use"));
+        assert!(err.conflict.is_some());
+    }
+
+    /// The way out has to be in the message. An API caller who repeats the
+    /// request unchanged gets this same error back, so "try again" would be
+    /// advice that does not work.
+    #[test]
+    fn both_conflicts_name_the_flag_that_gets_past_them() {
+        for yours in [true, false] {
+            let err = code_in_use(an_entry("abc", "https://example.com"), yours);
+            assert!(err.message.contains("overwrite=true"), "{}", err.message);
+        }
     }
 }

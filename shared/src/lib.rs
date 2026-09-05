@@ -6,6 +6,20 @@ pub struct UrlUpsertRequest {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
+    /// Go ahead with a write that would otherwise be refused for colliding
+    /// with a code the caller already owns. Never opens someone else's.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub overwrite: Option<bool>,
+    /// Start the link's counter again. Replacing where a link points does not
+    /// on its own mean its history stops counting, so this is asked for
+    /// separately.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub reset_hits: Option<bool>,
+    /// Take ownership of an existing link. Writing over someone's link does not
+    /// take it — an admin fixing a broken destination should not acquire it by
+    /// not reading a dialog — so this says so out loud.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub claim: Option<bool>,
 }
 
 /// The public face of a link's owner. Never carries an email or a provider id:
@@ -63,6 +77,15 @@ pub struct ApiErrorBody {
     /// usernames exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
+    /// The link the caller collided with, on the two conflicts where it is
+    /// theirs to see. Absent everywhere else — a 403 over someone else's code
+    /// must stay useless as a way to look their links up.
+    ///
+    /// Boxed because this type is the error half of every `Result` the client
+    /// and the server pass around, and a whole link inline makes all of them
+    /// pay for the one case that carries it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub conflict: Option<Box<UrlEntry>>,
 }
 
 pub fn validate_code(code: &str) -> Result<(), String> {

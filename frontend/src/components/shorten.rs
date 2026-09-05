@@ -3,7 +3,10 @@ use leptos::task::spawn_local;
 use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
 
 use crate::api;
+use crate::auth::use_auth;
 use crate::clipboard::{copy, origin};
+use crate::components::confirm::ConfirmDialog;
+use crate::components::conflict::{ReplacementDetails, other_owner};
 use crate::components::datepicker::DateTimePicker;
 use crate::datetime::{from_display, is_future, local_offset_minutes, to_rfc3339};
 use crate::ui::input_class;
@@ -79,6 +82,17 @@ pub fn Shorten() -> impl IntoView {
             && check_expiry(&expiry.get()).is_ok()
     });
 
+    // The link a create collided with, held while the dialog asks about it.
+    let (conflict, set_conflict) = signal(None::<UrlEntry>);
+    let auth = use_auth();
+    let reset_hits_toggle = RwSignal::new(false);
+    let claim_owner = RwSignal::new(false);
+    let (reset_hits, set_reset_hits) = (
+        reset_hits_toggle.read_only(),
+        reset_hits_toggle.write_only(),
+    );
+    let confirm_open = RwSignal::new(false);
+
     let reset = move || {
         set_code.set(String::new());
         set_url.set(String::new());
@@ -91,20 +105,16 @@ pub fn Shorten() -> impl IntoView {
         set_copied.set(false);
     };
 
-    let submit = move |ev: leptos::ev::SubmitEvent| {
-        ev.prevent_default();
-        set_code_touched.set(true);
-        set_url_touched.set(true);
-
-        let code_value = code.get();
-        let url_value = url.get();
-        if check_code(&code_value).is_some() || check_url(&url_value).is_some() {
-            return;
-        }
-        set_expiry_touched.set(true);
-        let Ok(expires_at) = check_expiry(&expiry.get()) else {
+    // Sends the create. `overwrite` is only ever true on the second attempt,
+    // after the dialog below has been answered.
+    let send = move |overwrite: bool| {
+        let code_value = code.get_untracked();
+        let url_value = url.get_untracked();
+        let Ok(expires_at) = check_expiry(&expiry.get_untracked()) else {
             return;
         };
+        let reset = overwrite && reset_hits.get_untracked();
+        let claim = overwrite && claim_owner.get_untracked();
 
         set_busy.set(true);
         spawn_local(async move {
@@ -112,15 +122,46 @@ pub fn Shorten() -> impl IntoView {
                 code: code_value,
                 url: url_value,
                 expires_at,
+                overwrite: overwrite.then_some(true),
+                reset_hits: reset.then_some(true),
+                claim: claim.then_some(true),
             };
             match api::create_url(&request).await {
-                Ok(entry) => set_result.set(Some(entry)),
-                // Server-side rejections are always about the code (taken,
-                // reserved, malformed), so surface them on that field.
-                Err(err) => set_code_server_error.set(Some(err.message)),
+                Ok(entry) => {
+                    set_result.set(Some(entry));
+                    set_code_server_error.set(None);
+                }
+                // A code the caller already owns comes back with the link
+                // itself, which is an offer to replace it rather than a dead
+                // end. Everything else is a message under the code field:
+                // server-side rejections are always about the code.
+                Err(err) => match err.conflict {
+                    Some(existing) => {
+                        set_reset_hits.set(false);
+                        claim_owner.set(false);
+                        set_conflict.set(Some(*existing));
+                        confirm_open.set(true);
+                    }
+                    None => set_code_server_error.set(Some(err.message)),
+                },
             }
             set_busy.set(false);
         });
+    };
+
+    let submit = move |ev: leptos::ev::SubmitEvent| {
+        ev.prevent_default();
+        set_code_touched.set(true);
+        set_url_touched.set(true);
+        set_expiry_touched.set(true);
+
+        if check_code(&code.get()).is_some()
+            || check_url(&url.get()).is_some()
+            || check_expiry(&expiry.get()).is_err()
+        {
+            return;
+        }
+        send(false);
     };
 
     let code_input: NodeRef<leptos::html::Input> = NodeRef::new();
@@ -146,6 +187,43 @@ pub fn Shorten() -> impl IntoView {
     let done = Memo::new(move |_| result.get().is_some());
 
     view! {
+        <ConfirmDialog
+            open=confirm_open
+            title="Replace this link?"
+            message=Signal::derive(move || {
+                conflict
+                    .get()
+                    .map(|existing| match other_owner(&existing, &auth) {
+                        Some(name) => format!("/{} belongs to {name}.", existing.code),
+                        None => format!("You already use /{}.", existing.code),
+                    })
+                    .unwrap_or_default()
+            })
+            confirm_label="Replace"
+            confirm_class=Signal::derive(|| "btn-primary".to_string())
+            extra=ViewFn::from(move || {
+                conflict
+                    .get()
+                    .map(|existing| {
+                        let owner = other_owner(&existing, &auth)
+                            .and_then(|_| existing.owner.clone());
+                        view! {
+                            <ReplacementDetails
+                                existing=existing
+                                url=url
+                                expires=expiry
+                                reset_hits=reset_hits_toggle
+                                // Only somebody else's link can be taken; your
+                                // own is already yours.
+                                claim=owner.is_some().then_some(claim_owner)
+                                other_owner=owner
+                            />
+                        }
+                    })
+            })
+            on_confirm=Callback::new(move |_| send(true))
+        />
+
         <div class="border shadow-xl card bg-base-200 border-base-content/10 motion-preset-fade motion-duration-500">
             <div class="gap-6 p-8 card-body">
                 <h2 class="text-3xl card-title">"Shorten a URL"</h2>

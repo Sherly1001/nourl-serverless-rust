@@ -11,6 +11,9 @@ pub struct AppError {
     /// Form field this error belongs to, when there is exactly one. Serialised
     /// so a client can render the message under that input.
     pub field: Option<&'static str>,
+    /// The link this collided with, when the caller is entitled to see it.
+    /// Boxed for the reason [`shared::ApiErrorBody`] gives.
+    pub conflict: Option<Box<shared::UrlEntry>>,
 }
 
 impl AppError {
@@ -21,12 +24,20 @@ impl AppError {
         self
     }
 
+    /// Attaches the link that was in the way, so the caller can be offered a
+    /// way through it. Only ever their own — see [`shared::ApiErrorBody`].
+    pub fn on_conflict(mut self, conflict: shared::UrlEntry) -> Self {
+        self.conflict = Some(Box::new(conflict));
+        self
+    }
+
     pub fn validation(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
             code: "validation",
             message: message.into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -36,6 +47,7 @@ impl AppError {
             code: "forbidden",
             message: message.into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -45,6 +57,7 @@ impl AppError {
             code: "unauthenticated",
             message: message.into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -54,6 +67,7 @@ impl AppError {
             code: "conflict",
             message: message.into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -63,6 +77,7 @@ impl AppError {
             code: "not_found",
             message: message.into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -72,6 +87,7 @@ impl AppError {
             code: "not_implemented",
             message: "available in a later phase".into(),
             field: None,
+            conflict: None,
         }
     }
 
@@ -82,6 +98,7 @@ impl AppError {
             code: "internal",
             message: "internal server error".into(),
             field: None,
+            conflict: None,
         }
     }
 }
@@ -93,6 +110,7 @@ impl IntoResponse for AppError {
                 code: self.code.into(),
                 message: self.message,
                 field: self.field.map(String::from),
+                conflict: self.conflict,
             },
         };
         (self.status, Json(body)).into_response()

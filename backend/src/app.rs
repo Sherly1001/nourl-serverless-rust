@@ -62,6 +62,7 @@ pub fn build_app(state: AppState) -> Router {
                 code: "method_not_allowed",
                 message: "method not allowed for this route".into(),
                 field: None,
+                conflict: None,
             }
         })
         .layer(axum::middleware::from_fn(access_log))
