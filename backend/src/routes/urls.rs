@@ -66,7 +66,12 @@ async fn fetch_entry(state: &AppState, code: &str) -> Result<UrlEntry, AppError>
     let rows: Vec<Document> = state
         .db
         .collection::<Document>("urls")
-        .aggregate(url_aggregate_pipeline(doc! {"code": code}, 1, 0, doc! {}))
+        .aggregate(url_aggregate_pipeline(
+            doc! {"code": code},
+            1,
+            0,
+            doc! {"_id": 1},
+        ))
         .await?
         .try_collect()
         .await?;

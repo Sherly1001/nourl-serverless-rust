@@ -92,19 +92,12 @@ pub fn url_aggregate_pipeline(
     skip: i64,
     sort: Document,
 ) -> Vec<Document> {
-    let mut sort_doc = sort;
-    sort_doc.insert("_id", -1);
     vec![
         // Filter before the join, so `owner` is still the raw id string rather
         // than the joined object, and so the index on `code` can be used.
         doc! {"$match": filter},
         doc! {"$lookup": {"from": "users", "localField": "owner", "foreignField": "id", "as": "owner"}},
         doc! {"$set": {"owner": {"$ifNull": [{"$first": "$owner"}, null]}}},
-        doc! {"$unset": [
-            "_id", "id", "owner._id", "owner.id", "owner.github_id",
-            "owner.facebook_id", "owner.google_id", "owner.hash_passwd",
-            "owner.token_version", "owner.email", "owner.created_at"
-        ]},
         // Before the sort, so ordering by a date orders these strings — the
         // format is fixed-width UTC, so lexicographic is chronological.
         doc! {"$set": {
@@ -113,8 +106,16 @@ pub fn url_aggregate_pipeline(
             "last_hit_at": as_iso_string("last_hit_at"),
             "expires_at": as_iso_string("expires_at"),
         }},
-        doc! {"$sort": sort_doc},
+        // Callers hand over a sort that already ends in `_id`, so rows sharing
+        // a timestamp still have one total order across every page.
+        doc! {"$sort": sort},
         doc! {"$skip": skip},
         doc! {"$limit": limit},
+        // Last, because `$sort` above needs the `_id` this drops.
+        doc! {"$unset": [
+            "_id", "id", "owner._id", "owner.id", "owner.github_id",
+            "owner.facebook_id", "owner.google_id", "owner.hash_passwd",
+            "owner.token_version", "owner.email", "owner.created_at"
+        ]},
     ]
 }

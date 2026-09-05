@@ -33,7 +33,8 @@ async fn pipeline_joins_owner_and_strips_secrets() {
         .await
         .unwrap();
 
-    let pipeline = backend::db::url_aggregate_pipeline(doc! {"code": "abc"}, 20, 0, doc! {});
+    let pipeline =
+        backend::db::url_aggregate_pipeline(doc! {"code": "abc"}, 20, 0, doc! {"_id": 1});
     let rows: Vec<mongodb::bson::Document> = db
         .collection::<mongodb::bson::Document>("urls")
         .aggregate(pipeline)

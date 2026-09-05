@@ -894,3 +894,68 @@ async fn dates_come_back_as_rfc3339_strings() {
 
     db.drop().await.unwrap();
 }
+
+/// Every link here shares one `updated_at`, so the order is decided entirely by
+/// the tiebreak the sort carries. The `_id`s are handed out in reverse of the
+/// codes, so insertion order and `_id` order disagree: a pipeline that drops
+/// `_id` before it sorts has no tiebreak left, pages the rows in whatever order
+/// the collection scan hands back, and the same link surfaces on two pages.
+#[tokio::test]
+async fn tied_sort_keys_page_in_id_order() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "tied").await;
+    let owner = db
+        .collection::<mongodb::bson::Document>("users")
+        .find_one(doc! {"username": "tied"})
+        .await
+        .unwrap()
+        .expect("registration stored the account")
+        .get_str("id")
+        .unwrap()
+        .to_string();
+
+    let stamp = mongodb::bson::DateTime::now();
+    let codes = ["c0", "c1", "c2", "c3", "c4", "c5"];
+    let docs: Vec<_> = codes
+        .iter()
+        .enumerate()
+        .map(|(i, code)| {
+            let mut bytes = [0u8; 12];
+            bytes[11] = (codes.len() - 1 - i) as u8;
+            doc! {
+                "_id": mongodb::bson::oid::ObjectId::from_bytes(bytes),
+                "code": *code,
+                "url": "https://example.com",
+                "owner": &owner,
+                "created_at": stamp,
+                "updated_at": stamp,
+            }
+        })
+        .collect();
+    db.collection::<mongodb::bson::Document>("urls")
+        .insert_many(docs)
+        .await
+        .unwrap();
+
+    let mut seen: Vec<String> = Vec::new();
+    for skip in [0, 2, 4] {
+        let page = app
+            .clone()
+            .oneshot(authed_get(
+                &format!("/api/urls?sort=updated_at,-1&limit=2&skip={skip}"),
+                &cookie,
+            ))
+            .await
+            .unwrap();
+        assert_eq!(page.status(), StatusCode::OK);
+        let body = body_json(page).await;
+        assert_eq!(body["total"], 6);
+        for item in body["items"].as_array().unwrap() {
+            seen.push(item["code"].as_str().unwrap().to_string());
+        }
+    }
+
+    // `_id` ascending, the reverse of the order they were inserted in.
+    assert_eq!(seen, ["c5", "c4", "c3", "c2", "c1", "c0"]);
+    db.drop().await.unwrap();
+}
