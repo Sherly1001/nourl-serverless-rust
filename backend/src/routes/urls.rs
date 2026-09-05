@@ -266,6 +266,7 @@ mod tests {
         let future = chrono::Utc::now() + chrono::Duration::days(7);
         for raw in [
             future.to_rfc3339(),
+            future.to_rfc3339_opts(chrono::SecondsFormat::Millis, true),
             future
                 .with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
                 .to_rfc3339(),
@@ -280,6 +281,7 @@ mod tests {
         assert!(parse_expiry(Some("2001-01-01T00:00:00Z")).is_err());
         assert!(parse_expiry(Some("not-a-date")).is_err());
         assert!(parse_expiry(Some("2030-01-01")).is_err()); // date without time is not RFC3339
+        assert!(parse_expiry(Some("2030-01-01T00:00:00")).is_err());
     }
 
     #[test]

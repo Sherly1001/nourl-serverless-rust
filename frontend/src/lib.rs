@@ -3,6 +3,7 @@ pub mod app;
 pub mod auth;
 pub mod clipboard;
 pub mod components;
+pub mod datetime;
 pub mod dropdown;
 pub mod list;
 pub mod router;

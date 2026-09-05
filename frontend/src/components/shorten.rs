@@ -4,6 +4,8 @@ use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
 
 use crate::api;
 use crate::clipboard::{copy, origin};
+use crate::components::datepicker::DateTimePicker;
+use crate::datetime::{from_display, is_future, local_offset_minutes, to_rfc3339};
 use crate::ui::input_class;
 
 fn check_code(value: &str) -> Option<String> {
@@ -20,6 +22,19 @@ fn check_url(value: &str) -> Option<String> {
     validate_url(value).err()
 }
 
+fn check_expiry(shown: &str) -> Result<Option<String>, String> {
+    if shown.trim().is_empty() {
+        return Ok(None);
+    }
+    let stamp = from_display(shown)
+        .and_then(|local| to_rfc3339(&local, local_offset_minutes()))
+        .ok_or_else(|| "Expiry is not a valid date and time".to_string())?;
+    if !is_future(&stamp) {
+        return Err("Expiry must be in the future".into());
+    }
+    Ok(Some(stamp))
+}
+
 #[component]
 pub fn Shorten() -> impl IntoView {
     let (code, set_code) = signal(String::new());
@@ -31,6 +46,8 @@ pub fn Shorten() -> impl IntoView {
     let (code_server_error, set_code_server_error) = signal(Option::<String>::None);
     let (result, set_result) = signal(Option::<UrlEntry>::None);
     let (busy, set_busy) = signal(false);
+    let (expiry, set_expiry) = signal(String::new());
+    let (expiry_touched, set_expiry_touched) = signal(false);
     let (copied, set_copied) = signal(false);
 
     let code_error = Memo::new(move |_| {
@@ -42,14 +59,24 @@ pub fn Shorten() -> impl IntoView {
         })
     });
     let url_error = Memo::new(move |_| url_touched.get().then(|| check_url(&url.get())).flatten());
+    // Unlike the other two this waits for the field to be left: half of a date
+    // is not yet a mistake.
+    let expiry_error = Memo::new(move |_| {
+        expiry_touched
+            .get()
+            .then(|| check_expiry(&expiry.get()).err())
+            .flatten()
+    });
 
     // Submitting is pointless while a field is empty or showing an error.
     let can_submit = Memo::new(move |_| {
         !busy.get()
             && code_error.get().is_none()
             && url_error.get().is_none()
+            && expiry_error.get().is_none()
             && check_code(&code.get()).is_none()
             && check_url(&url.get()).is_none()
+            && check_expiry(&expiry.get()).is_ok()
     });
 
     let reset = move || {
@@ -58,6 +85,8 @@ pub fn Shorten() -> impl IntoView {
         set_code_touched.set(false);
         set_url_touched.set(false);
         set_code_server_error.set(None);
+        set_expiry.set(String::new());
+        set_expiry_touched.set(false);
         set_result.set(None);
         set_copied.set(false);
     };
@@ -72,13 +101,17 @@ pub fn Shorten() -> impl IntoView {
         if check_code(&code_value).is_some() || check_url(&url_value).is_some() {
             return;
         }
+        set_expiry_touched.set(true);
+        let Ok(expires_at) = check_expiry(&expiry.get()) else {
+            return;
+        };
 
         set_busy.set(true);
         spawn_local(async move {
             let request = UrlUpsertRequest {
                 code: code_value,
                 url: url_value,
-                expires_at: None,
+                expires_at,
             };
             match api::create_url(&request).await {
                 Ok(entry) => set_result.set(Some(entry)),
@@ -174,6 +207,28 @@ pub fn Shorten() -> impl IntoView {
                         </p>
                     </div>
 
+                    <div class="w-full">
+                        <label class="mb-2 text-lg font-semibold label-text" for="expires">
+                            "Expires"
+                            <span class="ml-2 text-base font-normal opacity-60">"optional"</span>
+                        </label>
+                        <DateTimePicker
+                            id="expires"
+                            value=expiry
+                            set_value=set_expiry
+                            invalid=Signal::derive(move || expiry_error.get().is_some())
+                            disabled=Signal::derive(move || done.get())
+                            describedby="expires-error"
+                            on_blur=Callback::new(move |_| set_expiry_touched.set(true))
+                        />
+                        <p
+                            id="expires-error"
+                            class="mt-1 text-base min-h-6 text-error motion-preset-slide-down motion-duration-200"
+                        >
+                            {move || expiry_error.get().unwrap_or_default()}
+                        </p>
+                    </div>
+
                     <Show
                         when=move || result.get().is_some()
                         fallback=move || {
@@ -260,6 +315,17 @@ mod tests {
     fn format_errors_come_from_shared_validators() {
         assert!(check_code("bad/code").is_some());
         assert!(check_url("ftp://x.com").is_some());
+    }
+
+    /// Text that parses to nothing must be an error, never a silent "no
+    /// expiry" — that would drop a deadline the user asked for.
+    #[test]
+    fn unparseable_expiry_text_is_refused_but_an_empty_field_is_not() {
+        assert!(check_expiry("").unwrap().is_none());
+        assert!(check_expiry("   ").unwrap().is_none());
+        assert!(check_expiry("nonsense").is_err());
+        assert!(check_expiry("2026/13/01 00:00").is_err());
+        assert!(check_expiry("2026/08/20").is_err());
     }
 
     #[test]
