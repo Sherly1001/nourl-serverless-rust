@@ -1,5 +1,6 @@
 use std::time::Duration;
 
+use leptos::portal::Portal;
 use leptos::prelude::*;
 use wasm_bindgen::JsCast;
 use wasm_bindgen::prelude::Closure;
@@ -14,6 +15,11 @@ const ANCHOR_GAP_PX: f64 = 8.0;
 /// Pause before opening, so sweeping the pointer across a table does not
 /// trail bubbles behind it.
 const OPEN_DELAY: Duration = Duration::from_millis(400);
+
+/// How much room above the anchor the bubble wants before it opens upwards.
+/// Below this it opens downwards instead — the top rows of a scrolling table
+/// have a sticky header over them, and a bubble there explains nothing.
+const TOOLTIP_MIN_ROOM_PX: f64 = 120.0;
 
 /// Keeps the bubble inside the window: anchored to the cell's left edge, but
 /// pushed back when that would run it off the right side, and never negative.
@@ -61,6 +67,12 @@ fn viewport_width() -> f64 {
 /// overflow — an absolutely positioned one would be cut off by the very
 /// truncation it exists to explain. Fixed elements escape ancestor overflow, so
 /// the coordinates are measured from the anchor at hover time.
+///
+/// Escaping overflow is not the same as escaping *stacking*, so it is also
+/// drawn through a `Portal` into `<body>`. A pinned table cell is
+/// `position: sticky` with a `z-index`, which makes it a stacking context, and
+/// inside one the bubble's `z-50` competes only with its siblings — leaving it
+/// painted under the sticky header it was supposed to cover.
 #[component]
 pub fn Tooltip(
     /// The full text, shown only when it does not already fit.
@@ -82,6 +94,8 @@ pub fn Tooltip(
     let (shown, set_shown) = signal(false);
     // Where the anchor was when the pointer arrived, in viewport coordinates.
     let (position, set_position) = signal((0.0_f64, 0.0_f64));
+    // Whether it opened downwards, which moves the arrow to the top edge.
+    let (flipped, set_flipped) = signal(false);
     // Guessed at the maximum until it is up and can be measured.
     let (bubble_width, set_bubble_width) = signal(TOOLTIP_WIDTH_PX);
     let bubble: NodeRef<leptos::html::Span> = NodeRef::new();
@@ -92,7 +106,9 @@ pub fn Tooltip(
     });
     // Bumped on enter and leave, so a late timer knows it is stale.
     let (hover, set_hover) = signal(0u32);
-    let body = text.clone();
+    // Stored, not moved: `Portal` rebuilds its children, so the text has to
+    // survive being read more than once.
+    let body = StoredValue::new(text.clone());
 
     // While the bubble is up, anything that moves the anchor takes it down. It
     // is `position: fixed` at coordinates measured on hover, so a scroll leaves
@@ -159,7 +175,16 @@ pub fn Tooltip(
                     return;
                 }
                 let rect = anchor.get_bounding_client_rect();
-                set_position.set((rect.left(), rect.top() - ANCHOR_GAP_PX));
+                let above = rect.top() >= TOOLTIP_MIN_ROOM_PX;
+                set_flipped.set(!above);
+                set_position
+                    .set(
+                        if above {
+                            (rect.left(), rect.top() - ANCHOR_GAP_PX)
+                        } else {
+                            (rect.left(), rect.bottom() + ANCHOR_GAP_PX)
+                        },
+                    );
                 set_hover.update(|n| *n += 1);
                 let mine = hover.get_untracked();
                 set_timeout(
@@ -177,10 +202,17 @@ pub fn Tooltip(
             }
         >
             {children()}
-            <Show when=move || shown.get()>
+        </span>
+        <Show when=move || shown.get()>
+            <Portal>
                 <span
                     node_ref=bubble
-                    class="fixed z-50 py-1 px-2 text-sm whitespace-normal break-all rounded border shadow-lg -translate-y-full pointer-events-none bg-base-100 border-base-content/10 text-base-content max-w-96 motion-preset-fade motion-duration-150"
+                    class=move || {
+                        format!(
+                            "fixed z-50 py-1 px-2 text-sm whitespace-normal break-all rounded border shadow-lg pointer-events-none bg-base-100 border-base-content/10 text-base-content max-w-96 motion-preset-fade motion-duration-150 {}",
+                            if flipped.get() { "" } else { "-translate-y-full" },
+                        )
+                    }
                     role="tooltip"
                     style=move || {
                         let (left, top) = position.get();
@@ -188,11 +220,16 @@ pub fn Tooltip(
                         format!("left: {left}px; top: {top}px")
                     }
                 >
-                    {body.clone()}
+                    {body.get_value()}
                     // Kept over the anchor however far the bubble slid — see
                     // `arrow_left`.
                     <span
-                        class="absolute -bottom-1 border-r border-b rotate-45 size-2 bg-base-100 border-base-content/10"
+                        class=move || {
+                            format!(
+                                "absolute border-r border-b rotate-45 size-2 bg-base-100 border-base-content/10 {}",
+                                if flipped.get() { "-top-1 rotate-225" } else { "-bottom-1" },
+                            )
+                        }
                         style=move || {
                             let (anchor, _) = position.get();
                             let width = bubble_width.get();
@@ -201,8 +238,8 @@ pub fn Tooltip(
                         }
                     ></span>
                 </span>
-            </Show>
-        </span>
+            </Portal>
+        </Show>
     }
 }
 

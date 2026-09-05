@@ -33,11 +33,35 @@ pub fn ConfirmDialog(
     on_confirm: Callback<()>,
 ) -> impl IntoView {
     let card: NodeRef<leptos::html::Div> = NodeRef::new();
+    let cancel: NodeRef<leptos::html::Button> = NodeRef::new();
     // Stored so the `Show` body, which is an `Fn`, can reach it more than once.
     let extra = StoredValue::new(extra);
     // Backdrop click and Escape both dismiss — the same helper the dropdowns
     // use, since "outside the card" is exactly the backdrop.
     dismiss_on_outside_click(card, open.write_only());
+
+    // Opening moves focus into the dialog, so it can be dealt with from the
+    // keyboard without hunting for it and a screen reader lands here rather
+    // than wherever the page was.
+    //
+    // Cancel rather than confirm: most of what gets confirmed here deletes
+    // something, and a focused confirm button puts that one keystroke from
+    // whoever was already typing. Cancel is also the one button that is never
+    // disabled, so the dialogs waiting on something in `extra` still land
+    // somewhere real.
+    //
+    // A frame late, because the button does not exist until `Show` has
+    // rendered it.
+    Effect::new(move |_| {
+        if !open.get() {
+            return;
+        }
+        request_animation_frame(move || {
+            if let Some(button) = cancel.get_untracked() {
+                let _ = button.focus();
+            }
+        });
+    });
 
     view! {
         <Show when=move || open.get()>
@@ -54,7 +78,11 @@ pub fn ConfirmDialog(
                     <p class="mb-6 text-base-content/70">{move || message.get()}</p>
                     {move || extra.with_value(|slot| slot.as_ref().map(ViewFn::run))}
                     <div class="flex gap-2 justify-end">
-                        <button class="btn btn-text" on:click=move |_| open.set(false)>
+                        <button
+                            node_ref=cancel
+                            class="btn btn-text"
+                            on:click=move |_| open.set(false)
+                        >
                             "Cancel"
                         </button>
                         <button
