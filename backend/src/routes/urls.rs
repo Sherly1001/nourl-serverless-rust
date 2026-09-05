@@ -14,8 +14,27 @@ use crate::extract::AppJson;
 use crate::query::ListParams;
 use crate::users::User;
 
-fn parse_expiry(raw: Option<&str>) -> Result<Option<bson::DateTime>, AppError> {
-    let Some(raw) = raw else { return Ok(None) };
+/// What a request says about a link's expiry.
+///
+/// Three answers rather than two, because `Option<String>` on the wire cannot
+/// tell "I am not talking about the expiry" from "remove it" — and the row
+/// editor, which sends every field on every save, needs both.
+#[derive(Debug)]
+enum Expiry {
+    /// The field was absent: whatever is stored stays.
+    Leave,
+    /// An explicit empty string: the link stops expiring.
+    Clear,
+    At(bson::DateTime),
+}
+
+fn parse_expiry(raw: Option<&str>) -> Result<Expiry, AppError> {
+    let Some(raw) = raw else {
+        return Ok(Expiry::Leave);
+    };
+    if raw.trim().is_empty() {
+        return Ok(Expiry::Clear);
+    }
     let parsed = chrono::DateTime::parse_from_rfc3339(raw).map_err(|_| {
         AppError::validation("expires_at must be an RFC3339 datetime").on_field("expires_at")
     })?;
@@ -23,7 +42,7 @@ fn parse_expiry(raw: Option<&str>) -> Result<Option<bson::DateTime>, AppError> {
     if millis <= bson::DateTime::now().timestamp_millis() {
         return Err(AppError::validation("expires_at must be in the future").on_field("expires_at"));
     }
-    Ok(Some(bson::DateTime::from_millis(millis)))
+    Ok(Expiry::At(bson::DateTime::from_millis(millis)))
 }
 
 /// Legacy documents can carry an explicit `owner: null`, which means unowned
@@ -150,8 +169,17 @@ async fn upsert(
         "url": &body.url,
         "updated_at": bson::DateTime::now(),
     };
-    if let Some(expires) = expires {
-        set.insert("expires_at", expires);
+    // `$unset` rather than a stored null: the TTL index is partial on
+    // `expires_at` existing, and a null in it is a date the reaper cannot read.
+    let mut unset = Document::new();
+    match expires {
+        Expiry::Leave => {}
+        Expiry::Clear => {
+            unset.insert("expires_at", "");
+        }
+        Expiry::At(at) => {
+            set.insert("expires_at", at);
+        }
     }
     // Ownership. A brand new link always belongs to whoever made it, which
     // `$setOnInsert` covers. *Creating* over a link nobody owns claims it as
@@ -171,12 +199,13 @@ async fn upsert(
             on_insert.insert("owner", &user.id);
         }
     }
-    urls.update_one(
-        doc! {"code": code},
-        doc! {"$set": set, "$setOnInsert": on_insert},
-    )
-    .upsert(true)
-    .await?;
+    let mut update = doc! {"$set": set, "$setOnInsert": on_insert};
+    if !unset.is_empty() {
+        update.insert("$unset", unset);
+    }
+    urls.update_one(doc! {"code": code}, update)
+        .upsert(true)
+        .await?;
     Ok(Json(fetch_entry(state, &body.code).await?))
 }
 
@@ -257,8 +286,10 @@ mod tests {
     use super::*;
 
     #[test]
-    fn parse_expiry_none_passes_through() {
-        assert!(parse_expiry(None).unwrap().is_none());
+    fn parse_expiry_distinguishes_absent_from_empty() {
+        assert!(matches!(parse_expiry(None).unwrap(), Expiry::Leave));
+        assert!(matches!(parse_expiry(Some("")).unwrap(), Expiry::Clear));
+        assert!(matches!(parse_expiry(Some("   ")).unwrap(), Expiry::Clear));
     }
 
     #[test]
@@ -271,7 +302,9 @@ mod tests {
                 .with_timezone(&chrono::FixedOffset::east_opt(9 * 3600).unwrap())
                 .to_rfc3339(),
         ] {
-            let parsed = parse_expiry(Some(&raw)).unwrap().unwrap();
+            let Expiry::At(parsed) = parse_expiry(Some(&raw)).unwrap() else {
+                panic!("a future stamp is an expiry");
+            };
             assert_eq!(parsed.timestamp_millis(), future.timestamp_millis());
         }
     }

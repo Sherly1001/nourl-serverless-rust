@@ -10,7 +10,11 @@ use crate::auth::use_auth;
 use crate::clipboard::{copy, origin, short_link};
 use crate::components::avatar::{Avatar, usable_url};
 use crate::components::confirm::ConfirmDialog;
+use crate::components::datepicker::DateTimePicker;
 use crate::components::tooltip::Tooltip;
+use crate::datetime::{
+    from_display, from_rfc3339, is_future, local_offset_minutes, to_display, to_rfc3339,
+};
 use crate::list::{
     GHOST_DELAY, GHOST_ROWS, GhostRow, LOAD_MORE_MARGIN, SEARCH_DEBOUNCE, Sort, SortHeader,
     all_selected, list_params, short_datetime,
@@ -59,6 +63,7 @@ pub fn MyUrls() -> impl IntoView {
     let editing = RwSignal::new(Option::<String>::None);
     let (draft_code, set_draft_code) = signal(String::new());
     let (draft_url, set_draft_url) = signal(String::new());
+    let (draft_expiry, set_draft_expiry) = signal(String::new());
     // Which field failed local validation, if any. Only a red border: the rule
     // it broke is the same one the placeholder implies, and a message per row
     // would push the table around.
@@ -231,6 +236,14 @@ pub fn MyUrls() -> impl IntoView {
     let begin_edit = move |entry: UrlEntry| {
         set_draft_code.set(entry.code.clone());
         set_draft_url.set(entry.url.clone());
+        set_draft_expiry.set(
+            entry
+                .expires_at
+                .as_deref()
+                .and_then(|stamp| from_rfc3339(stamp, local_offset_minutes()))
+                .and_then(|local| to_display(&local))
+                .unwrap_or_default(),
+        );
         set_invalid_field.set(None);
         editing.set(Some(entry.code));
     };
@@ -253,13 +266,29 @@ pub fn MyUrls() -> impl IntoView {
             set_invalid_field.set(Some("url"));
             return;
         }
+        // Empty means "no expiry", which the server reads as a removal — so a
+        // link can be freed as well as dated from the same box.
+        let shown = draft_expiry.get_untracked();
+        let expires_at = match shown.trim() {
+            "" => String::new(),
+            shown => {
+                let stamp = from_display(shown)
+                    .and_then(|local| to_rfc3339(&local, local_offset_minutes()))
+                    .filter(|stamp| is_future(stamp));
+                let Some(stamp) = stamp else {
+                    set_invalid_field.set(Some("expires_at"));
+                    return;
+                };
+                stamp
+            }
+        };
         set_invalid_field.set(None);
         set_saving.set(true);
         spawn_local(async move {
             let request = UrlUpsertRequest {
                 code,
                 url,
-                expires_at: None,
+                expires_at: Some(expires_at),
             };
             match api::update_url(&original, &request).await {
                 Ok(updated) => {
@@ -389,7 +418,7 @@ pub fn MyUrls() -> impl IntoView {
                     // The header carries its own background, which separates it
                     // from the rows — so the first row needs no rule above it.
                     // FlyonUI already leaves the last row without one below.
-                    <table class="table table-fixed table-pinned min-w-[77rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
+                    <table class="table table-fixed table-pinned min-w-[82rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead class="sticky top-0 z-10 bg-base-200">
                             <tr>
                                 <th class="px-3 w-10">
@@ -419,7 +448,7 @@ pub fn MyUrls() -> impl IntoView {
                                     field="expires_at"
                                     label="Expires"
                                     sort=sort
-                                    width="w-36"
+                                    width="w-56"
                                 />
                                 <SortHeader
                                     field="created_at"
@@ -642,7 +671,36 @@ pub fn MyUrls() -> impl IntoView {
                                             </Show>
                                             <td>{hits}</td>
                                             <td class="whitespace-nowrap opacity-70">{last}</td>
-                                            <td class="whitespace-nowrap opacity-70">{expires}</td>
+                                            <Show
+                                                when=is_editing
+                                                fallback={
+                                                    let expires = expires.clone();
+                                                    move || {
+                                                        view! {
+                                                            <td class="whitespace-nowrap opacity-70">
+                                                                {expires.clone()}
+                                                            </td>
+                                                        }
+                                                    }
+                                                }
+                                            >
+                                                <td>
+                                                    <DateTimePicker
+                                                        id=row_code.with_value(|c| format!("expires-{c}"))
+                                                        value=draft_expiry
+                                                        set_value=set_draft_expiry
+                                                        invalid=Signal::derive(move || {
+                                                            invalid_field.get() == Some("expires_at")
+                                                        })
+                                                        disabled=Signal::derive(move || saving.get())
+                                                        small=true
+                                                        on_keydown=Callback::new(move |
+                                                            ev: leptos::ev::KeyboardEvent|
+                                                        { code.with_value(|c| edit_keys(&ev, c)) })
+                                                    />
+                                                </td>
+                                            </Show>
+
                                             <td class="whitespace-nowrap opacity-70">{created}</td>
                                             <td class="whitespace-nowrap opacity-70">{updated}</td>
                                             <td class="whitespace-nowrap">

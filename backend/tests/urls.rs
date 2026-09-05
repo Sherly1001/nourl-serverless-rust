@@ -959,3 +959,121 @@ async fn tied_sort_keys_page_in_id_order() {
     assert_eq!(seen, ["c5", "c4", "c3", "c2", "c1", "c0"]);
     db.drop().await.unwrap();
 }
+
+/// A day out, as the wire spells it.
+fn tomorrow() -> String {
+    mongodb::bson::DateTime::from_millis(
+        mongodb::bson::DateTime::now().timestamp_millis() + 86_400_000,
+    )
+    .try_to_rfc3339_string()
+    .unwrap()
+}
+
+/// An absent `expires_at` is not a request to remove one — a rename or a URL
+/// fix would otherwise silently un-expire the link.
+#[tokio::test]
+async fn an_omitted_expiry_leaves_the_stored_one_alone() {
+    let (app, db) = test_app().await;
+
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/urls",
+            json!({"code": "keep", "url": "https://a.example", "expires_at": tomorrow()}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(created.status(), StatusCode::OK);
+    let was = body_json(created).await["expires_at"].clone();
+
+    let edited = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/urls/keep",
+            json!({"code": "keep", "url": "https://b.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(edited.status(), StatusCode::OK);
+    let body = body_json(edited).await;
+    assert_eq!(body["url"], "https://b.example");
+    assert_eq!(body["expires_at"], was, "editing the url must not touch it");
+
+    db.drop().await.unwrap();
+}
+
+/// An explicit empty string is the one way to say "this link stops expiring".
+#[tokio::test]
+async fn an_empty_expiry_removes_it() {
+    let (app, db) = test_app().await;
+
+    app.clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/urls",
+            json!({"code": "clear", "url": "https://a.example", "expires_at": tomorrow()}),
+        ))
+        .await
+        .unwrap();
+
+    let cleared = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/urls/clear",
+            json!({"code": "clear", "url": "https://a.example", "expires_at": ""}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(cleared.status(), StatusCode::OK);
+    assert!(
+        body_json(cleared).await["expires_at"].is_null(),
+        "the field is gone, not blank"
+    );
+
+    let stored = db
+        .collection::<mongodb::bson::Document>("urls")
+        .find_one(doc! {"code": "clear"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        stored.get("expires_at").is_none(),
+        "unset, so the partial TTL index has nothing to reap"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// The expiry survives the code changing, which is the write that touches two
+/// documents rather than one.
+#[tokio::test]
+async fn a_rename_carries_the_expiry_across() {
+    let (app, db) = test_app().await;
+
+    let created = app
+        .clone()
+        .oneshot(json_request(
+            "POST",
+            "/api/urls",
+            json!({"code": "before", "url": "https://a.example", "expires_at": tomorrow()}),
+        ))
+        .await
+        .unwrap();
+    let was = body_json(created).await["expires_at"].clone();
+
+    let renamed = app
+        .oneshot(json_request(
+            "PUT",
+            "/api/urls/before",
+            json!({"code": "after", "url": "https://a.example"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(renamed.status(), StatusCode::OK);
+    let body = body_json(renamed).await;
+    assert_eq!(body["code"], "after");
+    assert_eq!(body["expires_at"], was);
+
+    db.drop().await.unwrap();
+}
