@@ -3,9 +3,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::{
     AdminOrphans, AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods,
-    ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest, RegisterRequest,
-    SetAdminRequest, SetAdminResponse, UpdateProfileRequest, UpdateSettingsRequest, UrlEntry,
-    UrlListResponse, UrlUpsertRequest, UserInfo,
+    BulkAction, BulkUsersRequest, BulkUsersResponse, ChangePasswordRequest, DeleteAccountRequest,
+    DeleteUserResponse, LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse,
+    UpdateProfileRequest, UpdateSettingsRequest, UrlEntry, UrlListResponse, UrlUpsertRequest,
+    UserInfo,
 };
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
@@ -194,6 +195,45 @@ pub async fn delete_user(
         AdminOrphans::Reparent => "reparent",
     };
     read_json(Request::delete(&format!("/api/admin/users/{id}")).query([("orphans", choice)])).await
+}
+
+/// The most ids the server takes in one request, mirroring its own `BULK_MAX`.
+/// A selection longer than this is sent in several, which is the one place the
+/// all-or-nothing guarantee stops holding — it holds per request.
+pub const BULK_CHUNK: usize = 100;
+
+/// A whole selection, in as few requests as the server's cap allows.
+///
+/// The server checks every account in a request before it writes anything and
+/// commits the writes together, so within one chunk there is no per-row failure
+/// to report. Across chunks there can be: the counts returned are what the
+/// chunks that succeeded did, and the error is from the first that did not.
+pub async fn bulk_users(
+    ids: Vec<String>,
+    action: BulkAction,
+    orphans: AdminOrphans,
+) -> Result<BulkUsersResponse, (BulkUsersResponse, ApiErrorBody)> {
+    let mut total = BulkUsersResponse::default();
+    for chunk in ids.chunks(BULK_CHUNK) {
+        let request = BulkUsersRequest {
+            ids: chunk.to_vec(),
+            action,
+            orphans,
+        };
+        match send_json::<_, BulkUsersResponse>(Request::post("/api/admin/users/bulk"), &request)
+            .await
+        {
+            Ok(response) => {
+                total.affected += response.affected;
+                total.demoted += response.demoted;
+                total.reparented += response.reparented;
+                total.orphaned += response.orphaned;
+                total.grace_days = response.grace_days;
+            }
+            Err(err) => return Err((total, err)),
+        }
+    }
+    Ok(total)
 }
 
 pub async fn admin_settings() -> Result<AdminSettings, ApiErrorBody> {

@@ -83,10 +83,82 @@ pub fn bulk_demote_warning(users: &[AdminUserInfo], below: usize) -> String {
     }
 }
 
+/// What a bulk request did, for the toast that follows it. `below` and `moved`
+/// are the cascade — the accounts that were not named but were reached anyway —
+/// and go unmentioned when there were none.
+pub fn bulk_result(word: &str, affected: u64, below: u64, moved: u64) -> String {
+    match (below, moved) {
+        (0, 0) => format!("{affected} {word}"),
+        (_, kept) if kept > 0 => format!("{affected} {word} ({kept} kept their admin flag)"),
+        (lost, _) => format!("{affected} {word} ({lost} more below them lost the flag)"),
+    }
+}
+
+/// A bulk request the server refused whole, worded for a toast.
+///
+/// The selection is judged as a unit, so the admin needs to know how much of it
+/// was the problem rather than only that something was — one refused row out of
+/// forty is a different thing to untick than thirty-nine.
+pub fn bulk_refusal(message: &str, rejected: &[shared::RejectedId]) -> String {
+    let Some(first) = rejected.first() else {
+        return message.to_string();
+    };
+    let accounts = match rejected.len() {
+        1 => "1 account was".to_string(),
+        n => format!("{n} accounts were"),
+    };
+    format!("{message}: {accounts} refused — {}", first.message)
+}
+
 #[cfg(test)]
 mod tests {
+    use shared::RejectedId;
+
     use super::super::tree::fixtures::*;
     use super::*;
+
+    /// The counts a bulk request comes back with, worded for a toast.
+    #[test]
+    fn the_bulk_result_reports_the_cascade_only_when_there_was_one() {
+        assert_eq!(bulk_result("promoted", 2, 0, 0), "2 promoted");
+        assert_eq!(
+            bulk_result("demoted", 2, 3, 0),
+            "2 demoted (3 more below them lost the flag)"
+        );
+        assert_eq!(
+            bulk_result("deleted", 1, 0, 2),
+            "1 deleted (2 kept their admin flag)"
+        );
+        assert_eq!(
+            bulk_result("demoted", 1, 1, 0),
+            "1 demoted (1 more below them lost the flag)"
+        );
+    }
+
+    /// A refusal names the ids it was about, because the whole selection is
+    /// judged as one and the admin has to know which rows to untick.
+    #[test]
+    fn a_refusal_names_the_accounts_it_was_about() {
+        let refused = |ids: &[&str]| {
+            ids.iter()
+                .map(|id| RejectedId {
+                    id: (*id).to_string(),
+                    code: "forbidden".into(),
+                    message: "not in your part of the chain".into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            bulk_refusal("nothing changed", &refused(&["a"])),
+            "nothing changed: 1 account was refused — not in your part of the chain"
+        );
+        assert_eq!(
+            bulk_refusal("nothing changed", &refused(&["a", "b"])),
+            "nothing changed: 2 accounts were refused — not in your part of the chain"
+        );
+        // No list to draw on: the message is all there is.
+        assert_eq!(bulk_refusal("it broke", &[]), "it broke");
+    }
 
     #[test]
     fn the_bulk_warnings_count_accounts_links_and_the_cascade() {

@@ -8,7 +8,7 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{AdminOrphans, AdminUserInfo};
+use shared::{AdminOrphans, AdminUserInfo, BulkAction};
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -22,8 +22,8 @@ use crate::toast::use_toasts;
 
 use row::{UserRow, row_key};
 use text::{
-    GRACE_DAYS, bulk_delete_warning, bulk_demote_warning, delete_warning, demote_warning,
-    resign_warning,
+    GRACE_DAYS, bulk_delete_warning, bulk_demote_warning, bulk_refusal, bulk_result,
+    delete_warning, demote_warning, resign_warning,
 };
 use tree::{
     descendants, has_children, matches, may_manage, orphaned_admins, parents, search_tree,
@@ -238,41 +238,45 @@ pub fn Users() -> impl IntoView {
     let on_demote = Callback::new(move |user: AdminUserInfo| ask(Pending::Demote(vec![user])));
     let on_delete = Callback::new(move |user: AdminUserInfo| ask(Pending::Delete(vec![user])));
 
-    // One request per row, in sequence rather than at once: each one can move
-    // the tree under the next, and the server answers a single account at a
-    // time. Demotes run deepest first, so a row is dealt with before the
-    // cascade from its parent reaches it and turns its own call into an error.
-    let run_each = move |mut rows: Vec<AdminUserInfo>, promoting: Option<bool>| {
-        rows.sort_by_key(|row| std::cmp::Reverse(row.admin_level.unwrap_or(0)));
+    // One request for the selection — or one per hundred of it, which is the
+    // most the server takes at a time. Within a request it orders the work
+    // deepest-first and refuses the lot if any row is out of bounds, so there
+    // is nothing to sequence or half-report here; across requests there is,
+    // which is what the counts on a failure are for.
+    let run_bulk = move |rows: Vec<AdminUserInfo>, action: BulkAction| {
+        let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
         let choice = orphans.get_untracked();
         spawn_local(async move {
-            let (mut done, mut failed) = (0usize, 0usize);
-            let mut last: Option<String> = None;
-            for row in rows {
-                let result = match promoting {
-                    Some(is_admin) => api::set_user_admin(&row.id, is_admin, None, choice)
-                        .await
-                        .map(|_| ()),
-                    None => api::delete_user(&row.id, choice).await.map(|_| ()),
-                };
-                match result {
-                    Ok(()) => done += 1,
-                    Err(err) => {
-                        failed += 1;
-                        last = Some(err.message);
-                    }
-                }
-            }
-            let word = match promoting {
-                Some(true) => "promoted",
-                Some(false) => "demoted",
-                None => "deleted",
+            let word = match action {
+                BulkAction::Promote => "promoted",
+                BulkAction::Demote => "demoted",
+                BulkAction::Delete => "deleted",
             };
-            if done > 0 {
-                toasts.success(format!("{done} {word}"));
-            }
-            if let Some(message) = last {
-                toasts.error(format!("{failed} failed: {message}"));
+            match api::bulk_users(ids, action, choice).await {
+                Ok(response) => {
+                    toasts.success(bulk_result(
+                        word,
+                        response.affected,
+                        response.demoted,
+                        response.reparented,
+                    ));
+                }
+                Err((done, err)) => {
+                    // Whatever landed before the refusal is worth saying: on a
+                    // selection split across requests, some of it may have.
+                    if done.affected > 0 {
+                        toasts.success(bulk_result(
+                            word,
+                            done.affected,
+                            done.demoted,
+                            done.reparented,
+                        ));
+                    }
+                    toasts.error(bulk_refusal(
+                        &err.message,
+                        err.rejected.as_deref().unwrap_or_default(),
+                    ));
+                }
             }
             reload();
         });
@@ -287,7 +291,7 @@ pub fn Users() -> impl IntoView {
             Pending::Demote(rows) if rows.len() == 1 => {
                 apply(rows[0].id.clone(), false, None, choice, "Admin removed");
             }
-            Pending::Demote(rows) => run_each(rows, Some(false)),
+            Pending::Demote(rows) => run_bulk(rows, BulkAction::Demote),
             Pending::Delete(rows) if rows.len() == 1 => {
                 let user = rows[0].clone();
                 let choice = orphans.get_untracked();
@@ -307,7 +311,7 @@ pub fn Users() -> impl IntoView {
                     }
                 });
             }
-            Pending::Delete(rows) => run_each(rows, None),
+            Pending::Delete(rows) => run_bulk(rows, BulkAction::Delete),
         }
     });
 
@@ -527,7 +531,7 @@ pub fn Users() -> impl IntoView {
                             <Show when=can_promote>
                                 <button
                                     class="gap-2 btn btn-primary btn-sm"
-                                    on:click=move |_| run_each(chosen_others(), Some(true))
+                                    on:click=move |_| run_bulk(chosen_others(), BulkAction::Promote)
                                 >
                                     <span class="icon-[tabler--shield-plus] size-4"></span>
                                     {move || format!("Make admin ({})", chosen_others().len())}
