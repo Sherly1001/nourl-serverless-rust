@@ -218,8 +218,10 @@ pub async fn delete_me(
         }));
     }
 
+    let mut session = state.db.client().start_session().await?;
     let links = users::delete_with_cascade(
         &state.db,
+        &mut session,
         &user.id,
         body.links,
         state.config.orphan_grace_days,

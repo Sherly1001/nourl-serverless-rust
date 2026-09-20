@@ -5,6 +5,8 @@ use shared::{
     LinkDisposition, SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
 };
 
+use mongodb::ClientSession;
+
 use crate::app::AppState;
 use crate::auth::extract::{AdminUser, RootAdmin};
 use crate::error::AppError;
@@ -36,6 +38,15 @@ pub async fn list_users(
 
 /// A root is an admin nobody promoted — the one seeded directly in the
 /// database. Nothing sits above them, so nothing can restore what they give up.
+/// A session for one request's worth of work on the chain.
+///
+/// Every helper below takes one so that a caller which needs a transaction can
+/// start one on it. On its own it changes nothing: a session without a
+/// transaction reads and writes exactly as the bare database did.
+async fn session(state: &AppState) -> Result<ClientSession, AppError> {
+    Ok(state.db.client().start_session().await?)
+}
+
 fn is_root(user: &User) -> bool {
     user.is_admin && user.promoted_by.is_none()
 }
@@ -66,6 +77,7 @@ fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
 /// where the root came from in the first place.
 async fn resign(
     state: &AppState,
+    session: &mut ClientSession,
     actor: &User,
     orphans: AdminOrphans,
 ) -> Result<Json<SetAdminResponse>, AppError> {
@@ -74,7 +86,7 @@ async fn resign(
             "you are the top admin so cannot give up the flag — it can only be removed directly in the database",
         ));
     }
-    let (demoted, reparented) = demote(state, actor, orphans).await?;
+    let (demoted, reparented) = demote(state, session, actor, orphans).await?;
     Ok(Json(SetAdminResponse {
         id: actor.id.clone(),
         is_admin: false,
@@ -92,16 +104,23 @@ async fn resign(
 /// parent, revoking finds nothing below and takes only the target itself.
 async fn demote(
     state: &AppState,
+    session: &mut ClientSession,
     target: &User,
     orphans: AdminOrphans,
 ) -> Result<(u64, u64), AppError> {
     let reparented = match orphans {
         AdminOrphans::Demote => 0,
         AdminOrphans::Reparent => {
-            users::reparent_children(&state.db, &target.id, target.promoted_by.as_deref()).await?
+            users::reparent_children(
+                &state.db,
+                &mut *session,
+                &target.id,
+                target.promoted_by.as_deref(),
+            )
+            .await?
         }
     };
-    let demoted = users::revoke_admin(&state.db, &target.id).await?;
+    let demoted = users::revoke_admin(&state.db, session, &target.id).await?;
     Ok((demoted, reparented))
 }
 
@@ -116,11 +135,16 @@ async fn demote(
 /// That is not a hole but the only way the tree can grow: a fresh signup has
 /// nobody above them, so requiring ancestry would make the first promotion
 /// impossible.
-async fn may_manage(state: &AppState, actor: &User, target: &User) -> Result<bool, AppError> {
+async fn may_manage(
+    state: &AppState,
+    session: &mut ClientSession,
+    actor: &User,
+    target: &User,
+) -> Result<bool, AppError> {
     if !target.is_admin {
         return Ok(true);
     }
-    Ok(users::ancestor_ids(&state.db, &target.id)
+    Ok(users::ancestor_ids(&state.db, session, &target.id)
         .await?
         .contains(&actor.id))
 }
@@ -128,12 +152,17 @@ async fn may_manage(state: &AppState, actor: &User, target: &User) -> Result<boo
 /// Loads the target and checks the actor is allowed to touch it. Ordered so a
 /// typo'd id reads as "no such user" rather than a silent no-op reported as
 /// success, and so no write happens before every check has passed.
-async fn target_user(state: &AppState, actor: &User, id: &str) -> Result<User, AppError> {
+async fn target_user(
+    state: &AppState,
+    session: &mut ClientSession,
+    actor: &User,
+    id: &str,
+) -> Result<User, AppError> {
     not_yourself(actor, id)?;
-    let target = users::find_by_id(&state.db, id)
+    let target = users::find_by_id_in(&state.db, &mut *session, id)
         .await?
         .ok_or_else(|| AppError::not_found("no such user"))?;
-    if !may_manage(state, actor, &target).await? {
+    if !may_manage(state, session, actor, &target).await? {
         return Err(AppError::forbidden(
             "that admin is not in your part of the chain, so you cannot change their account",
         ));
@@ -162,6 +191,7 @@ async fn target_user(state: &AppState, actor: &User, id: &str) -> Result<User, A
 ///   target somewhere unreachable or quietly hand it to a stranger.
 async fn parent_for(
     state: &AppState,
+    session: &mut ClientSession,
     actor: &User,
     target: &User,
     requested: Option<&str>,
@@ -180,7 +210,7 @@ async fn parent_for(
             "an account cannot be promoted by itself",
         ));
     }
-    let parent = users::find_by_id(&state.db, parent_id)
+    let parent = users::find_by_id_in(&state.db, &mut *session, parent_id)
         .await?
         .ok_or_else(|| AppError::validation("no such admin to place them under"))?;
     if !parent.is_admin {
@@ -188,7 +218,7 @@ async fn parent_for(
             "they can only be placed under an admin",
         ));
     }
-    if !users::ancestor_ids(&state.db, &parent.id)
+    if !users::ancestor_ids(&state.db, &mut *session, &parent.id)
         .await?
         .contains(&actor.id)
     {
@@ -197,7 +227,7 @@ async fn parent_for(
         ));
     }
     if target.is_admin
-        && users::descendant_ids(&state.db, &target.id)
+        && users::descendant_ids(&state.db, session, &target.id)
             .await?
             .contains(&parent.id)
     {
@@ -216,13 +246,14 @@ pub async fn set_user_admin(
     Path(id): Path<String>,
     AppJson(body): AppJson<SetAdminRequest>,
 ) -> Result<Json<SetAdminResponse>, AppError> {
+    let mut session = session(&state).await?;
     // Resigning is the one thing you may do to your own standing.
     if actor.id == id && !body.is_admin {
-        return resign(&state, &actor, body.orphans).await;
+        return resign(&state, &mut session, &actor, body.orphans).await;
     }
-    let target = target_user(&state, &actor, &id).await?;
+    let target = target_user(&state, &mut session, &actor, &id).await?;
     if !body.is_admin {
-        let (demoted, reparented) = demote(&state, &target, body.orphans).await?;
+        let (demoted, reparented) = demote(&state, &mut session, &target, body.orphans).await?;
         return Ok(Json(SetAdminResponse {
             id: target.id,
             is_admin: false,
@@ -231,8 +262,15 @@ pub async fn set_user_admin(
             reparented,
         }));
     }
-    let parent = parent_for(&state, &actor, &target, body.promoted_by.as_deref()).await?;
-    users::grant_admin(&state.db, &target.id, &parent).await?;
+    let parent = parent_for(
+        &state,
+        &mut session,
+        &actor,
+        &target,
+        body.promoted_by.as_deref(),
+    )
+    .await?;
+    users::grant_admin(&state.db, &mut session, &target.id, &parent).await?;
     Ok(Json(SetAdminResponse {
         id: target.id,
         is_admin: true,
@@ -259,23 +297,31 @@ pub async fn delete_user(
     Path(id): Path<String>,
     Query(params): Query<DeleteUserParams>,
 ) -> Result<Json<DeleteUserResponse>, AppError> {
-    let target = target_user(&state, &actor, &id).await?;
+    let mut session = session(&state).await?;
+    let target = target_user(&state, &mut session, &actor, &id).await?;
     let (demoted, reparented) = match params.orphans {
         // Counts the target as well, but the target is being deleted rather
         // than demoted, so only the branch below them is worth reporting.
         AdminOrphans::Demote => (
-            users::revoke_admin(&state.db, &target.id)
+            users::revoke_admin(&state.db, &mut session, &target.id)
                 .await?
                 .saturating_sub(1),
             0,
         ),
         AdminOrphans::Reparent => (
             0,
-            users::reparent_children(&state.db, &target.id, target.promoted_by.as_deref()).await?,
+            users::reparent_children(
+                &state.db,
+                &mut session,
+                &target.id,
+                target.promoted_by.as_deref(),
+            )
+            .await?,
         ),
     };
     let links = users::delete_with_cascade(
         &state.db,
+        &mut session,
         &target.id,
         LinkDisposition::Orphan,
         state.config.orphan_grace_days,

@@ -1,6 +1,6 @@
 use futures::TryStreamExt;
-use mongodb::Database;
 use mongodb::bson::{Document, doc};
+use mongodb::{ClientSession, Database};
 use serde::{Deserialize, Serialize};
 use shared::{AdminUserInfo, LinkDisposition, UpdateProfileRequest, UserInfo};
 
@@ -114,6 +114,28 @@ pub async fn find_by_username(db: &Database, username: &str) -> Result<Option<Us
 
 pub async fn find_by_id(db: &Database, id: &str) -> Result<Option<User>, AppError> {
     find_one(db, doc! {"id": id}).await
+}
+
+/// [`find_by_id`] inside a session, so the read joins whatever transaction the
+/// session is running and sees the same snapshot as the writes around it.
+///
+/// A separate function rather than a parameter on `find_by_id`: that one is
+/// called by the auth extractor on every request, and threading a session
+/// through the busiest path in the app to serve the rarest one is a poor
+/// trade.
+pub async fn find_by_id_in(
+    db: &Database,
+    session: &mut ClientSession,
+    id: &str,
+) -> Result<Option<User>, AppError> {
+    match collection(db)
+        .find_one(doc! {"id": id})
+        .session(&mut *session)
+        .await?
+    {
+        Some(doc) => Ok(Some(bson::from_document(doc).map_err(AppError::internal)?)),
+        None => Ok(None),
+    }
 }
 
 /// The account holding this provider identity, if any. `kind.field()` is the
@@ -327,12 +349,18 @@ const MAX_CHAIN_DEPTH: i32 = 32;
 /// admin, because they are the same fact: this is who vouches for them now.
 /// Whatever hangs below `id` moves with it, since the subtree is described by
 /// pointers to `id` rather than by a stored depth.
-pub async fn grant_admin(db: &Database, id: &str, parent_id: &str) -> Result<(), AppError> {
+pub async fn grant_admin(
+    db: &Database,
+    session: &mut ClientSession,
+    id: &str,
+    parent_id: &str,
+) -> Result<(), AppError> {
     collection(db)
         .update_one(
             doc! {"id": id},
             doc! {"$set": {"is_admin": true, "promoted_by": parent_id}},
         )
+        .session(&mut *session)
         .await?;
     Ok(())
 }
@@ -344,8 +372,12 @@ pub async fn grant_admin(db: &Database, id: &str, parent_id: &str) -> Result<(),
 /// above them vouched, so withdrawing that vouching withdraws what it granted.
 /// Leaving the subtree in place would instead leave admins hanging off an
 /// ordinary account.
-pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
-    let mut ids = descendant_ids(db, id).await?;
+pub async fn revoke_admin(
+    db: &Database,
+    session: &mut ClientSession,
+    id: &str,
+) -> Result<u64, AppError> {
+    let mut ids = descendant_ids(db, &mut *session, id).await?;
     ids.push(id.to_string());
     let result = collection(db)
         .update_many(
@@ -355,6 +387,7 @@ pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
                 "$unset": {"promoted_by": ""},
             },
         )
+        .session(&mut *session)
         .await?;
     Ok(result.modified_count)
 }
@@ -366,6 +399,7 @@ pub async fn revoke_admin(db: &Database, id: &str) -> Result<u64, AppError> {
 /// branch keeps its standing rather than losing it, one level shallower.
 pub async fn reparent_children(
     db: &Database,
+    session: &mut ClientSession,
     id: &str,
     parent: Option<&str>,
 ) -> Result<u64, AppError> {
@@ -378,6 +412,7 @@ pub async fn reparent_children(
     };
     Ok(collection(db)
         .update_many(doc! {"promoted_by": id}, update)
+        .session(&mut *session)
         .await?
         .modified_count)
 }
@@ -402,6 +437,7 @@ pub struct LinkOutcome {
 /// and a computed `$min` cannot both be expressed in a plain update document.
 pub async fn delete_with_cascade(
     db: &Database,
+    session: &mut ClientSession,
     id: &str,
     links: LinkDisposition,
     grace_days: i64,
@@ -409,7 +445,11 @@ pub async fn delete_with_cascade(
     let urls = db.collection::<Document>("urls");
     let outcome = match links {
         LinkDisposition::Delete => LinkOutcome {
-            deleted: urls.delete_many(doc! {"owner": id}).await?.deleted_count,
+            deleted: urls
+                .delete_many(doc! {"owner": id})
+                .session(&mut *session)
+                .await?
+                .deleted_count,
             orphaned: 0,
         },
         LinkDisposition::Orphan => {
@@ -427,25 +467,37 @@ pub async fn delete_with_cascade(
                             doc! {"$unset": "owner"},
                         ],
                     )
+                    .session(&mut *session)
                     .await?
                     .modified_count,
                 deleted: 0,
             }
         }
     };
-    collection(db).delete_one(doc! {"id": id}).await?;
+    collection(db)
+        .delete_one(doc! {"id": id})
+        .session(&mut *session)
+        .await?;
     Ok(outcome)
 }
 
 /// Ids of every account above `id` in the chain. Membership is what callers
 /// want — whether the actor is one of them — so the order is not defined.
-pub async fn ancestor_ids(db: &Database, id: &str) -> Result<Vec<String>, AppError> {
-    chain_ids(db, id, "$promoted_by", "promoted_by", "id").await
+pub async fn ancestor_ids(
+    db: &Database,
+    session: &mut ClientSession,
+    id: &str,
+) -> Result<Vec<String>, AppError> {
+    chain_ids(db, session, id, "$promoted_by", "promoted_by", "id").await
 }
 
 /// Ids of every account below `id`: the ones it promoted, and so on down.
-pub async fn descendant_ids(db: &Database, id: &str) -> Result<Vec<String>, AppError> {
-    chain_ids(db, id, "$id", "id", "promoted_by").await
+pub async fn descendant_ids(
+    db: &Database,
+    session: &mut ClientSession,
+    id: &str,
+) -> Result<Vec<String>, AppError> {
+    chain_ids(db, session, id, "$id", "id", "promoted_by").await
 }
 
 /// Walks `promoted_by` in one direction or the other.
@@ -455,6 +507,7 @@ pub async fn descendant_ids(db: &Database, id: &str) -> Result<Vec<String>, AppE
 /// a hand-edited document terminates instead of hanging.
 async fn chain_ids(
     db: &Database,
+    session: &mut ClientSession,
     id: &str,
     start_with: &str,
     connect_from: &str,
@@ -472,12 +525,13 @@ async fn chain_ids(
         }},
         doc! {"$project": {"_id": 0, "ids": "$chain.id"}},
     ];
-    let rows: Vec<Document> = collection(db)
+    // A cursor opened with a session is driven by that session rather than by
+    // `TryStreamExt`, so the rows are pulled by hand.
+    let mut cursor = collection(db)
         .aggregate(pipeline)
-        .await?
-        .try_collect()
+        .session(&mut *session)
         .await?;
-    let Some(row) = rows.first() else {
+    let Some(row) = cursor.next(&mut *session).await.transpose()? else {
         return Ok(Vec::new());
     };
     Ok(row
