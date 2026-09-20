@@ -6,24 +6,21 @@ pub struct UrlUpsertRequest {
     pub url: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub expires_at: Option<String>,
-    /// Go ahead with a write that would otherwise be refused for colliding
-    /// with a code the caller already owns. Never opens someone else's.
+    /// Proceed through a collision with a code the caller owns. Never opens
+    /// someone else's.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub overwrite: Option<bool>,
-    /// Start the link's counter again. Replacing where a link points does not
-    /// on its own mean its history stops counting, so this is asked for
-    /// separately.
+    /// Restart the counter. Repointing a link does not on its own end its
+    /// history, so it is asked separately.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub reset_hits: Option<bool>,
-    /// Take ownership of an existing link. Writing over someone's link does not
-    /// take it — an admin fixing a broken destination should not acquire it by
-    /// not reading a dialog — so this says so out loud.
+    /// Take ownership. Writing over someone's link does not take it: an admin
+    /// fixing a destination should not acquire it by not reading a dialog.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub claim: Option<bool>,
 }
 
-/// The public face of a link's owner. Never carries an email or a provider id:
-/// the aggregate pipeline strips those before this is built.
+/// A link's owner as everyone else sees them: never an email or provider id.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct OwnerInfo {
     #[serde(default)]
@@ -49,8 +46,7 @@ pub struct UrlEntry {
     /// RFC3339. Absent on links created before this field existed.
     #[serde(default)]
     pub created_at: Option<String>,
-    /// RFC3339, rewritten on every edit. Absent until a link is next written,
-    /// so it is not backfilled for existing rows.
+    /// RFC3339, rewritten on every edit. Absent until a link is next written.
     #[serde(default)]
     pub updated_at: Option<String>,
 }
@@ -70,31 +66,23 @@ pub struct ApiError {
 pub struct ApiErrorBody {
     pub code: String,
     pub message: String,
-    /// Which form field the message belongs to, when the server can say —
-    /// lets a UI show it under that input instead of only in a banner.
-    /// Absent when the failure is not about one field, and deliberately absent
-    /// on a failed login, where naming the wrong half would leak which
-    /// usernames exist.
+    /// Which field the message belongs to, so a UI can show it under that
+    /// input. Absent when no single field is at fault, and on a failed login,
+    /// where naming the wrong half leaks which usernames exist.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub field: Option<String>,
-    /// The link the caller collided with, on the two conflicts where it is
-    /// theirs to see. Absent everywhere else — a 403 over someone else's code
-    /// must stay useless as a way to look their links up.
-    ///
-    /// Boxed because this type is the error half of every `Result` the client
-    /// and the server pass around, and a whole link inline makes all of them
-    /// pay for the one case that carries it.
+    /// The link collided with, on the two conflicts where it is the caller's
+    /// to see; a 403 over someone else's code stays useless for lookups.
+    /// Boxed: this is the error half of every `Result` in both crates.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Box<UrlEntry>>,
-    /// Which of the ids in a bulk request were refused, and why each one was.
-    /// A selection is judged as a unit, so naming only the first would leave
-    /// the caller fixing them one round trip at a time.
+    /// Which ids a bulk request refused, and why. Naming only the first would
+    /// have the caller fixing them one round trip at a time.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub rejected: Option<Vec<RejectedId>>,
 }
 
-/// One id a bulk request could not act on. `code` is the same string the error
-/// would have carried on its own — `validation`, `not_found`, `forbidden`.
+/// One refused id. `code` is what the error would have carried on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedId {
     pub id: String,
@@ -123,10 +111,7 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
     if !matches!(parsed.scheme(), "http" | "https") {
         return Err("url must start with http:// or https://".into());
     }
-    // `Url::parse` is happy with a single-label host — `https://google` and
-    // `http://localhost` both parse — but a short link is shared with other
-    // people, so a host that only resolves on the author's machine (or is a
-    // typo for a real domain) is never what was meant.
+    // `Url::parse` accepts a single-label host; a shared link cannot.
     match parsed.host() {
         // An address needs no name.
         Some(url::Host::Ipv4(_)) | Some(url::Host::Ipv6(_)) => Ok(()),
@@ -140,9 +125,7 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
                 .ok_or_else(|| {
                     format!("'{host}' is not a full domain name — try something like {host}.com")
                 })?;
-            // Two characters minimum, starting with a letter. Internationalised
-            // domains arrive punycoded (`.рф` is `.xn--p1ai`), so digits and
-            // hyphens after the first character have to stay legal.
+            // IDNs arrive punycoded, so digits and hyphens stay legal after the first.
             let valid = suffix.len() >= 2
                 && suffix
                     .chars()
@@ -158,15 +141,11 @@ pub fn validate_url(raw: &str) -> Result<(), String> {
     }
 }
 
-/// The length a username has to land in. Public because the OAuth sign-in
-/// derives one from a provider handle, and a second copy of the numbers would
-/// be free to drift out of step with the check that enforces them.
+/// Public because OAuth derives a username and must not drift from the check.
 pub const USERNAME_MIN: usize = 3;
 pub const USERNAME_MAX: usize = 32;
 
-/// Stricter than `validate_code`: no spaces, because a username is typed into
-/// a login form where leading and trailing whitespace is invisible and
-/// impossible to debug.
+/// Stricter than `validate_code`: no spaces, invisible in a login form.
 pub fn validate_username(username: &str) -> Result<(), String> {
     if username.len() < USERNAME_MIN || username.len() > USERNAME_MAX {
         return Err(format!(
@@ -185,8 +164,7 @@ pub fn validate_username(username: &str) -> Result<(), String> {
 /// Longest address RFC 5321 allows on the wire.
 pub const EMAIL_MAX: usize = 254;
 
-/// Shape only. Whether an address exists, and belongs to whoever typed it,
-/// only a confirmation mail can answer.
+/// Shape only. Only a confirmation mail can answer the rest.
 pub fn validate_email(email: &str) -> Result<(), String> {
     if email.len() > EMAIL_MAX {
         return Err(format!("email must be at most {EMAIL_MAX} characters"));
@@ -194,8 +172,7 @@ pub fn validate_email(email: &str) -> Result<(), String> {
     let Some((local, domain)) = email.split_once('@') else {
         return Err("email must look like name@example.com".into());
     };
-    // A second `@` puts the split in the wrong place, and the halves either
-    // side of it would then be checked as though it were not there.
+    // A second `@` would put the split in the wrong place.
     let plausible = !local.is_empty()
         && !domain.contains('@')
         && !email.chars().any(char::is_whitespace)
@@ -209,16 +186,12 @@ pub fn validate_email(email: &str) -> Result<(), String> {
     }
 }
 
-/// How long an inline avatar may be: enough for a small picture, little
-/// enough not to bloat every response — the admin list carries one per row.
+/// The admin list carries one per row, so a large one bloats every response.
 pub const AVATAR_DATA_URI_MAX: usize = 200_000;
 
-/// A `data:` avatar. Has to be an image: `data:text/html` in an `<img src>` is
-/// inert in every current browser, but the value is echoed into pages other
-/// people load, and "inert today" is not worth depending on.
-///
-/// Both encodings: base64 is what a file picker produces, percent-encoded is
-/// how an inline SVG is normally written.
+/// Must be an image: the value is echoed into pages other people load, and
+/// `data:text/html` being inert today is not worth depending on. Both
+/// encodings, since a file picker produces base64 and inline SVG does not.
 fn is_image_data_uri(raw: &str) -> bool {
     let Some(rest) = raw.strip_prefix("data:image/") else {
         return false;
@@ -226,9 +199,7 @@ fn is_image_data_uri(raw: &str) -> bool {
     let Some((meta, payload)) = rest.split_once(',') else {
         return false;
     };
-    // `image/svg+xml;base64` and `image/svg+xml` alike: the subtype is
-    // whatever precedes the parameters, and `;base64` is the only one that
-    // changes how the payload is read.
+    // `;base64` is the only parameter that changes how the payload is read.
     let subtype = meta.strip_suffix(";base64").unwrap_or(meta);
     !subtype.is_empty() && !subtype.contains(';') && !payload.is_empty()
 }
@@ -236,12 +207,9 @@ fn is_image_data_uri(raw: &str) -> bool {
 /// Longest an avatar link may be, matching [`validate_url`].
 pub const AVATAR_URL_MAX: usize = 2048;
 
-/// Anything a browser will load into an `<img src>`, and nothing else.
-///
-/// Looser than [`validate_url`], which stops a *short link* pointing somewhere
-/// only its author can reach. An avatar is fetched by the page displaying it,
-/// so a localhost or site-relative one is fine — but `javascript:` and every
-/// other scheme stay out, since this is rendered into other people's pages.
+/// Anything an `<img src>` will load. Looser than [`validate_url`]: an avatar
+/// is fetched by the page showing it, so localhost and site-relative are fine.
+/// Other schemes stay out — this renders into other people's pages.
 pub fn validate_avatar_url(raw: &str) -> Result<(), String> {
     if raw.starts_with("data:") {
         if !is_image_data_uri(raw) {
@@ -262,9 +230,7 @@ pub fn validate_avatar_url(raw: &str) -> Result<(), String> {
     if raw.chars().any(char::is_whitespace) {
         return Err("avatar url must not contain spaces".into());
     }
-    // `/me.png` against this site, `//host/me.png` against whatever scheme the
-    // page was loaded over. The browser resolves both; there is nothing here to
-    // parse.
+    // Site-relative and protocol-relative; the browser resolves both.
     if raw.starts_with('/') {
         return Ok(());
     }
@@ -287,13 +253,11 @@ pub fn validate_password(password: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// The caller's own account, as returned by `GET /api/auth/me`. Never carries
-/// a password hash or provider ids.
+/// The caller's own account. Never a password hash or provider ids.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct UserInfo {
     pub id: String,
-    /// Login handle. Legacy accounts have none, so this falls back to the
-    /// display name and then the id — it is for showing, not for matching.
+    /// For showing, not matching: legacy accounts fall back to name then id.
     pub username: String,
     #[serde(default)]
     pub display_name: Option<String>,
@@ -302,20 +266,15 @@ pub struct UserInfo {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub is_admin: bool,
-    /// True for the admin nobody promoted — the one seeded directly in the
-    /// database. Sent because the sign-in settings are theirs alone, and the
-    /// navigation has to know that before it can render, long before any list
-    /// of accounts has loaded.
+    /// The admin nobody promoted. Sent because the navigation needs it before
+    /// any list of accounts has loaded.
     #[serde(default)]
     pub is_root: bool,
-    /// False for accounts that only ever signed in through a provider. The UI
-    /// uses it to render "set a password" instead of "change password", and
-    /// the server uses the same fact to skip the current-password check.
+    /// False for provider-only accounts, which skip the current-password
+    /// check and are offered "set" rather than "change".
     #[serde(default)]
     pub has_password: bool,
-    /// Which providers are connected, as `"github"`, `"google"`, `"facebook"`.
-    /// The account page renders a row per provider from this, so it never has
-    /// to ask a second time. Never the provider ids themselves.
+    /// Connected providers by name — never the ids themselves.
     #[serde(default)]
     pub providers: Vec<String>,
 }
@@ -332,12 +291,10 @@ pub struct LoginRequest {
     pub password: String,
 }
 
-/// Every field optional: omitting one leaves it untouched rather than
-/// clearing it, so a rename does not wipe the avatar.
+/// Omitting a field leaves it alone, so a rename does not wipe the avatar.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct UpdateProfileRequest {
-    /// The login handle. Unlike the rest it is validated and must stay unique,
-    /// so a change here can come back 400 or 409.
+    /// Validated and unique, so a change here can come back 400 or 409.
     #[serde(default)]
     pub username: Option<String>,
     #[serde(default)]
@@ -348,9 +305,8 @@ pub struct UpdateProfileRequest {
     pub avatar_url: Option<String>,
 }
 
-/// `current_password` is optional because an account created through an OAuth
-/// provider has no password to prove ownership of — for those, holding a valid
-/// session is the whole check. Accounts that do have one must still supply it.
+/// `current_password` is optional only for provider-only accounts, which have
+/// none to prove; for the rest the session alone is not enough.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ChangePasswordRequest {
     #[serde(default)]
@@ -367,17 +323,15 @@ pub struct AuthMethods {
     pub facebook: bool,
 }
 
-/// A page of URLs. `total` is the count matching the filter, before
-/// `limit`/`skip`, so the UI can render pagination.
+/// `total` counts what the filter matched, before `limit`/`skip`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UrlListResponse {
     pub items: Vec<UrlEntry>,
     pub total: u64,
 }
 
-/// A user as an admin sees them. Never carries a password hash; provider ids
-/// are reduced to `providers`, which says *that* an account is linked without
-/// exposing the id itself.
+/// A user as an admin sees them. Never a password hash, and providers are
+/// reduced to names so no id is exposed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct AdminUserInfo {
     pub id: String,
@@ -389,18 +343,15 @@ pub struct AdminUserInfo {
     #[serde(default)]
     pub avatar_url: Option<String>,
     pub is_admin: bool,
-    /// How deep in the admin chain: 0 for an admin seeded directly in the
-    /// database, and one more for each grant below that. Derived from
-    /// `promoted_by` rather than stored, so moving a branch cannot leave a
-    /// stale number behind. `None` for anyone who is not an admin.
+    /// Depth in the chain, 0 for a seeded admin. Derived from `promoted_by`
+    /// rather than stored, so moving a branch leaves no stale number.
     #[serde(default)]
     pub admin_level: Option<i32>,
-    /// Id of the admin who granted the flag — the parent pointer the tree is
-    /// drawn from. `None` for a seeded admin, who nobody promoted, and for
-    /// ordinary accounts, who are in no subtree at all.
+    /// The parent pointer the tree is drawn from. `None` for a seeded admin
+    /// and for ordinary accounts, who are in no subtree.
     #[serde(default)]
     pub promoted_by: Option<String>,
-    /// `"github"`, `"google"`, `"facebook"` — whichever are linked.
+    /// Whichever providers are linked.
     #[serde(default)]
     pub providers: Vec<String>,
     #[serde(default)]
@@ -408,52 +359,43 @@ pub struct AdminUserInfo {
     /// RFC3339. Absent on accounts created before the field existed.
     #[serde(default)]
     pub created_at: Option<String>,
-    /// How many links this account owns, so the delete confirmation can say
-    /// what is about to be orphaned.
+    /// So the delete confirmation can say what is about to be orphaned.
     #[serde(default)]
     pub url_count: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AdminUserListResponse {
-    /// Every admin, unpaged and unsearched — the skeleton of the tree. A search
-    /// must not drop them, or the tree loses interior nodes and the accounts
-    /// below them have nowhere to hang.
+    /// Every admin, unpaged and unsearched: dropping one would leave the
+    /// accounts below it nowhere to hang.
     #[serde(default)]
     pub admins: Vec<AdminUserInfo>,
-    /// Accounts with no admin flag: paged, sorted and searched as usual. They
-    /// belong to no subtree, so they render as a flat bucket under the tree.
+    /// Accounts in no subtree, so a flat bucket under the tree.
     pub items: Vec<AdminUserInfo>,
-    /// How many ordinary accounts match the search, for the bucket's count.
+    /// How many ordinary accounts the search matched.
     pub total: u64,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SetAdminRequest {
     pub is_admin: bool,
-    /// Which admin to hang them under. Defaults to the caller, which is the
-    /// ordinary promotion; naming someone else moves them, subtree and all.
-    /// Ignored when `is_admin` is false, since a demotion has no parent.
+    /// Defaults to the caller. Naming someone else moves them, subtree and
+    /// all. Ignored on a demotion, which has no parent.
     #[serde(default)]
     pub promoted_by: Option<String>,
-    /// What happens to the admins this account promoted. Only read on a
-    /// demotion — a promotion or a move leaves the branch where it is.
+    /// Read only on a demotion; a promotion or move leaves the branch alone.
     #[serde(default)]
     pub orphans: AdminOrphans,
 }
 
-/// What becomes of the links an account leaves behind.
-///
-/// No default: deleting an account is irreversible, and which of these the
-/// caller meant is not something to guess at.
+/// What becomes of the links an account leaves behind. No default: the
+/// deletion is irreversible and the choice is not one to guess at.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum LinkDisposition {
-    /// Leave them working, unowned, on a deadline. Anyone can claim or edit
-    /// them until it runs out.
+    /// Unowned and on a deadline; anyone may claim or edit them until it runs out.
     Orphan,
-    /// Delete them with the account. Every one of them stops resolving
-    /// immediately.
+    /// Deleted with the account, stopping immediately.
     Delete,
 }
 
@@ -461,27 +403,21 @@ pub enum LinkDisposition {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteAccountRequest {
     pub links: LinkDisposition,
-    /// Required when the account has a password — holding the session is not
-    /// enough for something this final. Accounts that only ever signed in
-    /// through a provider have no password to prove, so for those the session
-    /// is the whole check, exactly as in [`ChangePasswordRequest`].
+    /// Required when there is one: the session alone is not enough for
+    /// something this final. As in [`ChangePasswordRequest`].
     #[serde(default)]
     pub current_password: Option<String>,
 }
 
-/// What happens to the admins an about-to-be-deleted account had promoted.
-/// They cannot simply be left behind: `promoted_by` would point at an account
-/// that no longer exists, and nothing walking the chain upward could reach them
-/// again.
+/// What happens to the admins a deleted account promoted. Leaving them would
+/// point `promoted_by` at nothing, stranding them outside the chain.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum AdminOrphans {
-    /// They lose the flag, and so does everyone below them. The safe default:
-    /// it never hands anybody a standing they were not given directly.
+    /// They and everyone below lose it — never grants an undeserved standing.
     #[default]
     Demote,
-    /// They keep it, hanging from whoever promoted the deleted account — or
-    /// standing as roots of their own if nobody was above it.
+    /// They keep it under the deleted account's own parent, or become roots.
     Reparent,
 }
 
@@ -492,9 +428,8 @@ pub struct DeleteUserParams {
     pub orphans: AdminOrphans,
 }
 
-/// What a `DELETE /api/admin/users/{id}` did. `orphaned` and `grace_days` are
-/// reported so the UI can say what happened to the links rather than leaving
-/// the admin to guess.
+/// What a `DELETE /api/admin/users/{id}` did, in enough detail for the UI to
+/// say what became of the links.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct DeleteUserResponse {
     pub id: String,
@@ -502,18 +437,16 @@ pub struct DeleteUserResponse {
     /// Links that outlived their owner, now unowned and on a deadline.
     #[serde(default)]
     pub orphaned: u64,
-    /// Links removed along with the account. Only ever non-zero when the owner
-    /// closed their own account and asked for it.
+    /// Only non-zero when the owner closed their own account and asked.
     #[serde(default)]
     pub links_deleted: u64,
-    /// How long the orphaned links have left unless someone claims them.
+    /// How long the orphaned links have left.
     #[serde(default)]
     pub grace_days: i64,
-    /// Admins below the deleted account who lost the flag with them.
+    /// Admins below it that lost the flag with it.
     #[serde(default)]
     pub demoted: u64,
-    /// Admins the deleted account had promoted who kept the flag and moved up
-    /// to its own parent instead. Never non-zero together with `demoted`.
+    /// Admins that kept the flag and moved up instead. Never with `demoted`.
     #[serde(default)]
     pub reparented: u64,
 }
@@ -526,20 +459,16 @@ pub struct SetAdminResponse {
     /// Who they now hang under. `None` once demoted.
     #[serde(default)]
     pub promoted_by: Option<String>,
-    /// How many accounts lost the flag, counting the target itself: demoting an
-    /// admin demotes everyone they promoted, and everyone those admins
-    /// promoted. Zero on a promotion or a move.
+    /// Counting the target: demoting cascades down the whole branch. Zero on
+    /// a promotion or a move.
     #[serde(default)]
     pub demoted: u64,
-    /// Admins the demoted account had promoted who kept the flag and moved up
-    /// to its own parent instead of losing it.
+    /// Admins that moved up to its parent instead of losing the flag.
     #[serde(default)]
     pub reparented: u64,
 }
 
-/// What a bulk action does to every account it names. Promoting hangs them
-/// under the caller, exactly as the single-account route does with no
-/// `promoted_by`.
+/// Promoting hangs them under the caller, as the single-account route does.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum BulkAction {
@@ -548,29 +477,25 @@ pub enum BulkAction {
     Delete,
 }
 
-/// `POST /api/admin/users/bulk`. One decision, one request: the server checks
-/// every id before it writes anything, so a selection is applied whole or
-/// refused whole.
+/// `POST /api/admin/users/bulk`. Every id is checked before anything is
+/// written, so a selection is applied whole or refused whole.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct BulkUsersRequest {
     pub ids: Vec<String>,
     pub action: BulkAction,
-    /// What becomes of the admins these accounts promoted. Read on a demotion
-    /// and on a delete, ignored on a promotion — the same rule the
-    /// single-account routes follow.
+    /// Read on a demotion and a delete, ignored on a promotion.
     #[serde(default)]
     pub orphans: AdminOrphans,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct BulkUsersResponse {
-    /// Accounts named in the request that the action applied to.
+    /// Named accounts the action applied to.
     pub affected: u64,
-    /// Admins *below* the named accounts that lost the flag with them. Never
-    /// counts the named accounts themselves, which `affected` already reports.
+    /// Admins below the named ones, which `affected` already counts.
     #[serde(default)]
     pub demoted: u64,
-    /// Admins that kept the flag and moved up a level instead.
+    /// Admins that kept the flag and moved up instead.
     #[serde(default)]
     pub reparented: u64,
     /// Links left unowned by a delete.
@@ -581,8 +506,8 @@ pub struct BulkUsersResponse {
     pub grace_days: i64,
 }
 
-/// One login method as the settings page sees it. The secret itself never
-/// leaves the server — only whether one is stored.
+/// A login method as the settings page sees it: whether a secret is stored,
+/// never the secret.
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub struct MethodView {
     pub enabled: bool,
@@ -599,9 +524,8 @@ pub struct AdminSettings {
     pub facebook: MethodView,
 }
 
-/// An omitted `client_secret` means "leave the stored one alone", which is how
-/// the page can save without ever having seen it. An explicit empty string
-/// clears it.
+/// An omitted `client_secret` leaves the stored one alone, which is how the
+/// page saves without ever seeing it; an empty string clears it.
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
 pub struct MethodUpdate {
     pub enabled: bool,
@@ -670,9 +594,7 @@ mod tests {
         assert!(validate_url(&long).is_err());
     }
 
-    /// `Url::parse` accepts a single-label host, so these all used to pass.
-    /// A short link is shared with other people; a host that resolves only on
-    /// the author's machine is not a destination.
+    /// A host that resolves only on the author's machine is not a destination.
     #[test]
     fn url_rejects_hosts_that_are_not_full_domain_names() {
         assert!(validate_url("https://google").is_err());
@@ -692,10 +614,8 @@ mod tests {
             validate_url("https://example.com.").is_ok(),
             "FQDN root dot"
         );
-        // Addresses carry no domain name at all.
         assert!(validate_url("http://127.0.0.1:8080").is_ok());
         assert!(validate_url("http://[::1]:8080").is_ok());
-        // Internationalised domains are punycoded before we see them.
         assert!(validate_url("https://пример.рф").is_ok());
     }
 
@@ -713,35 +633,27 @@ mod tests {
         assert!(validate_email(&format!("{}@example.com", "a".repeat(250))).is_err());
     }
 
-    /// Anything an `<img src>` would load. Looser than [`validate_url`] on
-    /// purpose — see that function's note on why a short link is judged harder
-    /// than a picture.
+    /// Looser than [`validate_url`] on purpose: a picture is not a destination.
     #[test]
     fn an_avatar_is_anything_an_img_tag_would_load() {
         assert!(validate_avatar_url("https://example.com/me.png").is_ok());
-        // A host only this machine can reach is fine for a picture.
         assert!(validate_avatar_url("http://localhost:3000/me.png").is_ok());
         assert!(validate_avatar_url("http://127.0.0.1:8080/me.png").is_ok());
-        // Relative to the page, and protocol-relative.
         assert!(validate_avatar_url("/favicon.png").is_ok());
         assert!(validate_avatar_url("//cdn.example.com/me.png").is_ok());
 
-        // Both data: encodings, base64 and percent-encoded, and svg either way.
         assert!(validate_avatar_url("data:image/png;base64,iVBORw0K").is_ok());
         assert!(validate_avatar_url("data:image/svg+xml;base64,PHN2Zz4=").is_ok());
         assert!(validate_avatar_url("data:image/svg+xml,%3Csvg%2F%3E").is_ok());
         assert!(validate_avatar_url("data:image/gif,rawbytes").is_ok());
 
-        // Not an image, or carrying nothing at all.
         assert!(validate_avatar_url("data:text/html,<b>hi</b>").is_err());
         assert!(validate_avatar_url("data:image/png;base64,").is_err());
         assert!(validate_avatar_url("data:image/,x").is_err());
-        // The field is rendered into other people's pages, so no other scheme.
         assert!(validate_avatar_url("javascript:alert(1)").is_err());
         assert!(validate_avatar_url("vbscript:msgbox(1)").is_err());
         assert!(validate_avatar_url("file:///etc/passwd").is_err());
         assert!(validate_avatar_url("not a url").is_err());
-        // Too big to carry in every response the account appears in.
         let huge = format!("data:image/png;base64,{}", "A".repeat(AVATAR_DATA_URI_MAX));
         assert!(validate_avatar_url(&huge).is_err());
         assert!(
