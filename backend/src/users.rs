@@ -402,7 +402,7 @@ pub async fn reparent_children(
     session: &mut ClientSession,
     id: &str,
     parent: Option<&str>,
-) -> Result<u64, AppError> {
+) -> Result<Vec<String>, AppError> {
     let update = match parent {
         Some(parent) => doc! {"$set": {"promoted_by": parent}},
         // A root's children become roots: nobody is above them, so nobody but
@@ -410,11 +410,29 @@ pub async fn reparent_children(
         // itself had.
         None => doc! {"$unset": {"promoted_by": ""}},
     };
-    Ok(collection(db)
+    // Who moved, not how many: one caller may reparent the same account more
+    // than once — an admin passed up through two accounts that are both being
+    // demoted climbs a level each time — and a count cannot tell that from two
+    // admins moving once each.
+    let mut cursor = collection(db)
+        .find(doc! {"promoted_by": id})
+        .projection(doc! {"_id": 0, "id": 1})
+        .session(&mut *session)
+        .await?;
+    let mut moved = Vec::new();
+    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
+        if let Ok(id) = row.get_str("id") {
+            moved.push(id.to_string());
+        }
+    }
+    if moved.is_empty() {
+        return Ok(moved);
+    }
+    collection(db)
         .update_many(doc! {"promoted_by": id}, update)
         .session(&mut *session)
-        .await?
-        .modified_count)
+        .await?;
+    Ok(moved)
 }
 
 /// What deleting an account did to the links it owned.

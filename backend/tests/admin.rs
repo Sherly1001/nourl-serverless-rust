@@ -1662,3 +1662,54 @@ async fn a_write_failing_partway_undoes_the_writes_before_it() {
 
     db.drop().await.unwrap();
 }
+
+/// An admin dragged up past more than one of the selected accounts must be
+/// counted once, not once per level it climbed.
+///
+/// The tree is A → B → C → {D, E}, plus B → F, and the selection is B, C and D.
+/// Working deepest-first, C hands E up to B, and then B hands both E and F up
+/// to A — so E is moved twice while only ever keeping one flag.
+#[tokio::test]
+async fn an_admin_moved_up_twice_is_reported_once() {
+    let (app, db) = test_app().await;
+    let a = admin(&app, &db, "tree-a").await;
+    let b = promote(&app, &a, "tree-b").await;
+    let c = promote(&app, &b, "tree-c").await;
+    promote(&app, &c, "tree-d").await;
+    promote(&app, &c, "tree-e").await;
+    promote(&app, &b, "tree-f").await;
+
+    let ids = vec![
+        id_of(&app, &a, "tree-b").await,
+        id_of(&app, &a, "tree-c").await,
+        id_of(&app, &a, "tree-d").await,
+    ];
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &a,
+            json!({"ids": ids, "action": "demote", "orphans": "reparent"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+
+    let body = body_json(response).await;
+    assert_eq!(body["affected"], 3);
+    assert_eq!(body["demoted"], 0, "nothing below the selection lost it");
+    assert_eq!(
+        body["reparented"], 2,
+        "E and F kept the flag; E climbing two levels is still one account"
+    );
+
+    // And the tree says the same thing.
+    assert_eq!(row_of(&app, &a, "tree-e").await["is_admin"], true);
+    assert_eq!(row_of(&app, &a, "tree-f").await["is_admin"], true);
+    for gone in ["tree-b", "tree-c", "tree-d"] {
+        assert_eq!(row_of(&app, &a, gone).await["is_admin"], false);
+    }
+
+    db.drop().await.unwrap();
+}

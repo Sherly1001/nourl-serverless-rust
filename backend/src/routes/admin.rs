@@ -93,7 +93,7 @@ async fn resign(
         is_admin: false,
         promoted_by: None,
         demoted,
-        reparented,
+        reparented: reparented.len() as u64,
     }))
 }
 
@@ -108,9 +108,9 @@ async fn demote(
     session: &mut ClientSession,
     target: &User,
     orphans: AdminOrphans,
-) -> Result<(u64, u64), AppError> {
+) -> Result<(u64, Vec<String>), AppError> {
     let reparented = match orphans {
-        AdminOrphans::Demote => 0,
+        AdminOrphans::Demote => Vec::new(),
         AdminOrphans::Reparent => {
             users::reparent_children(
                 &state.db,
@@ -260,7 +260,7 @@ pub async fn set_user_admin(
             is_admin: false,
             promoted_by: None,
             demoted,
-            reparented,
+            reparented: reparented.len() as u64,
         }));
     }
     let parent = parent_for(
@@ -317,7 +317,8 @@ pub async fn delete_user(
                 &target.id,
                 target.promoted_by.as_deref(),
             )
-            .await?,
+            .await?
+            .len() as u64,
         ),
     };
     let links = users::delete_with_cascade(
@@ -441,6 +442,10 @@ pub async fn bulk_users(
         grace_days: state.config.orphan_grace_days,
         ..Default::default()
     };
+    // Who kept the flag, not how many times one was handed upwards: an admin
+    // below two of the selected accounts climbs a level as each of them goes,
+    // and a running total would report it once per level.
+    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
     for target in &targets {
         // Re-read: an earlier row in this same request may have demoted them or
         // moved them, and what happens next depends on where they are now.
@@ -462,7 +467,7 @@ pub async fn bulk_users(
                     // `demote` counts the target itself, which `affected`
                     // already reports.
                     result.demoted += demoted.saturating_sub(1);
-                    result.reparented += reparented;
+                    kept.extend(reparented);
                 }
             }
             BulkAction::Delete => {
@@ -475,13 +480,15 @@ pub async fn bulk_users(
                                     .saturating_sub(1);
                         }
                         AdminOrphans::Reparent => {
-                            result.reparented += users::reparent_children(
-                                &state.db,
-                                &mut session,
-                                &current.id,
-                                current.promoted_by.as_deref(),
-                            )
-                            .await?;
+                            kept.extend(
+                                users::reparent_children(
+                                    &state.db,
+                                    &mut session,
+                                    &current.id,
+                                    current.promoted_by.as_deref(),
+                                )
+                                .await?,
+                            );
                         }
                     }
                 }
@@ -501,6 +508,7 @@ pub async fn bulk_users(
         result.affected += 1;
     }
     session.commit_transaction().await?;
+    result.reparented = kept.len() as u64;
     Ok(Json(result))
 }
 
