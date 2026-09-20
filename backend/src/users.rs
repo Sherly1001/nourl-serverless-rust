@@ -501,6 +501,31 @@ pub async fn delete_with_cascade(
 
 /// Ids of every account above `id` in the chain. Membership is what callers
 /// want — whether the actor is one of them — so the order is not defined.
+/// Whether `actor` may act on `target`.
+///
+/// An admin owns the subtree below them and nothing else: the chain of
+/// `promoted_by` pointers above the target must pass through the actor. Being
+/// higher up in general is not enough — an admin cannot reach sideways into a
+/// branch grown by one of their peers.
+///
+/// An account with no flag is in no subtree at all, so any admin may act on it.
+/// That is not a hole but the only way the tree can grow: a fresh signup has
+/// nobody above them, so requiring ancestry would make the first promotion
+/// impossible.
+pub async fn may_manage(
+    db: &Database,
+    session: &mut ClientSession,
+    actor: &User,
+    target: &User,
+) -> Result<bool, AppError> {
+    if !target.is_admin {
+        return Ok(true);
+    }
+    Ok(ancestor_ids(db, session, &target.id)
+        .await?
+        .contains(&actor.id))
+}
+
 pub async fn ancestor_ids(
     db: &Database,
     session: &mut ClientSession,

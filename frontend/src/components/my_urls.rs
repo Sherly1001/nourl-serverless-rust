@@ -42,6 +42,30 @@ fn delete_message(codes: &[String]) -> String {
     }
 }
 
+/// What the takeover dialog says, given every link the action covers and who
+/// owns each.
+///
+/// The dialog exists because of the owned ones — an unowned link is nobody's to
+/// defend — but the action covers the rest too, so counting only the takeovers
+/// would describe less than the button is about to do.
+fn claim_message(links: &[(String, Option<String>)]) -> String {
+    let taken = links.iter().filter(|(_, owner)| owner.is_some()).count();
+    match links {
+        [] => String::new(),
+        [(code, Some(owner))] => {
+            format!("Take /{code} from {owner}? They lose it from their list.")
+        }
+        [(code, None)] => format!("Claim /{code}? Nobody owns it."),
+        all if all.len() == taken => {
+            format!("Take {taken} links from their owners? They lose them from their lists.")
+        }
+        all => format!(
+            "Claim {} links? {taken} of them are taken from their owners, who lose them from their lists.",
+            all.len(),
+        ),
+    }
+}
+
 /// A column header that sorts. Owns the toggle rather than taking a callback,
 /// since the only thing it does is rewrite the shared `Sort`.
 #[component]
@@ -79,6 +103,11 @@ pub fn MyUrls() -> impl IntoView {
     let (saving, set_saving) = signal(false);
     let pending_delete = RwSignal::new(Vec::<String>::new());
     let confirm_open = RwSignal::new(false);
+    // The link a takeover is waiting on. Claiming an unowned one needs no
+    // confirmation — nothing is taken from anybody — but taking one off its
+    // owner does.
+    let pending_claim = RwSignal::new(Vec::<UrlEntry>::new());
+    let claim_open = RwSignal::new(false);
     // The request in flight, so a new search can cancel it. Held locally
     // because a JS object is neither Send nor Sync.
     let inflight = StoredValue::new_local(Option::<web_sys::AbortController>::None);
@@ -208,6 +237,66 @@ pub fn MyUrls() -> impl IntoView {
         set_search.set(String::new());
         set_keystroke.update(|n| *n += 1);
         set_debounced.set(String::new());
+    };
+
+    // One request per link, in sequence. There is no bulk endpoint for links
+    // and none is needed: unlike the admin chain, links do not cascade — taking
+    // /a has no bearing on /b — so a refusal on one says nothing about the
+    // rest, and reporting them separately is the honest thing to do.
+    let claim_many = move |codes: Vec<String>| {
+        spawn_local(async move {
+            let mut taken = 0usize;
+            let mut failed = Vec::new();
+            let mut last_owner = String::new();
+            for code in codes {
+                match api::claim_url(&code).await {
+                    Ok(updated) => {
+                        last_owner = updated
+                            .owner
+                            .as_ref()
+                            .and_then(|o| o.username.clone())
+                            .unwrap_or_default();
+                        set_items.update(|rows| {
+                            if let Some(row) = rows.iter_mut().find(|row| row.code == code) {
+                                *row = updated;
+                            }
+                        });
+                        selected.update(|set| {
+                            set.remove(&code);
+                        });
+                        taken += 1;
+                    }
+                    Err(err) => failed.push(format!("/{code}: {}", err.message)),
+                }
+            }
+            match (taken, failed.as_slice()) {
+                (0, []) => {}
+                (1, []) => toasts.success(format!("1 link is {last_owner}'s now")),
+                (n, []) => toasts.success(format!("{n} links are {last_owner}'s now")),
+                (_, problems) => toasts.error(format!("Could not claim {}", problems.join("; "))),
+            }
+        });
+    };
+
+    let claim_confirmed = Callback::new(move |()| {
+        let codes = pending_claim
+            .get_untracked()
+            .into_iter()
+            .map(|entry| entry.code)
+            .collect();
+        claim_many(codes);
+    });
+
+    // Asks first only when something is being taken from somebody. A link
+    // nobody owns is nobody's to defend, and a dialog about it would be a
+    // question with one answer.
+    let ask_claim = move |entries: Vec<UrlEntry>| {
+        if entries.iter().any(|entry| entry.owner.is_some()) {
+            pending_claim.set(entries);
+            claim_open.set(true);
+            return;
+        }
+        claim_many(entries.into_iter().map(|entry| entry.code).collect());
     };
 
     let delete_confirmed = Callback::new(move |()| {
@@ -373,6 +462,30 @@ pub fn MyUrls() -> impl IntoView {
     // Kept out of the view: leptosfmt reads the `>` of a comparison inside an
     // attribute as the element's closing bracket and mangles the markup.
     let has_selection = move || selected_count() > 0;
+    // The ticked links worth claiming: the ones this admin does not already
+    // own. Whether the server will allow each is a question about the owner's
+    // place in the chain, which this page cannot answer — so the offer covers
+    // what is plausibly claimable and the refusals come back per link.
+    let claimable_selection = move || {
+        let me = auth
+            .user
+            .get()
+            .map(|user| user.username)
+            .unwrap_or_default();
+        let ticked = selected.get();
+        items
+            .get()
+            .into_iter()
+            .filter(|row| ticked.contains(&row.code))
+            .filter(|row| {
+                row.owner
+                    .as_ref()
+                    .and_then(|owner| owner.username.as_deref())
+                    != Some(me.as_str())
+            })
+            .collect::<Vec<_>>()
+    };
+    let can_claim = move || auth.is_admin() && !claimable_selection().is_empty();
     // Checkbox, code, destination, hits, last hit, expires, created, updated,
     // actions — plus the admin-only owner column.
     let column_count = move || if auth.is_admin() { 10 } else { 9 };
@@ -398,6 +511,15 @@ pub fn MyUrls() -> impl IntoView {
                         {move || if auth.is_admin() { "All URLs" } else { "My URLs" }}
                     </h2>
                     <div class="flex gap-2 items-center">
+                        <Show when=can_claim>
+                            <button
+                                class="gap-2 btn"
+                                on:click=move |_| ask_claim(claimable_selection())
+                            >
+                                <span class="icon-[tabler--hand-grab] size-4"></span>
+                                {move || format!("Claim {}", claimable_selection().len())}
+                            </button>
+                        </Show>
                         <Show when=has_selection>
                             // Plain `btn`: `.btn` and `.input` share the same
                             // --size, so this lines up with the search box.
@@ -442,7 +564,7 @@ pub fn MyUrls() -> impl IntoView {
                     // The header carries its own background, which separates it
                     // from the rows — so the first row needs no rule above it.
                     // FlyonUI already leaves the last row without one below.
-                    <table class="table table-fixed table-pinned min-w-[82rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
+                    <table class="table table-fixed table-pinned min-w-[84rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead class="sticky top-0 z-10 bg-base-200">
                             <tr>
                                 <th class="px-3 w-10">
@@ -486,7 +608,7 @@ pub fn MyUrls() -> impl IntoView {
                                     sort=sort
                                     width="w-36"
                                 />
-                                <th class="px-3 w-24"></th>
+                                <th class="px-3 w-32"></th>
                             </tr>
                         </thead>
                         <tbody>
@@ -528,6 +650,12 @@ pub fn MyUrls() -> impl IntoView {
                                         .as_ref()
                                         .and_then(|o| usable_url(o.avatar_url.as_deref()));
                                     let has_owner = entry.owner.is_some();
+                                    let owned_by_me = auth
+                                        .user
+                                        .get_untracked()
+                                        .is_some_and(|me| me.username == owner_name);
+                                    let claimable = auth.is_admin() && !owned_by_me;
+                                    let taking_over = has_owner;
                                     let hits = entry.hits;
                                     let last = short_datetime(entry.last_hit_at.as_ref());
                                     let expires = short_datetime(entry.expires_at.as_ref());
@@ -539,6 +667,15 @@ pub fn MyUrls() -> impl IntoView {
                                                 editing.get().as_deref() == Some(code.as_str())
                                             })
                                     };
+                                    // Usernames are unique, and the owner cell
+                                    // has nothing else to identify them by: the
+                                    // list strips the owner's id before it
+                                    // leaves the server.
+                                    // Whether the server will allow it depends
+                                    // on where the owner sits in the chain,
+                                    // which this page has no way to know — so
+                                    // the offer is made and the refusal, if
+                                    // there is one, comes back as a toast.
                                     // Every value a closure needs is stored
                                     // rather than captured: `Show` and
                                     // `Tooltip` take `Fn` children, and a
@@ -733,6 +870,21 @@ pub fn MyUrls() -> impl IntoView {
                                                         when=is_editing
                                                         fallback=move || {
                                                             view! {
+                                                                <Show when=move || claimable>
+                                                                    <Tooltip
+                                                                        text=if taking_over { "Take over" } else { "Claim" }
+                                                                        class="inline-flex"
+                                                                        only_when_clipped=false
+                                                                    >
+                                                                        <button
+                                                                            class="btn btn-text btn-sm btn-square"
+                                                                            aria-label="Claim link"
+                                                                            on:click=move |_| { ask_claim(vec![for_edit.get_value()]) }
+                                                                        >
+                                                                            <span class="icon-[tabler--hand-grab] size-4"></span>
+                                                                        </button>
+                                                                    </Tooltip>
+                                                                </Show>
                                                                 <Tooltip
                                                                     text="Edit"
                                                                     class="inline-flex"
@@ -832,6 +984,27 @@ pub fn MyUrls() -> impl IntoView {
             </div>
 
             <ConfirmDialog
+                open=claim_open
+                title="Take over link"
+                message=Signal::derive(move || {
+                    let links: Vec<(String, Option<String>)> = pending_claim
+                        .get()
+                        .into_iter()
+                        .map(|entry| {
+                            let owner = entry
+                                .owner
+                                .as_ref()
+                                .and_then(|owner| owner.username.clone());
+                            (entry.code, owner)
+                        })
+                        .collect();
+                    claim_message(&links)
+                })
+                confirm_label="Take over"
+                on_confirm=claim_confirmed
+            />
+
+            <ConfirmDialog
                 open=confirm_open
                 title="Delete links"
                 message=Signal::derive(move || delete_message(&pending_delete.get()))
@@ -928,6 +1101,36 @@ mod tests {
         assert!(all_selected(&codes, &chosen));
         // An empty table must not show a ticked box.
         assert!(!all_selected(&[], &chosen));
+    }
+
+    /// The prompt is about what is taken from somebody, so a selection that is
+    /// half unowned counts the half that has an owner.
+    #[test]
+    fn the_takeover_prompt_counts_only_what_has_an_owner() {
+        let links = |pairs: &[(&str, Option<&str>)]| {
+            pairs
+                .iter()
+                .map(|(code, owner)| ((*code).to_string(), owner.map(str::to_string)))
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            claim_message(&links(&[("solo", Some("alice"))])),
+            "Take /solo from alice? They lose it from their list."
+        );
+        assert!(
+            claim_message(&links(&[("a", Some("alice")), ("b", Some("bob"))]))
+                .contains("Take 2 links from their owners")
+        );
+        // A mixed selection owns up to both numbers: the button counts
+        // everything it acts on, and only some of that is taken from anybody.
+        let mixed = claim_message(&links(&[
+            ("a", Some("alice")),
+            ("b", None),
+            ("c", Some("bob")),
+        ]));
+        assert!(mixed.contains("Claim 3 links"), "{mixed}");
+        assert!(mixed.contains("2 of them are taken"), "{mixed}");
+        assert_eq!(claim_message(&[]), "");
     }
 
     #[test]

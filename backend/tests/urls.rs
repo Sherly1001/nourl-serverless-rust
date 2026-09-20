@@ -1474,3 +1474,261 @@ async fn an_admin_renames_onto_someone_elses_code_only_after_confirming() {
 
     db.drop().await.unwrap();
 }
+
+/// Gives an account the flag out of band, optionally hanging it under someone.
+async fn make_admin(db: &mongodb::Database, username: &str, under: Option<&str>) {
+    let mut set = doc! {"is_admin": true};
+    if let Some(parent) = under {
+        set.insert("promoted_by", parent);
+    }
+    db.collection::<mongodb::bson::Document>("users")
+        .update_one(doc! {"username": username}, doc! {"$set": set})
+        .await
+        .unwrap();
+}
+
+async fn user_id(db: &mongodb::Database, username: &str) -> String {
+    db.collection::<mongodb::bson::Document>("users")
+        .find_one(doc! {"username": username})
+        .await
+        .unwrap()
+        .unwrap()
+        .get_str("id")
+        .unwrap()
+        .to_string()
+}
+
+#[tokio::test]
+async fn an_admin_claims_an_unowned_link_and_its_deadline_comes_off() {
+    let (app, db) = test_app().await;
+    let boss = account(&app, "claimer").await;
+    make_admin(&db, "claimer", None).await;
+    // An orphan: unowned, and dying in a few days because its owner left.
+    let deadline = mongodb::bson::DateTime::from_millis(
+        mongodb::bson::DateTime::now().timestamp_millis() + 86_400_000,
+    );
+    db.collection::<mongodb::bson::Document>("urls")
+        .insert_one(doc! {"code": "orphan", "url": "https://a.example", "expires_at": deadline})
+        .await
+        .unwrap();
+
+    let claimed = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/orphan/claim",
+            &boss,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(claimed.status(), StatusCode::OK);
+    let body = body_json(claimed).await;
+    assert_eq!(body["owner"]["username"], "claimer");
+    assert!(
+        body["expires_at"].is_null(),
+        "rescuing an orphan cancels the deadline that was killing it"
+    );
+
+    let stored = db
+        .collection::<mongodb::bson::Document>("urls")
+        .find_one(doc! {"code": "orphan"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(stored.get("expires_at").is_none());
+
+    db.drop().await.unwrap();
+}
+
+/// Claiming is an admin power. An ordinary account gets the same 403 every
+/// other admin route gives it, even though it could have overwritten the same
+/// unowned link with a PUT.
+#[tokio::test]
+async fn claiming_is_closed_to_ordinary_accounts() {
+    let (app, db) = test_app().await;
+    let plain = account(&app, "ordinary2").await;
+    db.collection::<mongodb::bson::Document>("urls")
+        .insert_one(doc! {"code": "free", "url": "https://a.example"})
+        .await
+        .unwrap();
+
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/free/claim",
+            &plain,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    let anonymous = app
+        .oneshot(request("POST", "/api/urls/free/claim"))
+        .await
+        .unwrap();
+    assert_eq!(anonymous.status(), StatusCode::UNAUTHORIZED);
+
+    db.drop().await.unwrap();
+}
+
+/// An admin's reach runs down their own branch. A link belonging to an
+/// ordinary account is in nobody's branch, so any admin may take it; one
+/// belonging to an admin may only be taken by somebody above them.
+#[tokio::test]
+async fn a_link_is_claimable_only_from_below_you_in_the_chain() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "chain-root").await;
+    make_admin(&db, "chain-root", None).await;
+    let root_id = user_id(&db, "chain-root").await;
+
+    let upper = account(&app, "chain-upper").await;
+    make_admin(&db, "chain-upper", Some(&root_id)).await;
+    let upper_id = user_id(&db, "chain-upper").await;
+
+    let lower = account(&app, "chain-lower").await;
+    make_admin(&db, "chain-lower", Some(&upper_id)).await;
+
+    // A branch of its own, so nobody in the one above is anywhere near it.
+    let peer = account(&app, "chain-peer").await;
+    make_admin(&db, "chain-peer", Some(&root_id)).await;
+
+    for (cookie, code) in [
+        (&upper, "upper-link"),
+        (&lower, "lower-link"),
+        (&peer, "peer-link"),
+    ] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let claim = |cookie: String, code: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(authed_request(
+                "POST",
+                &format!("/api/urls/{code}/claim"),
+                &cookie,
+                json!({}),
+            ))
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    // Upwards is refused, and so is sideways: a peer's branch is not yours.
+    assert_eq!(
+        claim(lower.clone(), "upper-link").await,
+        StatusCode::FORBIDDEN
+    );
+    assert_eq!(
+        claim(peer.clone(), "lower-link").await,
+        StatusCode::FORBIDDEN
+    );
+    // Downwards is allowed.
+    assert_eq!(claim(upper.clone(), "lower-link").await, StatusCode::OK);
+    // And the root reaches the whole tree.
+    assert_eq!(claim(root.clone(), "peer-link").await, StatusCode::OK);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn claiming_what_you_already_own_or_what_does_not_exist_is_refused() {
+    let (app, db) = test_app().await;
+    let boss = account(&app, "claimer2").await;
+    make_admin(&db, "claimer2", None).await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &boss,
+            json!({"code": "mine", "url": "https://a.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let again = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/mine/claim",
+            &boss,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::CONFLICT);
+
+    let missing = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/nothing/claim",
+            &boss,
+            json!({}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(missing.status(), StatusCode::NOT_FOUND);
+
+    db.drop().await.unwrap();
+}
+
+/// The same rule on the other path that can change an owner: `claim` on an
+/// upsert must not be a way around the chain.
+#[tokio::test]
+async fn claiming_through_an_edit_obeys_the_chain_too() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "edit-root").await;
+    make_admin(&db, "edit-root", None).await;
+    let root_id = user_id(&db, "edit-root").await;
+    let under = account(&app, "edit-under").await;
+    make_admin(&db, "edit-under", Some(&root_id)).await;
+
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &root,
+            json!({"code": "roots", "url": "https://a.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let grab = app
+        .clone()
+        .oneshot(authed_request(
+            "PUT",
+            "/api/urls/roots",
+            &under,
+            json!({"code": "roots", "url": "https://b.example", "claim": true}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(grab.status(), StatusCode::FORBIDDEN);
+
+    let stored = db
+        .collection::<mongodb::bson::Document>("urls")
+        .find_one(doc! {"code": "roots"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        stored.get_str("owner").unwrap(),
+        root_id,
+        "the refusal left both the owner and the destination alone"
+    );
+    assert_eq!(stored.get_str("url").unwrap(), "https://a.example");
+
+    db.drop().await.unwrap();
+}

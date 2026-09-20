@@ -7,12 +7,12 @@ use shared::{
 };
 
 use crate::app::AppState;
-use crate::auth::extract::{CurrentUser, OptionalUser};
+use crate::auth::extract::{AdminUser, CurrentUser, OptionalUser};
 use crate::db::url_aggregate_pipeline;
 use crate::error::AppError;
 use crate::extract::AppJson;
 use crate::query::ListParams;
-use crate::users::User;
+use crate::users::{self, User};
 
 /// What a request says about a link's expiry.
 ///
@@ -43,6 +43,36 @@ fn parse_expiry(raw: Option<&str>) -> Result<Expiry, AppError> {
         return Err(AppError::validation("expires_at must be in the future").on_field("expires_at"));
     }
     Ok(Expiry::At(bson::DateTime::from_millis(millis)))
+}
+
+/// Whether `user` may take `existing` off whoever has it.
+///
+/// Unowned is nobody's, so any admin may claim it. A link that belongs to
+/// somebody is theirs, and taking it is reaching into their affairs — allowed
+/// only where an admin's reach already runs, which is their own branch of the
+/// chain. That is the same rule [`crate::users::may_manage`] enforces for the
+/// accounts themselves, and claiming is the one place a link could otherwise
+/// escape it.
+///
+/// An owner id pointing at an account that no longer exists reads as unowned:
+/// deleting an account orphans its links, so this can only be a document left
+/// behind by something else, and nobody is wronged by taking it.
+async fn may_claim(
+    state: &AppState,
+    session: &mut mongodb::ClientSession,
+    user: &User,
+    existing: &Document,
+) -> Result<bool, AppError> {
+    if !user.is_admin {
+        return Ok(false);
+    }
+    let Some(owner) = owner_id(existing) else {
+        return Ok(true);
+    };
+    let Some(owner) = users::find_by_id_in(&state.db, &mut *session, owner).await? else {
+        return Ok(true);
+    };
+    users::may_manage(&state.db, session, user, &owner).await
 }
 
 /// Legacy documents can carry an explicit `owner: null`, which means unowned
@@ -136,6 +166,7 @@ async fn upsert(
     validate_url(&body.url).map_err(|e| AppError::validation(e).on_field("url"))?;
     let expires = parse_expiry(body.expires_at.as_deref())?;
     let overwrite = body.overwrite.unwrap_or(false);
+    let claiming = body.claim.unwrap_or(false);
 
     let urls = state.db.collection::<Document>("urls");
     let existing = urls.find_one(doc! {"code": code}).await?;
@@ -147,6 +178,22 @@ async fn upsert(
         // 403 with nothing in it rather than a 409 describing it.
         if !may_write(existing, user) {
             return Err(owned_error(code));
+        }
+        // Writing to a link and taking it are different powers: `may_write`
+        // lets any admin fix a broken destination, but the owner has to be
+        // somebody the caller actually manages before it changes hands.
+        if claiming {
+            let mut session = state.db.client().start_session().await?;
+            let allowed = match user {
+                Some(user) => may_claim(state, &mut session, user, existing).await?,
+                None => false,
+            };
+            if !allowed {
+                return Err(AppError::forbidden(
+                    "that link belongs to an admin outside your part of the chain",
+                )
+                .on_field("claim"));
+            }
         }
         // Creating over a link that already exists replaces it, which is worth
         // asking about — but only when someone owns it. A link nobody owns is
@@ -227,7 +274,7 @@ async fn upsert(
         // `claim` is the third way to become the owner, and the only one that
         // takes a link off somebody: it is asked for explicitly, and only
         // reached once `may_write` has allowed the write at all.
-        if body.claim.unwrap_or(false) || (conflict_on_own && existing_owner.is_none()) {
+        if claiming || (conflict_on_own && existing_owner.is_none()) {
             set.insert("owner", &user.id);
         } else {
             on_insert.insert("owner", &user.id);
@@ -279,6 +326,50 @@ pub async fn delete_url(
         code,
         deleted: true,
     }))
+}
+
+/// Takes ownership of a link.
+///
+/// Unowned is nobody's: any admin may claim one, and the deadline comes off
+/// with the same write. An orphaned code carries an expiry only because its
+/// owner's account went away — the grace period exists so somebody can rescue
+/// it, and leaving the deadline on a link that has just been rescued would let
+/// it die anyway. A deliberate expiry on an anonymous link is lost the same
+/// way: `delete_with_cascade` stores the two as one field, so there is nothing
+/// here to tell them apart.
+///
+/// A link that has an owner is taken off them, which [`may_claim`] allows only
+/// inside the caller's own branch of the chain.
+pub async fn claim_url(
+    State(state): State<AppState>,
+    AdminUser(user): AdminUser,
+    Path(code): Path<String>,
+) -> Result<Json<UrlEntry>, AppError> {
+    let urls = state.db.collection::<Document>("urls");
+    let existing = urls
+        .find_one(doc! {"code": &code})
+        .await?
+        .ok_or_else(|| AppError::not_found("code not found"))?;
+    if owner_id(&existing) == Some(user.id.as_str()) {
+        return Err(AppError::conflict(format!("you already own '{code}'")));
+    }
+    let unowned = owner_id(&existing).is_none();
+
+    let mut session = state.db.client().start_session().await?;
+    if !may_claim(&state, &mut session, &user, &existing).await? {
+        return Err(AppError::forbidden(
+            "that link belongs to an admin outside your part of the chain",
+        ));
+    }
+
+    let mut update = doc! {
+        "$set": {"owner": &user.id, "updated_at": bson::DateTime::now()},
+    };
+    if unowned {
+        update.insert("$unset", doc! {"expires_at": ""});
+    }
+    urls.update_one(doc! {"code": &code}, update).await?;
+    Ok(Json(fetch_entry(&state, &code).await?))
 }
 
 pub async fn list_urls(

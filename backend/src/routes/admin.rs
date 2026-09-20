@@ -125,31 +125,6 @@ async fn demote(
     Ok((demoted, reparented))
 }
 
-/// Whether `actor` may act on `target`.
-///
-/// An admin owns the subtree below them and nothing else: the chain of
-/// `promoted_by` pointers above the target must pass through the actor. Being
-/// higher up in general is not enough — an admin cannot reach sideways into a
-/// branch grown by one of their peers.
-///
-/// An account with no flag is in no subtree at all, so any admin may act on it.
-/// That is not a hole but the only way the tree can grow: a fresh signup has
-/// nobody above them, so requiring ancestry would make the first promotion
-/// impossible.
-async fn may_manage(
-    state: &AppState,
-    session: &mut ClientSession,
-    actor: &User,
-    target: &User,
-) -> Result<bool, AppError> {
-    if !target.is_admin {
-        return Ok(true);
-    }
-    Ok(users::ancestor_ids(&state.db, session, &target.id)
-        .await?
-        .contains(&actor.id))
-}
-
 /// Loads the target and checks the actor is allowed to touch it. Ordered so a
 /// typo'd id reads as "no such user" rather than a silent no-op reported as
 /// success, and so no write happens before every check has passed.
@@ -163,7 +138,7 @@ async fn target_user(
     let target = users::find_by_id_in(&state.db, &mut *session, id)
         .await?
         .ok_or_else(|| AppError::not_found("no such user"))?;
-    if !may_manage(state, session, actor, &target).await? {
+    if !users::may_manage(&state.db, session, actor, &target).await? {
         return Err(AppError::forbidden(
             "that admin is not in your part of the chain, so you cannot change their account",
         ));

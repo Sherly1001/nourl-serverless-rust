@@ -84,6 +84,15 @@ pub async fn delete_url(code: &str) -> Result<(), ApiErrorBody> {
     send_empty(Request::delete(&format!("/api/urls/{code}"))).await
 }
 
+/// Takes ownership of a link. Admin-only, and a link that already has an owner
+/// can only be taken from somebody below the caller in the chain — which the
+/// page cannot work out for itself, since the list sends an owner's name and
+/// nothing about where they sit. So the button is offered and the server is
+/// the one that refuses.
+pub async fn claim_url(code: &str) -> Result<UrlEntry, ApiErrorBody> {
+    read_json(Request::post(&format!("/api/urls/{code}/claim"))).await
+}
+
 /// `params` are the query parameters, which `gloo_net` encodes and appends —
 /// see [`crate::list::list_params`] for why they are not spliced into the path.
 ///

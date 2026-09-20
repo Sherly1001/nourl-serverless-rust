@@ -19,7 +19,7 @@ use crate::routes::auth::{
 };
 use crate::routes::oauth::{callback, disconnect, start};
 use crate::routes::redirect::{fallback_url, found, redirect};
-use crate::routes::urls::{create_url, delete_url, list_urls, update_url};
+use crate::routes::urls::{claim_url, create_url, delete_url, list_urls, update_url};
 
 #[derive(Clone)]
 pub struct AppState {
@@ -56,6 +56,7 @@ pub fn build_app(state: AppState) -> Router {
         )
         .route("/api/urls", post(create_url).get(list_urls))
         .route("/api/urls/{code}", put(update_url).delete(delete_url))
+        .route("/api/urls/{code}/claim", post(claim_url))
         .route("/", get(|| async { found("/index.html") }))
         .route("/{code}", get(redirect))
         .fallback(fallback)
