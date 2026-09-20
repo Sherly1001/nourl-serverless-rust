@@ -14,6 +14,13 @@ make test                # workspace tests (needs mongo-up)
 make fmt                 # rustfmt + leptosfmt + rustywind + prettier + terraform fmt
 ```
 
+`mongo-up` runs mongod as a single-node replica set, because a transaction
+spans more than one document and mongod only offers those on a replica set —
+production is Atlas, so a standalone container would leave the transactional
+paths untested locally. A container created before this replaces itself the
+next time the target runs; anything in it is lost, so `mongodump` first if it
+holds something you want.
+
 The backend binary auto-detects Lambda (`AWS_LAMBDA_RUNTIME_API` env) and
 otherwise runs as a plain TCP server on `PORT` (default 9669).
 

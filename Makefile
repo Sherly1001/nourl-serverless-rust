@@ -86,17 +86,40 @@ test: mongo-up mongo-clean
 # parallel run against a few dozen of them exhausts the limit, and mongod
 # answers that with a fatal assertion rather than an error — the container dies
 # mid-run and every remaining test fails on "connection refused".
+# `--replSet`: a transaction spans more than one document, which mongod only
+# offers on a replica set. Production is Atlas, so a standalone container is the
+# odd one out — and the code path that matters there would be the one nothing
+# local could exercise. One member is enough to elect itself.
 mongo-up:
+	@# A container from before the replica set would start happily and then fail
+	@# every transaction, so it is replaced rather than reused.
+	@if docker inspect nourl-mongo >/dev/null 2>&1 \
+	  && ! docker inspect -f '{{json .Args}}' nourl-mongo | grep -q replSet; then \
+	  echo "recreating nourl-mongo as a single-node replica set"; \
+	  docker rm -f nourl-mongo >/dev/null; \
+	fi
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo \
-	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7
+	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7 --replSet rs0
 	@# `docker start` returns as soon as the container exists, not when mongod is
 	@# listening, so anything that connects straight after it races the startup
 	@# and fails with ECONNREFUSED.
 	@for i in $$(seq 30); do \
-	  docker exec nourl-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && exit 0; \
+	  docker exec nourl-mongo mongosh --quiet --eval 'db.adminCommand({ping:1})' >/dev/null 2>&1 && break; \
+	  sleep 1; \
+	done
+	@# The member is addressed as 127.0.0.1 because that is the only name a
+	@# driver outside the container can reach it by; the default would be the
+	@# container's own hostname, which resolves nowhere on the host.
+	@docker exec nourl-mongo mongosh --quiet --eval \
+	  'try { rs.status() } catch (e) { rs.initiate({_id: "rs0", members: [{_id: 0, host: "127.0.0.1:27017"}]}) }' >/dev/null
+	@# Answering a ping is not the same as being writable: a fresh member spends
+	@# a moment in STARTUP2 before it elects itself, and a write in that window
+	@# fails with NotWritablePrimary.
+	@for i in $$(seq 30); do \
+	  docker exec nourl-mongo mongosh --quiet --eval 'db.hello().isWritablePrimary' 2>/dev/null | grep -q true && exit 0; \
 	  sleep 1; \
 	done; \
-	echo "mongod did not come up in 30s" >&2; exit 1
+	echo "mongod did not become writable in 30s" >&2; exit 1
 
 # Every test builds a throwaway `nourl_test_<uuid>` database and cannot drop it
 # on the way out — Drop cannot await, and a panicking test would skip an
