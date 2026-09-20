@@ -14,6 +14,9 @@ pub struct AppError {
     /// The link this collided with, when the caller is entitled to see it.
     /// Boxed for the reason [`shared::ApiErrorBody`] gives.
     pub conflict: Option<Box<shared::UrlEntry>>,
+    /// Which ids of a bulk request were refused, when the error is about a
+    /// selection rather than a single thing.
+    pub rejected: Option<Vec<shared::RejectedId>>,
 }
 
 impl AppError {
@@ -31,6 +34,13 @@ impl AppError {
         self
     }
 
+    /// Attaches the ids a bulk request could not act on, so the caller can fix
+    /// all of them rather than rediscovering the next one each time.
+    pub fn on_rejected(mut self, rejected: Vec<shared::RejectedId>) -> Self {
+        self.rejected = Some(rejected);
+        self
+    }
+
     pub fn validation(message: impl Into<String>) -> Self {
         Self {
             status: StatusCode::BAD_REQUEST,
@@ -38,6 +48,7 @@ impl AppError {
             message: message.into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -48,6 +59,7 @@ impl AppError {
             message: message.into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -58,6 +70,7 @@ impl AppError {
             message: message.into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -68,6 +81,7 @@ impl AppError {
             message: message.into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -78,6 +92,7 @@ impl AppError {
             message: message.into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -88,6 +103,7 @@ impl AppError {
             message: "available in a later phase".into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 
@@ -99,6 +115,7 @@ impl AppError {
             message: "internal server error".into(),
             field: None,
             conflict: None,
+            rejected: None,
         }
     }
 }
@@ -111,6 +128,7 @@ impl IntoResponse for AppError {
                 message: self.message,
                 field: self.field.map(String::from),
                 conflict: self.conflict,
+                rejected: self.rejected,
             },
         };
         (self.status, Json(body)).into_response()

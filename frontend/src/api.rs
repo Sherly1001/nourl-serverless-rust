@@ -14,6 +14,7 @@ fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
         message: err.to_string(),
         field: None,
         conflict: None,
+        rejected: None,
     }
 }
 

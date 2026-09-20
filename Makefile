@@ -91,15 +91,21 @@ test: mongo-up mongo-clean
 # odd one out — and the code path that matters there would be the one nothing
 # local could exercise. One member is enough to elect itself.
 mongo-up:
-	@# A container from before the replica set would start happily and then fail
-	@# every transaction, so it is replaced rather than reused.
+	@# A container missing either flag would start happily and then fail the
+	@# tests that need them, so it is replaced rather than reused.
 	@if docker inspect nourl-mongo >/dev/null 2>&1 \
-	  && ! docker inspect -f '{{json .Args}}' nourl-mongo | grep -q replSet; then \
-	  echo "recreating nourl-mongo as a single-node replica set"; \
+	  && ! docker inspect -f '{{json .Args}}' nourl-mongo \
+	    | grep -q 'replSet.*enableTestCommands'; then \
+	  echo "recreating nourl-mongo with a replica set and test commands"; \
 	  docker rm -f nourl-mongo >/dev/null; \
 	fi
+	@# `enableTestCommands`: `failCommand` is how a test makes a write fail
+	@# halfway through a transaction, which is the only way to prove the rest of
+	@# it rolls back. Off by default, and rightly so — this is a throwaway
+	@# container, not anything that holds real data.
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo \
-	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7 --replSet rs0
+	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7 \
+	  --replSet rs0 --setParameter enableTestCommands=1
 	@# `docker start` returns as soon as the container exists, not when mongod is
 	@# listening, so anything that connects straight after it races the startup
 	@# and fails with ECONNREFUSED.

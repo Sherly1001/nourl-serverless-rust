@@ -1,8 +1,9 @@
 use axum::Json;
 use axum::extract::{Path, Query, State};
 use shared::{
-    AdminOrphans, AdminSettings, AdminUserListResponse, DeleteUserParams, DeleteUserResponse,
-    LinkDisposition, SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
+    AdminOrphans, AdminSettings, AdminUserListResponse, BulkAction, BulkUsersRequest,
+    BulkUsersResponse, DeleteUserParams, DeleteUserResponse, LinkDisposition, RejectedId,
+    SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
 };
 
 use mongodb::ClientSession;
@@ -336,6 +337,171 @@ pub async fn delete_user(
         demoted,
         reparented,
     }))
+}
+
+/// The cap on one request. The list endpoint never returns more than a hundred
+/// rows in its paged half, so a longer selection is not something anybody
+/// ticked by hand — the admin half can be larger, and a client that ticks all
+/// of it sends more than one request.
+const BULK_MAX: usize = 100;
+
+/// Resolves every named account, collecting the refusals rather than stopping
+/// at the first.
+///
+/// A selection is judged as a unit, so naming only the first bad id would have
+/// the caller fixing them one round trip at a time.
+async fn bulk_targets(
+    state: &AppState,
+    session: &mut ClientSession,
+    actor: &User,
+    ids: &[String],
+) -> Result<Vec<User>, AppError> {
+    // Deduplicated, so a repeated id cannot make the counts claim more than
+    // happened — and cannot try to delete the same account twice.
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = Vec::with_capacity(ids.len());
+    let mut rejected = Vec::new();
+    for id in ids {
+        if !seen.insert(id.as_str()) {
+            continue;
+        }
+        // The same check the single-account routes make, refusal and all: own
+        // account, unknown id, someone else's branch.
+        match target_user(state, &mut *session, actor, id).await {
+            Ok(target) => targets.push(target),
+            Err(err) => rejected.push(RejectedId {
+                id: id.clone(),
+                code: err.code.to_string(),
+                message: err.message,
+            }),
+        }
+    }
+    if rejected.is_empty() {
+        return Ok(targets);
+    }
+    Err(AppError::validation("some of those accounts cannot be changed").on_rejected(rejected))
+}
+
+/// Promote, demote or delete a selection in one request.
+///
+/// The per-row alternative the Users page used to send had each call able to
+/// move the tree under the next one: demoting a parent takes its children with
+/// it, so the call for a child could arrive to find nothing left to demote and
+/// report a failure for work that was already done.
+///
+/// Two rules make that go away. The whole thing runs in one transaction — every
+/// id resolved and permission-checked before any write, and the writes
+/// committed together — so a selection is applied whole or not at all, and half
+/// an admin decision is not a state anybody has to reason about. And the
+/// targets are handled deepest-first, so a cascade never reaches a row still
+/// waiting its turn; that is about the *counts* rather than the outcome, since
+/// each row is re-read before it is acted on. Handling a parent first would
+/// have its re-parenting move children that the selection then demotes anyway,
+/// reporting rows the admin ticked as though they were collateral.
+///
+/// A transient abort surfaces as an error for the caller to retry. Bulk actions
+/// are rare and human-triggered, so "that failed, try again" is honest, and a
+/// retry loop is a concurrency primitive worth its own change.
+pub async fn bulk_users(
+    State(state): State<AppState>,
+    AdminUser(actor): AdminUser,
+    AppJson(body): AppJson<BulkUsersRequest>,
+) -> Result<Json<BulkUsersResponse>, AppError> {
+    if body.ids.is_empty() {
+        return Err(AppError::validation("no accounts were named"));
+    }
+    if body.ids.len() > BULK_MAX {
+        return Err(AppError::validation(format!(
+            "no more than {BULK_MAX} accounts at a time"
+        )));
+    }
+
+    let mut session = session(&state).await?;
+    session.start_transaction().await?;
+    // Inside the transaction, so a concurrent promotion cannot slip between the
+    // check and the write it was meant to guard.
+    let mut targets = bulk_targets(&state, &mut session, &actor, &body.ids).await?;
+
+    if body.action != BulkAction::Promote {
+        // Depth is the number of admins above them, so the deepest sort first.
+        let mut depths = Vec::with_capacity(targets.len());
+        for target in &targets {
+            depths.push(
+                users::ancestor_ids(&state.db, &mut session, &target.id)
+                    .await?
+                    .len(),
+            );
+        }
+        let mut ordered: Vec<(usize, User)> = depths.into_iter().zip(targets).collect();
+        ordered.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
+        targets = ordered.into_iter().map(|(_, target)| target).collect();
+    }
+
+    let mut result = BulkUsersResponse {
+        grace_days: state.config.orphan_grace_days,
+        ..Default::default()
+    };
+    for target in &targets {
+        // Re-read: an earlier row in this same request may have demoted them or
+        // moved them, and what happens next depends on where they are now.
+        let Some(current) = users::find_by_id_in(&state.db, &mut session, &target.id).await? else {
+            continue;
+        };
+        match body.action {
+            BulkAction::Promote => {
+                let parent = parent_for(&state, &mut session, &actor, &current, None).await?;
+                users::grant_admin(&state.db, &mut session, &current.id, &parent).await?;
+            }
+            BulkAction::Demote => {
+                // A cascade from higher in the selection may already have taken
+                // the flag. Nothing left to do is success: the state the admin
+                // asked for is the state it is in.
+                if current.is_admin {
+                    let (demoted, reparented) =
+                        demote(&state, &mut session, &current, body.orphans).await?;
+                    // `demote` counts the target itself, which `affected`
+                    // already reports.
+                    result.demoted += demoted.saturating_sub(1);
+                    result.reparented += reparented;
+                }
+            }
+            BulkAction::Delete => {
+                if current.is_admin {
+                    match body.orphans {
+                        AdminOrphans::Demote => {
+                            result.demoted +=
+                                users::revoke_admin(&state.db, &mut session, &current.id)
+                                    .await?
+                                    .saturating_sub(1);
+                        }
+                        AdminOrphans::Reparent => {
+                            result.reparented += users::reparent_children(
+                                &state.db,
+                                &mut session,
+                                &current.id,
+                                current.promoted_by.as_deref(),
+                            )
+                            .await?;
+                        }
+                    }
+                }
+                // Never `LinkDisposition::Delete`: an admin removing somebody
+                // else's account does not get to break every URL they shared.
+                let links = users::delete_with_cascade(
+                    &state.db,
+                    &mut session,
+                    &current.id,
+                    LinkDisposition::Orphan,
+                    state.config.orphan_grace_days,
+                )
+                .await?;
+                result.orphaned += links.orphaned;
+            }
+        }
+        result.affected += 1;
+    }
+    session.commit_transaction().await?;
+    Ok(Json(result))
 }
 
 /// `RootAdmin`, not `AdminUser`: see the extractor for why the sign-in

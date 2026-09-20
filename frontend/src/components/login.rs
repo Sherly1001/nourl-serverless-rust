@@ -406,6 +406,7 @@ mod tests {
             message: "that username is already taken".into(),
             field: field.map(String::from),
             conflict: None,
+            rejected: None,
         })
     }
 

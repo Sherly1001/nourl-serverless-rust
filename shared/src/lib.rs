@@ -86,6 +86,20 @@ pub struct ApiErrorBody {
     /// pay for the one case that carries it.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub conflict: Option<Box<UrlEntry>>,
+    /// Which of the ids in a bulk request were refused, and why each one was.
+    /// A selection is judged as a unit, so naming only the first would leave
+    /// the caller fixing them one round trip at a time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub rejected: Option<Vec<RejectedId>>,
+}
+
+/// One id a bulk request could not act on. `code` is the same string the error
+/// would have carried on its own — `validation`, `not_found`, `forbidden`.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RejectedId {
+    pub id: String,
+    pub code: String,
+    pub message: String,
 }
 
 pub fn validate_code(code: &str) -> Result<(), String> {
@@ -521,6 +535,50 @@ pub struct SetAdminResponse {
     /// to its own parent instead of losing it.
     #[serde(default)]
     pub reparented: u64,
+}
+
+/// What a bulk action does to every account it names. Promoting hangs them
+/// under the caller, exactly as the single-account route does with no
+/// `promoted_by`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum BulkAction {
+    Promote,
+    Demote,
+    Delete,
+}
+
+/// `POST /api/admin/users/bulk`. One decision, one request: the server checks
+/// every id before it writes anything, so a selection is applied whole or
+/// refused whole.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkUsersRequest {
+    pub ids: Vec<String>,
+    pub action: BulkAction,
+    /// What becomes of the admins these accounts promoted. Read on a demotion
+    /// and on a delete, ignored on a promotion — the same rule the
+    /// single-account routes follow.
+    #[serde(default)]
+    pub orphans: AdminOrphans,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BulkUsersResponse {
+    /// Accounts named in the request that the action applied to.
+    pub affected: u64,
+    /// Admins *below* the named accounts that lost the flag with them. Never
+    /// counts the named accounts themselves, which `affected` already reports.
+    #[serde(default)]
+    pub demoted: u64,
+    /// Admins that kept the flag and moved up a level instead.
+    #[serde(default)]
+    pub reparented: u64,
+    /// Links left unowned by a delete.
+    #[serde(default)]
+    pub orphaned: u64,
+    /// How long those links have left.
+    #[serde(default)]
+    pub grace_days: i64,
 }
 
 /// One login method as the settings page sees it. The secret itself never

@@ -1402,3 +1402,263 @@ async fn re_granting_an_existing_admin_does_not_move_them() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_bulk_promote_grants_every_flag_in_one_request() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "bulkboss").await;
+    account(&app, "one").await;
+    account(&app, "two").await;
+    let ids = vec![
+        id_of(&app, &boss, "one").await,
+        id_of(&app, &boss, "two").await,
+    ];
+
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": ids, "action": "promote"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["affected"], 2);
+    assert_eq!(row_of(&app, &boss, "one").await["is_admin"], true);
+    assert_eq!(row_of(&app, &boss, "two").await["is_admin"], true);
+
+    db.drop().await.unwrap();
+}
+
+/// A parent and its child in the same selection. Whichever order they arrive
+/// in, the parent's cascade must not turn the child's turn into an error.
+#[tokio::test]
+async fn a_bulk_demote_survives_a_parent_and_its_child_together() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "bulkboss").await;
+    let parent_cookie = promote(&app, &boss, "parent").await;
+    promote(&app, &parent_cookie, "child").await;
+    let parent = id_of(&app, &boss, "parent").await;
+    let child = id_of(&app, &boss, "child").await;
+
+    // Parent first, which is the order that would strand the child's call.
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": [parent, child], "action": "demote"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    assert_eq!(body_json(response).await["affected"], 2);
+    assert_eq!(row_of(&app, &boss, "parent").await["is_admin"], false);
+    assert_eq!(row_of(&app, &boss, "child").await["is_admin"], false);
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_bulk_delete_orphans_the_links_and_reports_the_deadline() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "bulkboss").await;
+    let owner = account(&app, "linkowner").await;
+    for code in ["a", "b"] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &owner,
+                json!({"code": code, "url": "https://target.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+    let id = id_of(&app, &boss, "linkowner").await;
+
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": [id], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let body = body_json(response).await;
+    assert_eq!(body["affected"], 1);
+    assert_eq!(body["orphaned"], 2);
+    assert_eq!(body["grace_days"], 7);
+
+    // The links outlive their owner, unowned and on a deadline.
+    let link = db
+        .collection::<mongodb::bson::Document>("urls")
+        .find_one(doc! {"code": "a"})
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(link.get("owner").is_none());
+    assert!(link.get_datetime("expires_at").is_ok());
+
+    db.drop().await.unwrap();
+}
+
+/// Every id is checked before anything is written, and the whole selection is
+/// judged as one — so one refusal leaves the rest exactly as it was, and the
+/// answer says which ids were the problem rather than only the first.
+#[tokio::test]
+async fn a_refused_id_rolls_the_whole_selection_back() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "bulkboss").await;
+    account(&app, "bystander").await;
+    let me = id_of(&app, &boss, "bulkboss").await;
+    let other = id_of(&app, &boss, "bystander").await;
+
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": [other, me, "no-such-id"], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+
+    let rejected = body_json(response).await["error"]["rejected"].clone();
+    let rejected = rejected.as_array().expect("every bad id is named");
+    assert_eq!(rejected.len(), 2, "both bad ids, not just the first");
+    assert_eq!(rejected[0]["id"], me);
+    assert_eq!(rejected[0]["code"], "validation");
+    assert_eq!(rejected[1]["id"], "no-such-id");
+    assert_eq!(rejected[1]["code"], "not_found");
+
+    assert!(
+        db.collection::<mongodb::bson::Document>("users")
+            .find_one(doc! {"username": "bystander"})
+            .await
+            .unwrap()
+            .is_some(),
+        "the rest of the selection is untouched"
+    );
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn bulk_refuses_an_empty_selection_and_an_absurd_one() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "boss").await;
+
+    let empty = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": [], "action": "promote"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+    let ids: Vec<String> = (0..101).map(|n| format!("id-{n}")).collect();
+    let huge = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": ids, "action": "promote"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(huge.status(), StatusCode::BAD_REQUEST);
+
+    // And it is admin-only, like everything else under /api/admin.
+    let plain = account(&app, "ordinary").await;
+    let refused = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &plain,
+            json!({"ids": ["whoever"], "action": "promote"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    db.drop().await.unwrap();
+}
+
+/// Switches `failCommand` on for one collection, or off again.
+///
+/// Scoped by namespace because the whole suite runs against one mongod and
+/// every test has its own throwaway database — an unscoped failpoint would fail
+/// writes belonging to whatever else happened to be running.
+async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
+    let admin_db = db.client().database("admin");
+    let command = if on {
+        doc! {
+            "configureFailPoint": "failCommand",
+            // Not `times: 1`: the first write has to land, or there is nothing
+            // for the rollback to undo and the test proves only that a failed
+            // write fails.
+            "mode": {"skip": 1},
+            "data": {
+                "failCommands": ["update"],
+                "namespace": format!("{}.users", db.name()),
+                "errorCode": 8,
+            },
+        }
+    } else {
+        doc! {"configureFailPoint": "failCommand", "mode": "off"}
+    };
+    admin_db.run_command(command).await.unwrap();
+}
+
+/// The rollback itself, which no other test reaches: every refusal they
+/// exercise is caught before a single write, so they would all pass with the
+/// transaction taken out. Here the first promotion succeeds and the second is
+/// made to fail, and the first has to be gone afterwards.
+#[tokio::test]
+async fn a_write_failing_partway_undoes_the_writes_before_it() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "bulkboss").await;
+    account(&app, "first").await;
+    account(&app, "second").await;
+    let ids = vec![
+        id_of(&app, &boss, "first").await,
+        id_of(&app, &boss, "second").await,
+    ];
+
+    fail_updates_after_the_first(&db, true).await;
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            &boss,
+            json!({"ids": ids, "action": "promote"}),
+        ))
+        .await
+        .unwrap();
+    fail_updates_after_the_first(&db, false).await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        row_of(&app, &boss, "first").await["is_admin"],
+        false,
+        "the promotion that succeeded must not survive the one that did not"
+    );
+    assert_eq!(row_of(&app, &boss, "second").await["is_admin"], false);
+
+    db.drop().await.unwrap();
+}

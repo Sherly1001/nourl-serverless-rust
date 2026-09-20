@@ -320,6 +320,7 @@ pub async fn disconnect(
             message: "that is the only way into this account — set a password first".into(),
             field: None,
             conflict: None,
+            rejected: None,
         });
     }
     users::unlink_provider(&app.db, &user.id, kind).await?;

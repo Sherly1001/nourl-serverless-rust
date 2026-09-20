@@ -12,7 +12,7 @@ use crate::config::Config;
 use crate::error::AppError;
 use crate::oauth::Providers;
 use crate::routes::admin::{
-    delete_user, get_settings, list_users, set_user_admin, update_settings,
+    bulk_users, delete_user, get_settings, list_users, set_user_admin, update_settings,
 };
 use crate::routes::auth::{
     change_password, delete_me, login, logout, me, methods, register, update_me,
@@ -43,6 +43,9 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/auth/{provider}", get(start).delete(disconnect))
         .route("/api/auth/{provider}/callback", get(callback))
         .route("/api/admin/users", get(list_users))
+        // Before the capture below. Axum prefers a literal segment whatever the
+        // order, but the order says so out loud.
+        .route("/api/admin/users/bulk", post(bulk_users))
         .route(
             "/api/admin/settings",
             get(get_settings).put(update_settings),
@@ -63,6 +66,7 @@ pub fn build_app(state: AppState) -> Router {
                 message: "method not allowed for this route".into(),
                 field: None,
                 conflict: None,
+                rejected: None,
             }
         })
         .layer(axum::middleware::from_fn(access_log))
