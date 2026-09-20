@@ -1,4 +1,4 @@
-.PHONY: fmt fmt-check mongo-up mongo-down mongo-clean dev-backend dev-frontend build-frontend build-lambda test tf-plan-dev deploy sync-static tf-output
+.PHONY: fmt fmt-check mongo-up mongo-down mongo-clean mongo-reset dev-backend dev-frontend build-frontend build-lambda test tf-plan-dev deploy sync-static tf-output
 
 ENV ?= dev
 
@@ -91,8 +91,10 @@ test: mongo-up mongo-clean
 # odd one out — and the code path that matters there would be the one nothing
 # local could exercise. One member is enough to elect itself.
 mongo-up:
-	@# A container missing either flag would start happily and then fail the
-	@# tests that need them, so it is replaced rather than reused.
+	@# A container missing any of the flags would start happily and then fail
+	@# the tests that need them, so it is replaced rather than reused. The data
+	@# is in a named volume, which is what makes replacing it cheap: it survives
+	@# the container and is picked up again by the next one.
 	@if docker inspect nourl-mongo >/dev/null 2>&1 \
 	  && ! docker inspect -f '{{json .Args}}' nourl-mongo \
 	    | grep -q 'replSet.*enableTestCommands'; then \
@@ -101,10 +103,10 @@ mongo-up:
 	fi
 	@# `enableTestCommands`: `failCommand` is how a test makes a write fail
 	@# halfway through a transaction, which is the only way to prove the rest of
-	@# it rolls back. Off by default, and rightly so — this is a throwaway
-	@# container, not anything that holds real data.
+	@# it rolls back. Off by default, and rightly so — but this container is
+	@# reachable from nowhere but here.
 	docker start nourl-mongo 2>/dev/null || docker run -d --name nourl-mongo \
-	  -p 27017:27017 --ulimit nofile=64000:64000 mongo:7 \
+	  -p 27017:27017 --ulimit nofile=64000:64000 -v nourl-mongo-data:/data/db mongo:7 \
 	  --replSet rs0 --setParameter enableTestCommands=1
 	@# `docker start` returns as soon as the container exists, not when mongod is
 	@# listening, so anything that connects straight after it races the startup
@@ -137,3 +139,9 @@ mongo-clean: mongo-up
 
 mongo-down:
 	docker stop nourl-mongo
+
+# The volume outlives `docker rm`, which is the point of it — this is the way
+# to actually start over.
+mongo-reset:
+	-docker rm -f nourl-mongo
+	docker volume rm nourl-mongo-data
