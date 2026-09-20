@@ -8,34 +8,29 @@ pub struct AppError {
     pub status: StatusCode,
     pub code: &'static str,
     pub message: String,
-    /// Form field this error belongs to, when there is exactly one. Serialised
-    /// so a client can render the message under that input.
+    /// The one field at fault, so a client can render it under that input.
     pub field: Option<&'static str>,
-    /// The link this collided with, when the caller is entitled to see it.
-    /// Boxed for the reason [`shared::ApiErrorBody`] gives.
+    /// The link collided with, when the caller may see it. Boxed — see
+    /// [`shared::ApiErrorBody`].
     pub conflict: Option<Box<shared::UrlEntry>>,
-    /// Which ids of a bulk request were refused, when the error is about a
-    /// selection rather than a single thing.
+    /// Which ids a bulk request refused.
     pub rejected: Option<Vec<shared::RejectedId>>,
 }
 
 impl AppError {
-    /// Attaches the field this error is about. Never call it on an error whose
-    /// whole point is ambiguity, such as a failed login.
+    /// Never on an error whose point is ambiguity, such as a failed login.
     pub fn on_field(mut self, field: &'static str) -> Self {
         self.field = Some(field);
         self
     }
 
-    /// Attaches the link that was in the way, so the caller can be offered a
-    /// way through it. Only ever their own — see [`shared::ApiErrorBody`].
+    /// Only ever a link the caller may see — see [`shared::ApiErrorBody`].
     pub fn on_conflict(mut self, conflict: shared::UrlEntry) -> Self {
         self.conflict = Some(Box::new(conflict));
         self
     }
 
-    /// Attaches the ids a bulk request could not act on, so the caller can fix
-    /// all of them rather than rediscovering the next one each time.
+    /// So the caller can fix them all rather than one round trip at a time.
     pub fn on_rejected(mut self, rejected: Vec<shared::RejectedId>) -> Self {
         self.rejected = Some(rejected);
         self

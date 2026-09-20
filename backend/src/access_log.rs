@@ -1,9 +1,4 @@
-//! One log line per request, so CloudWatch has something to read.
-//!
-//! CloudFront's own access logs cover the same requests, but they arrive in
-//! batches minutes later and know nothing about what the backend decided. This
-//! is the live view, and the only one that can say *why* a request ended the
-//! way it did.
+//! One log line per request: the live view CloudFront's batched logs are not.
 
 use std::time::Instant;
 
@@ -11,24 +6,12 @@ use axum::extract::Request;
 use axum::middleware::Next;
 use axum::response::Response;
 
-/// Longest user agent worth keeping. Some are absurd, and the whole line is
-/// billed by the byte.
+/// The line is billed by the byte, and some agents are absurd.
 const AGENT_MAX: usize = 120;
 
-/// Who asked, as far as anything here can tell.
-///
-/// Requests arrive browser → Cloudflare → CloudFront → API Gateway, and each
-/// hop appends the address it saw to `x-forwarded-for`. The caller is therefore
-/// its **first** entry, the rest being Cloudflare's edge and CloudFront's — but
-/// that entry is whatever the browser chose to send. Anyone can put a header on
-/// their own request, and Cloudflare appends to it rather than replacing it.
-///
-/// `cf-connecting-ip` is written by Cloudflare itself, overwriting anything the
-/// client sent, so it is the one worth believing. It reaches us because the
-/// distribution forwards every viewer header (`AllViewerExceptHostHeader`), and
-/// it is missing only when the request never went through Cloudflare — someone
-/// hitting the CloudFront domain directly. Then the forwarded chain is all
-/// there is, and it is worth exactly what the sender is.
+/// Who asked. Each hop appends to `x-forwarded-for`, so the caller is its
+/// first entry — but that entry is whatever the browser sent. Cloudflare
+/// overwrites `cf-connecting-ip`, so prefer it and fall back to the chain.
 fn client_ip(headers: &axum::http::HeaderMap) -> Option<&str> {
     let header = |name| headers.get(name)?.to_str().ok();
     let forwarded = || header("x-forwarded-for").and_then(|raw| raw.split(',').next());
@@ -43,12 +26,8 @@ fn agent(headers: &axum::http::HeaderMap) -> Option<&str> {
     Some(&raw[..raw.len().min(AGENT_MAX)])
 }
 
-/// Logs method, path, status and duration once the response is ready.
-///
-/// The **path only, never the query string**: an OAuth callback carries the
-/// authorization code and the state nonce there, and a log line is exactly the
-/// kind of place a secret should not end up. Nothing here reads the body
-/// either, so a password cannot reach it.
+/// Method, path, status and duration. The path only, never the query string:
+/// an OAuth callback carries the code and nonce there. The body is never read.
 pub async fn access_log(request: Request, next: Next) -> Response {
     let method = request.method().clone();
     let path = request.uri().path().to_owned();

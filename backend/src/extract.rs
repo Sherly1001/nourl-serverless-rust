@@ -3,8 +3,7 @@ use axum::extract::{FromRequest, Request};
 
 use crate::error::AppError;
 
-/// `axum::Json` with rejections converted to the spec's JSON error shape
-/// (400 `validation`) instead of axum's plain-text 4xx responses.
+/// `axum::Json`, but rejections come back as 400 `validation` JSON.
 pub struct AppJson<T>(pub T);
 
 impl<S, T> FromRequest<S> for AppJson<T>

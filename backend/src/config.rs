@@ -3,31 +3,20 @@ pub struct Config {
     pub mongo_url: String,
     pub db_name: String,
     pub port: u16,
-    /// Explicit override for the not-found redirect target. When `None`, the
-    /// redirect falls back to the request's own host (`https://{host}`).
+    /// `None` falls back to the request's own host.
     pub notfound_fallback_url: Option<String>,
-    /// Origin the provider redirects back to, e.g. `https://nourl.space`. The
-    /// OAuth callback URL is built from it, and it has to match what is
-    /// registered at the provider. Taken from configuration rather than the
-    /// request's own `Host` header, which a caller controls. `None` falls back
-    /// to `https://nourl.space`, so a deployment that forgets to set it points
-    /// at the real site rather than at a developer's laptop. Local work against
-    /// a provider has to set it — `http://127.0.0.1:8080` is the Trunk dev
-    /// server, which proxies `/api`.
+    /// What the OAuth callback URL is built from, so it must match the
+    /// provider's registration. Configured rather than taken from `Host`,
+    /// which a caller controls; `None` points at the real site, not a laptop.
     pub public_base_url: Option<String>,
     /// HMAC secret for session tokens.
     pub jwt_secret: String,
-    /// Lifetime of a session token and its cookie. Both must agree, or the
-    /// browser would keep sending a cookie the server has already rejected.
+    /// Token and cookie together, or the browser keeps sending a dead cookie.
     pub session_days: i64,
-    /// `Secure` attribute on the session cookie. Browsers treat localhost as a
-    /// secure context, so this only needs turning off for exotic local setups.
+    /// Localhost counts as secure, so this is off only for exotic setups.
     pub cookie_secure: bool,
-    /// How long a link outlives the account that owned it, when that account is
-    /// deleted and its links are left in place. They keep working, unowned,
-    /// until this runs out — long enough for someone to notice a link has gone
-    /// unowned and claim it, short enough that abandoned links do not
-    /// accumulate for ever.
+    /// How long a link outlives its deleted owner: long enough to be claimed,
+    /// short enough that abandoned links do not accumulate.
     pub orphan_grace_days: i64,
 }
 
@@ -35,13 +24,8 @@ fn parse_cookie_secure(raw: Option<String>) -> bool {
     !raw.is_some_and(|v| v.eq_ignore_ascii_case("false"))
 }
 
-/// A positive number of days, or `default` for anything unparseable or
-/// non-positive.
-///
-/// Zero and negative are refused rather than honoured: a session lifetime of
-/// zero would mint tokens that are already expired, and a grace period of zero
-/// would delete a link the moment its owner left rather than giving anyone the
-/// chance to claim it.
+/// Positive days, or `default`. Zero is refused rather than honoured: it would
+/// mint already-expired tokens, or kill a link the moment its owner left.
 fn parse_days(raw: Option<String>, default: i64) -> i64 {
     raw.and_then(|v| v.parse::<i64>().ok())
         .filter(|d| *d > 0)

@@ -15,9 +15,8 @@ pub struct MethodConfig {
     pub client_secret: Option<String>,
 }
 
-/// The single `settings` document (`_id: "auth"`). Every field defaults, so a
-/// fresh database needs no seeding — and a partially filled document (say,
-/// github configured but google never touched) still loads.
+/// The single `settings` document. Every field defaults, so a fresh or
+/// half-filled database needs no seeding.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct AuthSettings {
     #[serde(default = "password_default")]
@@ -50,9 +49,8 @@ impl Default for AuthSettings {
 }
 
 impl AuthSettings {
-    /// The public view: which methods a login page should offer. An OAuth
-    /// provider counts as enabled only once it also has credentials —
-    /// advertising one without them would send users into a broken redirect.
+    /// What a login page should offer. A provider counts only once it has
+    /// credentials; advertising one without them breaks the redirect.
     pub fn methods(&self) -> AuthMethods {
         let configured =
             |m: &MethodConfig| m.enabled && m.client_id.is_some() && m.client_secret.is_some();
@@ -81,16 +79,14 @@ impl MethodConfig {
         MethodView {
             enabled: self.enabled,
             client_id: self.client_id.clone(),
-            // The secret itself never leaves the server — only whether one is
-            // set, which is all the settings page needs to render.
+            // Whether one is set, never the secret itself.
             has_secret: self.client_secret.is_some(),
         }
     }
 
-    /// An omitted `client_secret` keeps the stored one: the settings page never
-    /// receives the secret, so it cannot send it back, and treating "absent" as
-    /// "clear it" would wipe the credential on every unrelated save. An
-    /// explicit empty string is the deliberate way to retire one.
+    /// An omitted `client_secret` keeps the stored one — the page never
+    /// receives it, so absent would otherwise wipe it on every save. An empty
+    /// string retires one deliberately.
     fn merged(&self, update: &MethodUpdate) -> Self {
         let client_secret = match update.client_secret.as_deref() {
             None => self.client_secret.clone(),
@@ -131,8 +127,7 @@ impl AuthSettings {
     }
 }
 
-/// Writes the whole document. An upsert, so a database that has never had its
-/// settings touched needs no seeding.
+/// Writes the whole document, upserting so nothing needs seeding.
 pub async fn save(db: &Database, settings: &AuthSettings) -> Result<(), AppError> {
     let doc = bson::to_document(settings).map_err(AppError::internal)?;
     db.collection::<Document>("settings")

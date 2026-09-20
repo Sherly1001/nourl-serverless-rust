@@ -25,8 +25,8 @@ use crate::routes::urls::{claim_url, create_url, delete_url, list_urls, update_u
 pub struct AppState {
     pub db: Database,
     pub config: Config,
-    /// One client per provider, so a handler goes straight from a path segment
-    /// to the thing that talks to it — and the tests can swap in a stub.
+    /// One per provider, so a path segment maps straight to a client — and a
+    /// test can swap in a stub.
     pub providers: Arc<Providers>,
 }
 
@@ -38,13 +38,11 @@ pub fn build_app(state: AppState) -> Router {
         .route("/api/auth/me", get(me).put(update_me).delete(delete_me))
         .route("/api/auth/methods", get(methods))
         .route("/api/auth/password", put(change_password))
-        // After the fixed segments above. Axum prefers a literal over a
-        // capture whatever the order, but the order says so out loud.
+        // After the literals above; axum would prefer them anyway.
         .route("/api/auth/{provider}", get(start).delete(disconnect))
         .route("/api/auth/{provider}/callback", get(callback))
         .route("/api/admin/users", get(list_users))
-        // Before the capture below. Axum prefers a literal segment whatever the
-        // order, but the order says so out loud.
+        // Before the capture below; axum would prefer it anyway.
         .route("/api/admin/users/bulk", post(bulk_users))
         .route(
             "/api/admin/settings",

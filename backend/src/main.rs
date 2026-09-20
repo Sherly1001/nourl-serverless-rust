@@ -13,8 +13,7 @@ async fn main() {
     let in_lambda = std::env::var("AWS_LAMBDA_RUNTIME_API").is_ok();
     let logs = tracing_subscriber::fmt().with_target(false);
     if in_lambda {
-        // CloudWatch stamps every line with its own arrival time, and colour
-        // codes reach it as escape sequences rather than as colour.
+        // CloudWatch stamps its own time, and shows colour codes as escapes.
         logs.without_time().with_ansi(false).init();
     } else {
         logs.init();
@@ -23,8 +22,7 @@ async fn main() {
     let db = backend::db::connect(&config.mongo_url, &config.db_name)
         .await
         .unwrap_or_else(|err| fatal("mongo connect failed", err));
-    // Index creation is best-effort: a failure (e.g. legacy duplicate codes
-    // blocking the unique index) must not take the service down.
+    // Best-effort: a legacy duplicate blocking an index must not stop startup.
     if let Err(err) = backend::db::ensure_indexes(&db).await {
         tracing::warn!(error = %err, "index creation failed; continuing without");
     }

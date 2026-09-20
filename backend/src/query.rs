@@ -7,9 +7,8 @@ use crate::error::AppError;
 const DEFAULT_LIMIT: i64 = 20;
 const MAX_LIMIT: i64 = 100;
 
-/// Fields a client may sort URLs by. The old app passed unknown query
-/// parameters straight into the Mongo filter; whitelisting replaces that
-/// deliberately, and a whitelist is per-collection because the fields are.
+/// Fields a client may sort URLs by. The old app passed unknown parameters
+/// straight into the filter; per-collection, because the fields are.
 const URL_SORTABLE: &[&str] = &[
     "code",
     "url",
@@ -20,16 +19,9 @@ const URL_SORTABLE: &[&str] = &[
     "updated_at",
 ];
 
-/// Fields a client may sort users by.
-///
-/// `url_count` only exists after the join, so ordering by it costs a join
-/// across the whole collection rather than across the page — see
-/// [`UserListParams::sorts_by_join`], which is how that cost stays confined to
-/// the requests that ask for it.
-///
-/// `admin_level` is absent because it is derived from the chain rather than
-/// stored: there is no field to sort on, and the tree is ordered by its own
-/// shape anyway.
+/// Fields a client may sort users by. `url_count` only exists after the join,
+/// which is what [`UserListParams::sorts_by_join`] confines the cost of.
+/// `admin_level` is derived from the chain, so there is no field to sort on.
 const USER_SORTABLE: &[&str] = &["username", "created_at", "url_count"];
 
 /// The one sortable field that does not exist until after the `$lookup`.
@@ -64,12 +56,8 @@ fn paging(params: &HashMap<String, String>) -> Result<(i64, i64), AppError> {
     Ok((limit, skip))
 }
 
-/// Parses `field,dir,field,dir…` against `allowed`, falling back to `default`.
-///
-/// Every sort ends with `_id` so it is total. Without it Mongo is free to
-/// return equal rows in any order, and it does: the sorted fields are timestamps
-/// that whole batches of accounts share, so a single unrelated write — flipping
-/// an admin flag, say — reshuffles the rows around it on the next page load.
+/// Parses `field,dir,…` against `allowed`. Every sort ends with `_id` so it is
+/// total: without it, rows sharing a timestamp reshuffle between page loads.
 fn sort_doc(
     params: &HashMap<String, String>,
     allowed: &[&str],
@@ -113,10 +101,7 @@ fn search_term(params: &HashMap<String, String>) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// Case-insensitive substring match across `fields`.
-///
-/// Escaped so a search for "a.b" cannot become a wildcard, and so a
-/// pathological pattern cannot be smuggled in.
+/// Case-insensitive substring match, escaped so "a.b" is not a wildcard.
 fn any_field_matches(q: &str, fields: &[&str]) -> Document {
     let pattern = regex::escape(q);
     let branches: Vec<Document> = fields
@@ -130,9 +115,7 @@ impl ListParams {
     pub fn from_query(params: &HashMap<String, String>) -> Result<Self, AppError> {
         let (limit, skip) = paging(params)?;
 
-        // Most recently touched first. Links written before `updated_at`
-        // existed have none, and Mongo sorts a missing field last under `-1`,
-        // so legacy rows settle at the bottom rather than the top.
+        // Missing sorts last under `-1`, so legacy rows settle at the bottom.
         let sort = sort_doc(params, URL_SORTABLE, doc! {"updated_at": -1})?;
         let q = search_term(params);
 
@@ -144,8 +127,7 @@ impl ListParams {
         })
     }
 
-    /// Mongo filter for this page. `owner` scopes to one user; `None` means
-    /// every URL (admins only).
+    /// `owner` scopes to one user; `None` means every URL, admins only.
     pub fn filter(&self, owner: Option<&str>) -> Document {
         let mut filter = Document::new();
         if let Some(owner) = owner {
@@ -158,9 +140,8 @@ impl ListParams {
     }
 }
 
-/// The users list has its own whitelist and its own searchable fields —
-/// sharing `ListParams` would let `?sort=hits,-1` through (a field users do
-/// not have) while refusing `?sort=username,1` (the obvious one).
+/// Its own whitelist: sharing `ListParams` would allow `?sort=hits,-1` and
+/// refuse `?sort=username,1`.
 pub struct UserListParams {
     pub limit: i64,
     pub skip: i64,
@@ -171,8 +152,7 @@ pub struct UserListParams {
 impl UserListParams {
     pub fn from_query(params: &HashMap<String, String>) -> Result<Self, AppError> {
         let (limit, skip) = paging(params)?;
-        // Alphabetical by default: the users list is a directory to look
-        // somebody up in, not a feed of recent signups.
+        // A directory to look somebody up in, not a feed of recent signups.
         let sort = sort_doc(params, USER_SORTABLE, doc! {"username": 1})?;
         let q = search_term(params);
         Ok(Self {
@@ -183,19 +163,15 @@ impl UserListParams {
         })
     }
 
-    /// Whether this order can only be applied after the link count is joined
-    /// on. When it is, the pipeline has to join before paging, which is the
-    /// expensive shape — so callers check rather than always paying it.
+    /// Whether the sort needs the join first, which is the expensive shape —
+    /// so callers check rather than always paying it.
     pub fn sorts_by_join(&self) -> bool {
         self.sort.contains_key(JOINED_SORT_FIELD)
     }
 
-    /// Matches the name someone would search by. Not the provider ids, which
-    /// are secrets, and not `hash_passwd` for the obvious reason.
-    ///
-    /// Always excludes admins: they are returned whole alongside this page so
-    /// the tree keeps its interior nodes, and counting them here would report
-    /// them twice.
+    /// The name someone would search by — never the provider ids or the hash.
+    /// Excludes admins, who come back whole alongside this page and would
+    /// otherwise be counted twice.
     pub fn filter(&self) -> Document {
         // `$ne` rather than `false`, because an account that predates the field
         // has no `is_admin` at all.
