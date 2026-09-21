@@ -55,24 +55,18 @@ pub fn Users() -> impl IntoView {
     let (keystroke, set_keystroke) = signal(0u32);
     let sort: RwSignal<Option<Sort>> = RwSignal::new(None);
 
-    // Which branches are folded, and the two halves of a drag in progress.
-    // They live here rather than in a row because both ends of a drag, and
-    // both a parent and its branch, are different rows.
+    // Here, not in a row: a drag and a branch both span several rows.
     let collapsed: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
     let dragging: RwSignal<Option<AdminUserInfo>> = RwSignal::new(None);
     let drop_target: RwSignal<Option<String>> = RwSignal::new(None);
     let scrolled: RwSignal<u32> = RwSignal::new(0);
 
     let confirm_open = RwSignal::new(false);
-    // What the dialog is about. One dialog rather than four, because only one
-    // can be open, and the rows travel with it so the wording can count them.
+    // One dialog, not four: only one can be open, and the rows travel with it.
     let pending: RwSignal<Option<Pending>> = RwSignal::new(None);
-    // Rows ticked for a bulk action, by id. Ids rather than rows because a
-    // reload replaces every row but keeps the ids.
+    // Ids, not rows: a reload replaces every row but keeps the ids.
     let selected: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
-    // Measured rather than guessed: the group headings stick directly under the
-    // table header, and a hard-coded offset drifts as soon as the header's
-    // height does — leaving a gap above them, or hiding a row behind them.
+    // Measured, not guessed: a fixed offset drifts when the header's height does.
     let head: NodeRef<leptos::html::Thead> = NodeRef::new();
     let (head_height, set_head_height) = signal(40);
     Effect::new(move |_| {
@@ -86,9 +80,7 @@ pub fn Users() -> impl IntoView {
         let params = list_params(next_page, &debounced.get_untracked(), sort.get_untracked());
         set_loading.set(true);
         set_slow.set(false);
-        // `try_` throughout: a timer or a request can outlive the page that
-        // started it, and writing a signal whose owner has been disposed panics
-        // — which in wasm is fatal to the whole app, not just to this page.
+        // `try_` throughout: writing a disposed signal is fatal in wasm.
         set_timeout(
             move || {
                 if loading.try_get_untracked() == Some(true) {
@@ -117,11 +109,7 @@ pub fn Users() -> impl IntoView {
 
     // A different sort or search invalidates every page accumulated so far.
     //
-    // Nothing is asked for until the session has resolved: `auth.user` is
-    // `None` both while the first `/api/auth/me` is in flight and when signed
-    // out, so firing on it would send one request against no session and a
-    // second when it landed. Non-admins are not asked at all — the answer is a
-    // 403 and the page shows its own refusal instead.
+    // Waits for the session: `None` means both in flight and signed out.
     Effect::new(move |_| {
         debounced.get();
         sort.get();
@@ -174,14 +162,9 @@ pub fn Users() -> impl IntoView {
         }
     };
 
-    // Re-reads the whole list. A change to the tree can move rows between the
-    // two groups and change everyone's depth, so patching in place would be
-    // guesswork.
+    // Re-reads the lot: a change can move rows between groups and change depth.
     let reload = move || {
-        // Whatever was ticked has just been acted on, one way or another —
-        // through the row's own switch as much as through the bulk bar. Leaving
-        // the ticks behind would arm the next bulk action with rows the admin
-        // thought they were done with.
+        // Leaving ticks behind would arm the next action with finished rows.
         selected.try_set(HashSet::new());
         fetch(0, false);
     };
@@ -202,8 +185,7 @@ pub fn Users() -> impl IntoView {
                         _ => done.to_string(),
                     };
                     toasts.success(note);
-                    // The session in hand still claims the flag, so refresh it
-                    // before leaving or the navbar keeps offering 403s.
+                    // The held session still claims the flag; refresh before leaving.
                     let stood_down =
                         !is_admin && auth.user.get_untracked().is_some_and(|me| me.id == id);
                     if stood_down {
@@ -226,9 +208,7 @@ pub fn Users() -> impl IntoView {
     let on_move = Callback::new(move |(user, parent): (AdminUserInfo, String)| {
         apply(user.id, true, Some(parent), AdminOrphans::Demote, "Moved");
     });
-    // What a delete should do with the admins the account promoted. Reset every
-    // time the dialog opens: the safe answer is the one that never hands anyone
-    // a standing they were not given directly.
+    // Reset on every open: the safe answer grants nobody an unearned standing.
     let orphans = RwSignal::new(AdminOrphans::Demote);
     let ask = move |what: Pending| {
         orphans.set(AdminOrphans::Demote);
@@ -238,11 +218,7 @@ pub fn Users() -> impl IntoView {
     let on_demote = Callback::new(move |user: AdminUserInfo| ask(Pending::Demote(vec![user])));
     let on_delete = Callback::new(move |user: AdminUserInfo| ask(Pending::Delete(vec![user])));
 
-    // One request for the selection — or one per hundred of it, which is the
-    // most the server takes at a time. Within a request it orders the work
-    // deepest-first and refuses the lot if any row is out of bounds, so there
-    // is nothing to sequence or half-report here; across requests there is,
-    // which is what the counts on a failure are for.
+    // One request per hundred; all-or-nothing holds within one, not across.
     let run_bulk = move |rows: Vec<AdminUserInfo>, action: BulkAction| {
         let ids: Vec<String> = rows.iter().map(|row| row.id.clone()).collect();
         let choice = orphans.get_untracked();
@@ -262,8 +238,7 @@ pub fn Users() -> impl IntoView {
                     ));
                 }
                 Err((done, err)) => {
-                    // Whatever landed before the refusal is worth saying: on a
-                    // selection split across requests, some of it may have.
+                    // A split selection may have landed in part before the refusal.
                     if done.affected > 0 {
                         toasts.success(bulk_result(
                             word,
@@ -315,8 +290,7 @@ pub fn Users() -> impl IntoView {
         }
     });
 
-    // What the delete dialog needs to know about the branch below what is about
-    // to go: whether there is a choice to make at all, and how to word it.
+    // Whether the branch below leaves a choice to make, and how to word it.
     let orphans_of_pending = move || match pending.get() {
         Some(Pending::Delete(rows) | Pending::Demote(rows)) => {
             orphaned_admins(&rows, &admins.get())
@@ -328,8 +302,7 @@ pub fn Users() -> impl IntoView {
         1 => "1 admin was promoted by this account.".to_string(),
         n => format!("{n} admins were promoted by these accounts."),
     };
-    // Named after where they would land, since that is the whole difference —
-    // and a root's children have nowhere above to go, so they become roots.
+    // Named for where they land; a root's children become roots.
     let reparent_label = move || {
         let rows = orphans_of_pending();
         let parents_left: HashSet<Option<String>> = match pending.get() {
@@ -355,10 +328,7 @@ pub fn Users() -> impl IntoView {
         }
     };
 
-    // The dialog's wording depends on which action opened it, and the cascade
-    // count comes from the tree already loaded.
-    // Whether a one-row demote is aimed at the signed-in admin: a different
-    // act from taking someone else's flag — see `resign_warning`.
+    // Whether a one-row demote is the signed-in admin resigning.
     let resigning = move || match pending.get() {
         Some(Pending::Demote(rows)) if rows.len() == 1 => {
             auth.user.get().is_some_and(|me| me.id == rows[0].id)
@@ -375,9 +345,7 @@ pub fn Users() -> impl IntoView {
         None => String::new(),
         Some(Pending::Delete(rows)) if rows.len() == 1 => delete_warning(&rows[0], GRACE_DAYS),
         Some(Pending::Delete(rows)) => bulk_delete_warning(&rows, GRACE_DAYS),
-        // The cascade count is left out when the radios are up: taking the
-        // branch down is only one of the two answers on offer there, so
-        // stating it as what will happen would contradict the other.
+        // Left out while the radios offer the other answer, which it contradicts.
         Some(Pending::Demote(rows)) if rows.len() == 1 => {
             let below = if has_orphans() {
                 0
@@ -392,8 +360,7 @@ pub fn Users() -> impl IntoView {
         }
         Some(Pending::Demote(rows)) if has_orphans() => bulk_demote_warning(&rows, 0),
         Some(Pending::Demote(rows)) => {
-            // Only the ones the cascade would catch that are not ticked
-            // already: counting the rest would double-count the selection.
+            // Only those not already ticked, or the selection is counted twice.
             let ticked: HashSet<&str> = rows.iter().map(|row| row.id.as_str()).collect();
             let tree = admins.get();
             let below: HashSet<String> = rows
@@ -410,16 +377,13 @@ pub fn Users() -> impl IntoView {
     let needle = move || debounced.get().trim().to_lowercase();
     let is_match = move |user: &AdminUserInfo| matches(user, &needle());
 
-    // A new search unfolds whatever it had to reach: a hit hidden inside a
-    // branch someone folded earlier would look like the search missed it. Only
-    // on the way in, so the chevrons still work while the search is up.
+    // A hit inside a folded branch would look like the search missed it.
     Effect::new(move |_| {
         let needle = needle();
         if needle.is_empty() {
             return;
         }
-        // Untracked: this is about the search changing, not the list reloading.
-        // Tracking it would re-open branches after every promote or delete.
+        // Untracked, or every promote would re-open the folded branches.
         let shown: HashSet<String> = search_tree(&admins.get_untracked(), &needle)
             .into_iter()
             .map(|row| row.id)
@@ -427,22 +391,15 @@ pub fn Users() -> impl IntoView {
         collapsed.update(|folded| folded.retain(|id| !shown.contains(id)));
     });
 
-    // The tree the search left behind, and then that folded. Two steps, because
-    // the chevron is decided by what a row still has under it in the *searched*
-    // tree — asking the folded one would drop the chevron the moment it was
-    // used, and there would be no way to unfold again.
+    // Two steps: the chevron reads the searched tree, not the folded one.
     let found_rows = Memo::new(move |_| search_tree(&admins.get(), &needle()));
-    // Read against the searched tree rather than the folded one: asking the
-    // folded list would drop the chevron the moment it was used, leaving no way
-    // to unfold again.
+    // The searched tree, or using the chevron would remove it.
     let branching = move |user: &AdminUserInfo| {
         user.is_admin && found_rows.with_untracked(|rows| has_children(&user.id, rows))
     };
     let admin_rows =
         Memo::new(move |_| found_rows.with(|rows| visible_rows(rows, &collapsed.get())));
-    // What the group heading counts: the whole chain normally, the hits alone
-    // while searching — the ancestors dragged along by `search_tree` are there
-    // to hold the shape, not because they answered the search.
+    // Hits alone while searching: the ancestors are there to hold the shape.
     let admin_count = move || {
         let needle = needle();
         admins.with(|rows| {
@@ -454,8 +411,7 @@ pub fn Users() -> impl IntoView {
         })
     };
 
-    // Only rows this admin could actually act on can be ticked: the server
-    // would refuse the rest, and a checkbox that leads to a 403 is a trap.
+    // A checkbox that leads to a 403 is a trap.
     let selectable = move || {
         let Some(me) = auth.user.get() else {
             return Vec::new();
@@ -482,8 +438,7 @@ pub fn Users() -> impl IntoView {
             }
         });
     };
-    // The ticked rows themselves, from both groups. A row that has since left
-    // the list simply drops out.
+    // From both groups; a row that has left the list drops out.
     let chosen = move || {
         let ticked = selected.get();
         admin_rows
@@ -505,8 +460,7 @@ pub fn Users() -> impl IntoView {
             .filter(|row| !row.is_admin)
             .collect::<Vec<_>>()
     };
-    // Kept out of the view: leptosfmt reads the `>` of a comparison inside an
-    // attribute as the element's closing bracket and mangles the markup.
+    // Out of the view: leptosfmt reads a `>` in an attribute as a closing bracket.
     let has_selection = move || !selected.get().is_empty();
     let can_promote = move || !chosen_others().is_empty();
     let can_demote = move || !chosen_admins().is_empty();

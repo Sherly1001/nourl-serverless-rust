@@ -1559,8 +1559,7 @@ async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
     let command = if on {
         doc! {
             "configureFailPoint": "failCommand",
-            // Not `times: 1`: the first write must land, or there is nothing
-            // for the rollback to undo.
+            // Not `times: 1`: the first write must land to have something to undo.
             "mode": {"skip": 1},
             "data": {
                 "failCommands": ["update"],

@@ -1,8 +1,4 @@
-//! What the confirmation dialogs say.
-//!
-//! Kept apart from the page so the wording — singular against plural, the
-//! counts, the difference between one account and a selection — can be read
-//! and tested on its own.
+//! What the confirmation dialogs say, kept apart so it can be tested.
 
 use shared::AdminUserInfo;
 
@@ -204,8 +200,7 @@ mod tests {
             "{many}"
         );
 
-        // Demoting says how far the cascade reaches, and says nothing extra
-        // when it reaches nobody.
+        // Says how far the cascade reaches, and nothing when it reaches nobody.
         assert_eq!(demote_warning(&plain("leaf"), 0), "Remove admin from leaf?");
         let one = demote_warning(&plain("mid"), 1);
         assert!(one.contains("The 1 admin they promoted"), "{one}");

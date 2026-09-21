@@ -29,8 +29,7 @@ pub fn ConfirmDialog(
     // "Outside the card" is exactly the backdrop.
     dismiss_on_outside_click(card, open.write_only());
 
-    // Focus lands on Cancel: most of this deletes something, and Cancel is the
-    // one button never disabled. A frame late, since `Show` renders it first.
+    // Cancel: most of this deletes, and it is the one button never disabled.
     Effect::new(move |_| {
         if !open.get() {
             return;

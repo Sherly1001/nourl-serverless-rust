@@ -1,5 +1,4 @@
-//! Paging, searching and sorting shared by the table pages, which talk to
-//! endpoints taking the same query string.
+//! Paging, searching and sorting shared by the table pages.
 
 use std::time::Duration;
 

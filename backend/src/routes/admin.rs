@@ -345,13 +345,10 @@ pub async fn bulk_users(
         grace_days: state.config.orphan_grace_days,
         ..Default::default()
     };
-    // Who kept the flag, not how many times one was handed upwards: an admin
-    // below two of the selected accounts climbs a level as each of them goes,
-    // and a running total would report it once per level.
+    // Who kept the flag: one admin climbing twice is not two admins.
     let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
     for target in &targets {
-        // Re-read: an earlier row in this same request may have demoted them or
-        // moved them, and what happens next depends on where they are now.
+        // Re-read: an earlier row in this request may have moved them.
         let Some(current) = users::find_by_id_in(&state.db, &mut session, &target.id).await? else {
             continue;
         };

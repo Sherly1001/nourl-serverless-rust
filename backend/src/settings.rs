@@ -175,8 +175,7 @@ mod tests {
         let rotated = stored.merged(&update(true, Some("id"), Some("newer")));
         assert_eq!(rotated.client_secret.as_deref(), Some("newer"));
 
-        // Turning a method off does not throw its credentials away, so it can
-        // be turned back on without re-entering them.
+        // Off keeps the credentials, so it can go back on without re-entry.
         let disabled = stored.merged(&update(false, Some("id"), None));
         assert!(!disabled.enabled);
         assert_eq!(disabled.client_secret.as_deref(), Some("s3cret"));

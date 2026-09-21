@@ -1,8 +1,4 @@
-//! Which ways in the site offers, and the OAuth credentials behind them.
-//!
-//! Root-admin only, matching the `RootAdmin` extractor the two endpoints sit
-//! behind: an ordinary admin asking for this page is answered 403, so the page
-//! refuses them itself rather than showing a form that cannot be loaded.
+//! Which ways in the site offers, and the credentials behind them.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -206,9 +202,7 @@ pub fn Settings() -> impl IntoView {
         }
     };
 
-    // Nothing is asked for until the session has resolved and turns out to be
-    // the root's: `auth.user` is `None` both while `/api/auth/me` is in flight
-    // and when signed out, and anyone else is answered 403.
+    // Waits for the session: `None` means both in flight and signed out.
     Effect::new(move |_| {
         if !auth.loaded.get() || !auth.is_root() {
             return;
@@ -248,9 +242,7 @@ pub fn Settings() -> impl IntoView {
         spawn_local(async move {
             match api::save_admin_settings(&request).await {
                 Ok(settings) => {
-                    // Reloading the drafts clears the secret boxes: what was
-                    // just saved cannot be read back, so showing anything
-                    // there would be a lie.
+                    // What was just saved cannot be read back.
                     fill_all(&settings);
                     set_loaded.try_set(Some(settings));
                     toasts.success("Settings saved");
@@ -261,8 +253,7 @@ pub fn Settings() -> impl IntoView {
         });
     };
 
-    // Kept out of the view: leptosfmt reads a comparison's `>` inside an
-    // attribute as the element's closing bracket and mangles the markup.
+    // Out of the view: leptosfmt reads a `>` in an attribute as a closing bracket.
     let waiting = move || loaded.get().is_none();
     let busy = move || saving.get() || waiting();
 
@@ -356,8 +347,7 @@ mod tests {
         let typed = to_update(true, "id", " new ", true);
         assert_eq!(typed.client_secret.as_deref(), Some("new"));
 
-        // Clearing the field on purpose sends an empty string, which retires
-        // the credential.
+        // An empty string retires the credential.
         let cleared = to_update(false, "id", "", true);
         assert_eq!(cleared.client_secret.as_deref(), Some(""));
     }

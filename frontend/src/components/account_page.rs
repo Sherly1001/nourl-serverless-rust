@@ -1,5 +1,4 @@
-//! Everything an account holder can do to their own account: their profile,
-//! their password, the identities they sign in with, and closing it.
+//! Everything an account holder can do to their own account.
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
@@ -85,20 +84,16 @@ pub fn AccountPage() -> impl IntoView {
     let avatar_url = RwSignal::new(String::new());
     let current_password = RwSignal::new(String::new());
     let new_password = RwSignal::new(String::new());
-    // Its own field rather than the one above: borrowing that box would have
-    // the dialog read a value typed for something else.
+    // Its own field: the box above holds a value typed for something else.
     let closing_password = RwSignal::new(String::new());
     let confirm_open = RwSignal::new(false);
     let saving = RwSignal::new(false);
-    // `Orphan` to start with: it breaks nothing for whoever is following the
-    // links, and the destructive answer should be reached on purpose.
+    // `Orphan` first: the destructive answer should be reached on purpose.
     let links = RwSignal::new(LinkDisposition::Orphan);
-    // Scoped with `mine`: an admin's unscoped list is every link on the site,
-    // which is not what closing this account touches.
+    // `mine`: an admin's unscoped list is not what closing this touches.
     let link_count = RwSignal::new(0u64);
 
-    // Fill the form from the session, and refill it whenever the session
-    // changes underneath — a save replaces it.
+    // Refills whenever the session changes underneath, as a save replaces it.
     Effect::new(move |_| {
         if let Some(me) = auth.user.get() {
             username.set(me.username.clone());
@@ -131,8 +126,7 @@ pub fn AccountPage() -> impl IntoView {
         (!trimmed.is_empty()).then_some(trimmed)
     };
 
-    // The server's own rules, minus uniqueness — only it knows that, and it
-    // answers 409 on the field.
+    // The server's rules minus uniqueness, which it answers 409 on.
     let username_error = Memo::new(move |_| validate_username(&username.get()).err());
     // Both optional, so blank is the field being cleared, not an error.
     let email_error = Memo::new(move |_| {
@@ -181,8 +175,7 @@ pub fn AccountPage() -> impl IntoView {
         });
     };
 
-    // Kept out of the view: leptosfmt reads a comparison's `>` inside an
-    // attribute as the element's closing bracket and mangles the markup.
+    // Out of the view: leptosfmt reads a `>` in an attribute as a closing bracket.
     let has_password = move || auth.user.get().is_some_and(|me| me.has_password);
     let password_heading = move || {
         if has_password() {
@@ -200,8 +193,7 @@ pub fn AccountPage() -> impl IntoView {
     });
     let password_ready = Memo::new(move |_| {
         let typed = new_password.get();
-        // Asking for a current password an account never had would lock a
-        // provider-only account out of setting one. The server agrees.
+        // A provider-only account has none to prove, and the server agrees.
         let proven = !has_password() || !current_password.get().trim().is_empty();
         !typed.is_empty() && new_password_error.get().is_none() && proven
     });
@@ -240,8 +232,7 @@ pub fn AccountPage() -> impl IntoView {
         });
     };
 
-    // A blank one is a 401 on an account that has a password, so the button
-    // would only spend a round trip to learn what the page knows.
+    // A blank one is a 401, so the round trip would learn nothing new.
     let close_ready = move || !has_password() || !closing_password.get().trim().is_empty();
     // Out of the view for the same reason as `has_password`.
     let owns_links = move || link_count.get() != 0;

@@ -23,8 +23,7 @@ fn ToastCard(toast: Toast) -> impl IntoView {
     let toasts = use_toasts();
     let total = toast.kind.lifetime_ms();
     let (remaining, set_remaining) = signal(total);
-    // Reading a message takes time; the countdown waits while the pointer is
-    // over the card.
+    // The countdown waits while the pointer is over the card.
     let (paused, set_paused) = signal(false);
     let id = toast.id;
 
@@ -42,16 +41,14 @@ fn ToastCard(toast: Toast) -> impl IntoView {
         Duration::from_millis(u64::from(TICK_MS)),
     )
     .ok();
-    // Without this the interval keeps firing against a signal whose owner is
-    // gone once the toast is dismissed.
+    // Or the interval keeps firing against a disposed signal.
     on_cleanup(move || {
         if let Some(handle) = handle {
             handle.clear();
         }
     });
 
-    // `mt-0.5` centres it on the *first* line, not the whole message: 2px, the
-    // gap between the 20px icon and a 24px line box. The 24px ✕ needs none.
+    // `mt-0.5` centres it on the first line, not the whole message.
     let icon = format!("{} size-5 shrink-0 mt-0.5", toast.kind.icon_class());
     let message = toast.message.clone();
 

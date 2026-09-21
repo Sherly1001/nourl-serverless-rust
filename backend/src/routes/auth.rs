@@ -170,8 +170,7 @@ pub async fn delete_me(
     CurrentUser(user): CurrentUser,
     AppJson(body): AppJson<DeleteAccountRequest>,
 ) -> Result<Response, AppError> {
-    // Before the admin check: someone who cannot prove who they are learns
-    // nothing about the account's standing.
+    // First: an unproven caller learns nothing about the account.
     if let Some(stored) = user.hash_passwd.as_deref() {
         let current = body.current_password.as_deref().ok_or_else(|| {
             AppError::unauthorized("current password is required").on_field("current_password")
@@ -182,8 +181,7 @@ pub async fn delete_me(
         }
     }
     if user.is_admin {
-        // Named differently for a root, because "resign first" is advice they
-        // cannot act on: only the database can take a root's flag away.
+        // A root cannot act on "resign first", so it is worded for them.
         return Err(AppError::forbidden(if user.promoted_by.is_some() {
             "you are an admin so cannot close your own account — give up the admin flag first"
         } else {

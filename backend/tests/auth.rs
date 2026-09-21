@@ -850,8 +850,7 @@ async fn an_admin_cannot_close_their_own_account() {
         .unwrap();
     assert_eq!(still_there.status(), StatusCode::OK);
 
-    // Resigning is the way out, and then the account can be closed. This one
-    // was promoted rather than seeded, so it is allowed to resign.
+    // Promoted rather than seeded, so resigning is open to it.
     let id = body_json(still_there).await["id"]
         .as_str()
         .unwrap()

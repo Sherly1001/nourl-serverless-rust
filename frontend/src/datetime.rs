@@ -1,6 +1,4 @@
-//! What the date field holds, and what the API takes. The browser's offset is
-//! appended rather than converted away, so there is no calendar arithmetic
-//! here to get wrong at a month boundary.
+//! What the date field holds, and what the API takes.
 
 /// Minutes from UTC, east positive. `Date::getTimezoneOffset` reports the
 /// opposite sign — Tokyo answers `-540` — so it is negated here.
@@ -154,8 +152,7 @@ pub fn mask_display(input: &str) -> String {
                 continue;
             }
         } else if digits.is_empty() {
-            // A separator with nothing before it: the field it would close was
-            // closed already, or was never opened.
+            // A separator with nothing before it closes nothing.
             continue;
         }
         let mut value: i64 = digits.parse().unwrap_or(0);

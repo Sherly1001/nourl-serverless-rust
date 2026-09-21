@@ -109,17 +109,14 @@ fn error_in_hash(hash: &str) -> Option<(&str, &str)> {
 #[component]
 pub fn Login() -> impl IntoView {
     let auth = use_auth();
-    // Nobody signed in belongs on this page. Covers both arriving with a
-    // session already in hand and the moment a sign-in succeeds, so the submit
-    // handler does not navigate itself.
+    // Covers arriving signed in and signing in, so submit need not navigate.
     Effect::new(move |_| {
         if auth.user.get().is_some() {
             go_to_my_urls();
         }
     });
 
-    // Which buttons to draw. Defaults to nothing rather than to everything, so
-    // a failed load shows no button that leads to a switched-off provider.
+    // Defaults to nothing, so a failed load offers no dead provider.
     let (methods, set_methods) = signal(AuthMethods::default());
     Effect::new(move |_| {
         spawn_local(async move {
@@ -150,17 +147,14 @@ pub fn Login() -> impl IntoView {
             .flatten()
             .or_else(|| error_for(&server_error.get(), "password").map(String::from))
     });
-    // Whatever could not be pinned to a field — a failed login, a disabled
-    // method, a network fault — is a system-level message, so it goes to the
-    // toast stack rather than growing the form.
+    // What pins to no field goes to the toasts rather than growing the form.
     let toasts = use_toasts();
     Effect::new(move |_| {
         if let Some(err) = server_error.get().filter(|e| e.field.is_none()) {
             toasts.error(err.message);
         }
     });
-    // The callback reports failure through the URL, since it redirects rather
-    // than answering. Say it once, then take it back out of the address bar.
+    // Said once, then taken back out of the address bar.
     Effect::new(move |_| {
         let Some(window) = web_sys::window() else {
             return;
@@ -204,8 +198,7 @@ pub fn Login() -> impl IntoView {
                 .await
             };
             match result {
-                // The redirect is left to the effect below, which also covers
-                // arriving here with a session already in hand.
+                // Left to the effect below, which also covers arriving signed in.
                 Ok(user) => {
                     auth.user.set(Some(user));
                     auth.loaded.set(true);

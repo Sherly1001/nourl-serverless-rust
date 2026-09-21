@@ -173,8 +173,7 @@ impl UserListParams {
     /// Excludes admins, who come back whole alongside this page and would
     /// otherwise be counted twice.
     pub fn filter(&self) -> Document {
-        // `$ne` rather than `false`, because an account that predates the field
-        // has no `is_admin` at all.
+        // `$ne`: an account predating the field has no `is_admin` at all.
         let mut filter = doc! {"is_admin": {"$ne": true}};
         if let Some(q) = &self.q {
             filter.extend(any_field_matches(q, &["username", "display_name", "email"]));
@@ -237,8 +236,7 @@ mod tests {
         let filter = ListParams::from_query(&params(&[("q", "a.b*c")]))
             .unwrap()
             .filter(None);
-        // Both branches of the $or must carry the escaped pattern, or `.` and
-        // `*` would silently become wildcards.
+        // Both branches need the escaped pattern, or `.` becomes a wildcard.
         let branches = filter.get_array("$or").unwrap();
         assert_eq!(branches.len(), 2);
         for (branch, field) in branches.iter().zip(["code", "url"]) {
@@ -296,8 +294,7 @@ mod tests {
     fn users_and_urls_do_not_share_a_sort_whitelist() {
         let parsed = UserListParams::from_query(&params(&[("sort", "username,1")])).unwrap();
         assert_eq!(parsed.sort, doc! {"username": 1, "_id": 1});
-        // Derived from the chain rather than stored, and these rows have no
-        // chain — the tree is sorted by its own shape, not by a query string.
+        // Derived from the chain, which these rows have none of.
         assert!(UserListParams::from_query(&params(&[("sort", "admin_level,1")])).is_err());
         assert!(UserListParams::from_query(&params(&[("sort", "promoted_by,1")])).is_err());
     }
@@ -345,9 +342,7 @@ mod tests {
         let filter = UserListParams::from_query(&params(&[("q", "a.b")]))
             .unwrap()
             .filter();
-        // Admins are excluded whether or not a search is running: they come
-        // back whole from `users::admins`, and counting them here would report
-        // them in two places at once.
+        // They come back whole from `users::admins` and would count twice.
         assert_eq!(
             filter.get_document("is_admin").unwrap(),
             &doc! {"$ne": true}

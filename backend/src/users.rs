@@ -357,8 +357,7 @@ pub async fn reparent_children(
         // A root's children become roots, as the deleted account was.
         None => doc! {"$unset": {"promoted_by": ""}},
     };
-    // An admin climbing past two demoted accounts moves twice; a count cannot
-    // tell that from two admins moving once.
+    // One admin climbing twice and two climbing once are the same count.
     let mut cursor = collection(db)
         .find(doc! {"promoted_by": id})
         .projection(doc! {"_id": 0, "id": 1})

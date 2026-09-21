@@ -226,8 +226,7 @@ mod tests {
     #[test]
     fn a_truncated_name_does_not_end_on_a_separator() {
         let profile = Profile {
-            // Long enough to be cut, with the separator sitting exactly on the
-            // 32-character cap.
+            // Long enough to be cut, with the separator on the cap.
             username: Some(format!("{}-tail", "x".repeat(31))),
             ..Profile::default()
         };
@@ -252,8 +251,7 @@ mod tests {
         assert_eq!(new.display_name.as_deref(), Some("Octo Cat"));
         assert_eq!(new.email.as_deref(), Some("octo@example.com"));
         assert_eq!(new.avatar_url.as_deref(), Some("https://example.com/a.png"));
-        // No password: these accounts sign in through the provider until their
-        // owner sets one.
+        // No password until the owner sets one.
         assert!(new.hash_passwd.is_none());
     }
 }

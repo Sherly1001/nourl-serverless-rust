@@ -35,8 +35,7 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
     )
     .await?;
 
-    // Partial, not sparse: legacy accounts store explicit nulls, which sparse
-    // does not skip and a unique index would treat as equal.
+    // Partial, not sparse: sparse does not skip the legacy explicit nulls.
     let users = db.collection::<Document>("users");
     for field in ["id", "username", "github_id", "google_id", "facebook_id"] {
         users
@@ -54,8 +53,7 @@ pub async fn ensure_indexes(db: &Database) -> mongodb::error::Result<()> {
             .await?;
     }
 
-    // Not optional: without these, the admin list's join and `$graphLookup`
-    // both walk the whole collection.
+    // Without these, the join and `$graphLookup` walk the whole collection.
     urls.create_index(IndexModel::builder().keys(doc! {"owner": 1}).build())
         .await?;
     users

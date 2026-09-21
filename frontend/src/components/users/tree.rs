@@ -1,14 +1,4 @@
-//! The admin chain as the page holds it: ancestry, ordering, folding, search.
-//!
-//! Every function here is pure and takes the list the server sent, so the
-//! shapes the page draws can be checked without a browser or a database.
-//!
-//! The permission rules — [`may_manage`] and [`may_move_under`] — deliberately
-//! restate what `backend/src/routes/admin.rs` enforces. They are not the
-//! authority and cannot be: the server decides by walking `promoted_by` in
-//! Mongo, and answers 403 whatever this file thinks. They exist so the page
-//! does not offer a button that is going to be refused. If the server's rules
-//! change, these change with them.
+//! The admin chain as the page holds it; the server remains the authority.
 
 use std::collections::{HashMap, HashSet};
 
@@ -54,8 +44,7 @@ pub fn may_manage(
         return false;
     }
     if !row.is_admin {
-        // In no subtree, so any admin may act on them — the same reason the
-        // server allows it: otherwise a fresh signup could never be promoted.
+        // In no subtree, or a fresh signup could never be promoted.
         return true;
     }
     descends_from(row.promoted_by.as_deref(), &actor.id, parent_of)
@@ -84,8 +73,7 @@ pub fn may_move_under(
     if row.promoted_by.as_deref() == Some(parent.id.as_str()) {
         return false;
     }
-    // Only inside your own part of the chain — yourself included, which is the
-    // ordinary "take responsibility for them" move.
+    // Your own part of the chain, yourself included.
     if parent.id != actor.id && !descends_from(parent.promoted_by.as_deref(), &actor.id, parent_of)
     {
         return false;
@@ -310,8 +298,7 @@ mod tests {
         assert!(!may_resign(&me, &row(&admins, "right")));
         assert!(!may_resign(&me, &plain("left")));
 
-        // Nobody is above a root to give it back, and the cascade would take
-        // every admin below them with it.
+        // Nobody is above a root to give it back.
         me.is_root = true;
         assert!(!may_resign(&me, &row(&admins, "left")));
 
@@ -424,8 +411,7 @@ mod tests {
 
     #[test]
     fn the_tree_draws_each_branch_under_its_parent() {
-        // Deliberately not in tree order: the server sorts by whatever the
-        // column headers asked for, and the shape is imposed here.
+        // Not tree order: the server sorts, and the shape is imposed here.
         let admins = vec![
             admin_row("left_child", 2, Some("left")),
             admin_row("right", 1, Some("root")),
@@ -498,8 +484,7 @@ mod tests {
         let ids: Vec<&str> = found.iter().map(|row| row.id.as_str()).collect();
         assert_eq!(ids, ["root", "left", "left_child"]);
 
-        // A hit brings its chain, not its branch: nothing under `right`, and
-        // the other root's branch is gone entirely.
+        // A hit brings its chain, not its branch.
         let ids: Vec<String> = search_tree(&admins, "right")
             .iter()
             .map(|row| row.id.clone())

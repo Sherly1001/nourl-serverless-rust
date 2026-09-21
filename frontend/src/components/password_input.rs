@@ -1,7 +1,4 @@
-//! A password box with a reveal toggle, shared by every page that asks for one.
-//!
-//! The toggle exists because a password typed blind is a password typed wrong,
-//! and a second "confirm" box only asks for the same mistake twice.
+//! A password box with a reveal toggle, instead of a second "confirm" box.
 
 use leptos::prelude::*;
 

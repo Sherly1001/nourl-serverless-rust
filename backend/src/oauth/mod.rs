@@ -1,5 +1,4 @@
-//! Signing in with GitHub, Google or Facebook, all behind [`Provider`] so the
-//! routes never learn which, and a test can hand the router a stub.
+//! Signing in with GitHub, Google or Facebook, all behind [`Provider`].
 
 pub mod account;
 pub mod facebook;

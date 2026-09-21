@@ -30,8 +30,7 @@ pub fn dismiss_on_outside_click(root: NodeRef<leptos::html::Div>, set_open: Writ
     let _ =
         document.add_event_listener_with_callback("pointerdown", pointer.as_ref().unchecked_ref());
     let _ = document.add_event_listener_with_callback("keydown", keydown.as_ref().unchecked_ref());
-    // The cleanup owns the closures, keeping them alive exactly as long as the
-    // listeners. Wrapped because `on_cleanup` wants `Send + Sync`.
+    // The cleanup owns the closures; wrapped because it wants `Send + Sync`.
     let handles = send_wrapper::SendWrapper::new((document, pointer, keydown));
     on_cleanup(move || {
         let (document, pointer, keydown) = handles.take();

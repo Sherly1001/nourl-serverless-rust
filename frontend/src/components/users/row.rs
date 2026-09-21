@@ -1,5 +1,4 @@
-//! One account as a table row: the indent and its guides, the chevron, the
-//! admin switch, the move menu and the row's own actions.
+//! One account as a table row, with its indent, switch, menu and actions.
 
 use std::collections::{HashMap, HashSet};
 
@@ -109,8 +108,7 @@ pub fn UserRow(
         .clone()
         .unwrap_or_else(|| user.username.clone());
     let methods = sign_in_methods(&user);
-    // Untracked throughout: a row is a snapshot, and the page already refetches
-    // and redraws the whole list when the signed-in user changes.
+    // Untracked: a row is a snapshot, and the page redraws the list.
     let mine = auth.user.get_untracked().is_some_and(|me| me.id == user.id);
     let manageable = auth
         .user
@@ -126,9 +124,7 @@ pub fn UserRow(
     // Only a row the server would let this admin re-parent is worth picking up.
     let movable = is_admin && manageable;
 
-    // Whether this row would accept the drag in flight. Reactive because it is
-    // re-answered on every `dragover`, against whichever row is being carried.
-    // `StoredValue` so the closure stays `Copy` and every handler can take one.
+    // Re-answered on every `dragover`; stored so the closure stays `Copy`.
     let chain = StoredValue::new(parent_of.clone());
     let accepts = move || {
         let (Some(me), Some(carried)) = (auth.user.get_untracked(), dragging.get()) else {
@@ -170,18 +166,15 @@ pub fn UserRow(
         if !accepts() {
             return;
         }
-        // Only a cancelled `dragover` marks a valid drop zone, so refusing to
-        // cancel is how an invalid target says no.
+        // Refusing to cancel is how an invalid target says no.
         ev.prevent_default();
-        // `dragover` repeats for as long as the pointer is held here, so the
-        // signal is only written when the answer actually changes.
+        // `dragover` repeats, so only write when the answer changes.
         if !hovered() {
             drop_target.set(Some(id.get_value()));
         }
     };
     let on_dragleave = move |ev: leptos::ev::DragEvent| {
-        // Bubbles from the cells too, so a move onto a child of this row reads
-        // as leaving it. Only a departure to something outside counts.
+        // Bubbles from the cells, so only a departure outside counts.
         let into_child = ev
             .current_target()
             .and_then(|here| here.dyn_into::<web_sys::Node>().ok())
@@ -201,21 +194,17 @@ pub fn UserRow(
             on_move.run((carried, id.get_value()));
         }
     };
-    // `StoredValue` rather than plain `String`s: these labels sit inside
-    // `<Show>` bodies, which are `Fn` and so cannot consume what they capture.
+    // Stored: a `<Show>` body is `Fn` and cannot consume what it captures.
     let username = user.username.clone();
     let select_label = StoredValue::new(format!("Select {}", user.username));
     let move_label = StoredValue::new(format!("Move {}", user.username));
     let delete_label = StoredValue::new(format!("Delete {}", user.username));
     let admin_label = StoredValue::new(format!("Admin: {}", user.username));
-    // What each control does, for the hover hint. An icon on its own says
-    // nothing, and the action differs by row: a switch that grants for one
-    // account withdraws for the next.
+    // The same switch grants on one row and withdraws on the next.
     let admin_hint = match (manageable, resignable, is_admin) {
         (true, _, true) => "Remove admin",
         (true, _, false) => "Make admin",
-        // Standing down reads differently from taking someone else's flag: it
-        // needs nobody's permission, and it is not something to do by accident.
+        // Standing down reads differently from taking someone else's flag.
         (false, true, _) => "Give up admin",
         (false, false, _) if mine && is_admin => {
             "The top admin's flag can only be removed in the database"
@@ -230,8 +219,7 @@ pub fn UserRow(
     let fold_hint = "Collapse or expand";
     let fold_label = StoredValue::new(format!("Collapse {}", user.username));
 
-    // Where this row could be moved to, worked out from the tree already
-    // loaded rather than by asking the server what it would accept.
+    // From the tree already loaded, rather than by asking the server.
     let destinations: Vec<AdminUserInfo> = auth
         .user
         .get_untracked()
@@ -244,13 +232,11 @@ pub fn UserRow(
         })
         .unwrap_or_default();
     let (menu_open, set_menu_open) = signal(false);
-    // Worked out when the menu opens, since it is pinned to the viewport rather
-    // than to the row.
+    // On open, since the menu is pinned to the viewport rather than the row.
     let menu_style = RwSignal::new(String::new());
     let menu_root: NodeRef<leptos::html::Div> = NodeRef::new();
     dismiss_on_outside_click(menu_root, set_menu_open);
-    // A fixed menu does not travel with its row, so scrolling the list closes
-    // it rather than leaving it stranded next to somebody else's row.
+    // A fixed menu does not travel with its row, so a scroll closes it.
     Effect::new(move |seen: Option<u32>| {
         let tick = scrolled.get();
         if seen.is_some_and(|before| before != tick) {
@@ -547,9 +533,7 @@ mod tests {
             menu_placement((700.0, 732.0, 900.0), (1000.0, 800.0)),
             "position:fixed;right:100px;bottom:104px;max-height:256px"
         );
-        // And in a short window neither side has 16rem: the roomier one still
-        // wins, capped to what is there so the menu scrolls inside itself
-        // rather than off-screen.
+        // In a short window the roomier side wins, capped so it scrolls inside.
         assert_eq!(
             menu_placement((100.0, 132.0, 900.0), (1000.0, 200.0)),
             "position:fixed;right:100px;bottom:104px;max-height:96px"
@@ -582,8 +566,7 @@ mod tests {
             ["password", "github"]
         );
         assert_eq!(sign_in_methods(&with(false, &["google"])), ["google"]);
-        // An account with neither can only exist through direct database
-        // editing, and the column should say so by being empty.
+        // Neither is only reachable by editing the database directly.
         assert!(sign_in_methods(&with(false, &[])).is_empty());
     }
 }

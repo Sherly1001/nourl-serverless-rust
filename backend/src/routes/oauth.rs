@@ -1,5 +1,4 @@
-//! Both ends of an OAuth sign-in, always answering with a redirect: the
-//! browser is mid-navigation, where an error document is a dead end.
+//! Both ends of an OAuth sign-in, always answering with a redirect.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -64,8 +63,7 @@ pub async fn start(
     if !usable(&cfg) {
         return refuse(jar, &app.config, "oauth_disabled");
     }
-    // In the signed cookie, not the query: a caller must not choose between
-    // signing in and attaching an identity to the account they hold.
+    // In the signed cookie: a caller must not choose between the two.
     let link = session_of(session).is_some();
     let Ok((nonce, cookie)) = state::issue(&app.config, link) else {
         return refuse(jar, &app.config, "oauth_disabled");

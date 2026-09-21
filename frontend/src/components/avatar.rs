@@ -37,10 +37,7 @@ pub fn Avatar(
         return view! { <span class=initial_class>{letter}</span> }.into_any();
     };
 
-    // A stored url can 404, expire, or point at something that is not an image
-    // — the browser paints its broken-image glyph for all three. Fall back to
-    // the initial instead. A fresh `Avatar` is built whenever its inputs
-    // change, so this resets itself with a new picture.
+    // A url that 404s paints a broken-image glyph; fall back to the initial.
     let (broken, set_broken) = signal(false);
     let fallback_class = initial_class.clone();
     view! {

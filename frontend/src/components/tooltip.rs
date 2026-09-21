@@ -84,9 +84,7 @@ pub fn Tooltip(
     // `Portal` rebuilds its children, so the text is read more than once.
     let body = StoredValue::new(text.clone());
 
-    // Anything that moves the anchor takes the bubble down: a wheel or a
-    // dragged scrollbar moves it without moving the pointer, so `mouseleave`
-    // never fires. Capture phase, since `scroll` does not bubble.
+    // A wheel moves the anchor without the pointer, so `mouseleave` never fires.
     type Listener = send_wrapper::SendWrapper<(web_sys::Document, Closure<dyn FnMut()>)>;
     let listener: StoredValue<Option<Listener>> = StoredValue::new(None);
     let unlisten = move || {
@@ -253,11 +251,9 @@ mod tests {
     fn the_arrow_never_leaves_the_bubble() {
         // Room to spare: sits at the near corner, where it always used to.
         assert_eq!(arrow_left(100.0, 100.0, 384.0), 8.0);
-        // An anchor past the bubble's far edge — a very wide control — keeps
-        // the arrow inside, clear of the rounded corner.
+        // An anchor past the far edge keeps the arrow clear of the corner.
         assert_eq!(arrow_left(900.0, 100.0, 384.0), 384.0 - 8.0 - 8.0);
-        // A bubble narrower than its own margins cannot satisfy both, and the
-        // near corner wins rather than the value going negative.
+        // Narrower than its own margins: the near corner wins over a negative.
         assert_eq!(arrow_left(900.0, 100.0, 12.0), 8.0);
     }
 }

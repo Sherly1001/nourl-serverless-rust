@@ -174,23 +174,16 @@ async fn upsert(
         }
     }
 
-    // A rename is a write at both ends. `code` carries a unique index, so
-    // without this the write would land on it and surface as a 500 — and the
-    // destination's owner would never have been consulted at all.
+    // Without this the unique index answers 500 and nobody is consulted.
     if body.code != code
         && let Some(target) = urls.find_one(doc! {"code": &body.code}).await?
     {
         match owner_id(&target) {
-            // Unowned links are already overwritable and deletable by anyone,
-            // so taking the code is no more than a DELETE followed by this
-            // same rename. Refusing it would only be friction.
+            // No more than a DELETE followed by this same rename.
             None => {
                 urls.delete_one(doc! {"code": &body.code}).await?;
             }
-            // Someone's link, and this rename would delete it. Whoever may
-            // write to it may do that — but never as a side effect, so it is
-            // refused until the caller has been shown whose link it is and
-            // sends the write back.
+            // Deleting somebody's link is allowed, but never as a side effect.
             Some(owner) => {
                 if !may_write(&target, user) {
                     return Err(owned_error(&body.code));
@@ -226,9 +219,7 @@ async fn upsert(
             set.insert("expires_at", at);
         }
     }
-    // `$setOnInsert` covers a new link but does not fire over an existing one,
-    // so creating over an unowned link claims it here instead. Editing never
-    // reassigns. `owner` may appear in only one operator, or Mongo refuses.
+    // `$setOnInsert` misses an existing document, and `owner` takes one operator.
     let mut on_insert = doc! {"created_at": bson::DateTime::now()};
     if let Some(user) = user {
         // The only way that takes a link off somebody, so it is asked for.
@@ -327,8 +318,7 @@ pub async fn list_urls(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<UrlListResponse>, AppError> {
     let parsed = ListParams::from_query(&params)?;
-    // Admins see every link. `mine=true` asks for the ordinary view anyway,
-    // which is what the account page needs.
+    // Admins see every link; `mine=true` asks for the ordinary view anyway.
     let mine = params.get("mine").is_some_and(|v| v == "true");
     let owner = (!user.is_admin || mine).then_some(user.id.as_str());
     let filter = parsed.filter(owner);
@@ -458,8 +448,7 @@ mod tests {
         let err = code_in_use(an_entry("abc", "https://example.com"), true);
         assert_eq!(err.status, axum::http::StatusCode::CONFLICT);
         assert!(err.message.contains("https://example.com"));
-        // The whole link, not just what the sentence happened to mention: a
-        // client offering to replace it has to show what it is replacing.
+        // A client offering to replace it has to show what it is replacing.
         assert_eq!(err.conflict.map(|c| c.hits), Some(4));
     }
 

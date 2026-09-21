@@ -89,8 +89,7 @@ impl Toasts {
         self.next_id.set(id.wrapping_add(1));
         let capacity = capacity_for(viewport_height());
         self.items.update(|list| {
-            // The oldest goes: longest read, nearest expiry, and the rest stay
-            // at full height.
+            // The oldest goes: longest read and nearest its own expiry.
             while list.len() >= capacity {
                 list.remove(0);
             }
