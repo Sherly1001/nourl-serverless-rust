@@ -37,8 +37,7 @@ pub fn parse_user(body: &str) -> Result<Profile, AppError> {
         username: None,
         display_name: me.name,
         email: me.email,
-        // Never true: the Graph API does not say whether the address was
-        // confirmed, and guessing would be an account-takeover path.
+        // The Graph API never says; guessing is an account-takeover path.
         email_verified: false,
         avatar_url: me.picture.and_then(|p| p.data).and_then(|d| d.url),
     })
@@ -122,9 +121,8 @@ mod tests {
         assert!(!url.contains("shh"));
     }
 
-    /// Facebook does not report whether an address is verified, so every
-    /// profile it returns is unverified — which is what keeps it from ever
-    /// joining an existing account by email alone.
+    /// Facebook never reports verification, so no profile of its can join an
+    /// existing account by email alone.
     #[test]
     fn a_facebook_email_is_never_treated_as_verified() {
         let body = r#"{
@@ -142,8 +140,7 @@ mod tests {
             Some("https://pics.example/f.png")
         );
 
-        // Even if the Graph API were to start claiming it, the field is not
-        // read — a Facebook profile stays unverified.
+        // The field is not read even if the Graph API starts sending it.
         let claiming = r#"{"id": "78", "email": "x@example.com", "email_verified": true}"#;
         assert!(!parse_user(claiming).unwrap().email_verified);
 

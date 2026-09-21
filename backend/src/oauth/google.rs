@@ -21,9 +21,8 @@ struct UserInfo {
     picture: Option<String>,
 }
 
-/// Reads the `userinfo` endpoint rather than the `id_token`: decoding the
-/// token properly means fetching and caching Google's JWKS inside a Lambda,
-/// and the access token is already proof enough for a one-shot read.
+/// `userinfo`, not the `id_token`: decoding that means caching Google's JWKS
+/// inside a Lambda, and the access token already proves enough.
 pub fn parse_user(body: &str) -> Result<Profile, AppError> {
     let info: UserInfo = serde_json::from_str(body).map_err(|_| unusable())?;
     let id = info
@@ -32,8 +31,7 @@ pub fn parse_user(body: &str) -> Result<Profile, AppError> {
         .ok_or_else(unusable)?;
     Ok(Profile {
         id,
-        // Google has no handle to offer; the username is derived from the
-        // display name instead.
+        // Google has no handle; the username comes from the display name.
         username: None,
         display_name: info.name,
         email: info.email,

@@ -4,13 +4,11 @@ use shared::{USERNAME_MAX, USERNAME_MIN};
 
 use super::{Profile, ProviderKind};
 
-/// How many suffixed names to offer before giving up. Long past the point
-/// where a human would have picked something else.
+/// Long past the point where a human would pick something else.
 const MAX_CANDIDATES: usize = 50;
 
-/// What the callback should do with a profile. Every input is something the
-/// caller has already looked up, so the rule itself is a pure function and can
-/// be read in one sitting.
+/// What the callback should do with a profile. Every input is already looked
+/// up, so the rule itself stays a pure function.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum Decision {
     /// The identity is already on this account.
@@ -23,11 +21,9 @@ pub enum Decision {
     Taken,
 }
 
-/// `existing` holds the id of whoever already has this provider identity.
-/// `session` is the signed-in user at the callback, re-read rather than
-/// trusted from the flow. `link` is the flag the state cookie carried.
-/// `email_match` is only `Some` when the provider verified the address and
-/// exactly one account holds it.
+/// `session` is re-read rather than trusted from the flow, and `email_match`
+/// is `Some` only when the provider verified the address and exactly one
+/// account holds it.
 pub fn decide(
     existing: Option<&str>,
     session: Option<&str>,
@@ -40,8 +36,7 @@ pub fn decide(
         (Some(owner), _, _) => Decision::SignIn(owner.to_string()),
         // Unknown identity, and a live session that asked to link it.
         (None, Some(me), true) => Decision::AttachTo(me.to_string()),
-        // Unknown identity, no link: a verified email is the only other way
-        // into an existing account.
+        // A verified email is the only other way into an existing account.
         (None, _, _) => match email_match {
             Some(owner) => Decision::AttachTo(owner.to_string()),
             None => Decision::Create,
@@ -49,13 +44,9 @@ pub fn decide(
     }
 }
 
-/// Usernames to try, in order, for a brand-new account: the derived name, then
-/// the same with `-2`, `-3` and so on. The caller takes the first one free.
-///
-/// Providers hand out anything at all — spaces, capitals, punctuation, a
-/// single character, forty characters — and none of it is a legal username
-/// here, so it is sanitised rather than rejected. Rejecting would mean showing
-/// somebody a form in the middle of a sign-in.
+/// The derived name, then `-2`, `-3`; the caller takes the first one free.
+/// A provider hands out anything at all, so it is sanitised rather than
+/// rejected — rejecting means a form in the middle of a sign-in.
 pub fn username_candidates(profile: &Profile, kind: ProviderKind) -> Vec<String> {
     let seed = profile
         .username
@@ -74,9 +65,7 @@ pub fn username_candidates(profile: &Profile, kind: ProviderKind) -> Vec<String>
                 format!("-{n}")
             };
             let mut candidate: String = base.chars().take(USERNAME_MAX - suffix.len()).collect();
-            // The cut can land on a separator, which would otherwise read as
-            // `some-name--2`. `base` holds no runs and no trailing separator,
-            // so there is never more than the one to drop.
+            // The cut can land on a separator, reading as `some-name--2`.
             if candidate.ends_with('-') {
                 candidate.pop();
             }
@@ -86,8 +75,7 @@ pub fn username_candidates(profile: &Profile, kind: ProviderKind) -> Vec<String>
         .collect()
 }
 
-/// Lowercase, only `[a-z0-9-_]`, no runs of separators, no leading or trailing
-/// one — the charset [`shared::validate_username`] accepts.
+/// The charset [`shared::validate_username`] accepts, with no separator runs.
 fn sanitise(raw: &str) -> String {
     let mut out = String::with_capacity(raw.len());
     for ch in raw.chars() {
@@ -124,8 +112,7 @@ mod tests {
             decide(None, Some("me"), true, None),
             Decision::AttachTo("me".into())
         );
-        // The identity already belongs to somebody else — attaching it would
-        // hand one account's sign-in to another.
+        // Attaching would hand one account's sign-in to another.
         assert_eq!(
             decide(Some("someone-else"), Some("me"), true, None),
             Decision::Taken
@@ -135,15 +122,13 @@ mod tests {
             decide(Some("me"), Some("me"), true, None),
             Decision::SignIn("me".into())
         );
-        // The flag said link but the session is gone: fall back to the
-        // ordinary rules rather than attaching to nobody.
+        // `link` but no session: fall back rather than attach to nobody.
         assert_eq!(decide(None, None, true, None), Decision::Create);
     }
 
     #[test]
     fn a_verified_email_joins_an_existing_account_and_an_unverified_one_does_not() {
-        // `email_match` is only ever `Some` when the provider verified it —
-        // the caller does not look the address up otherwise.
+        // Only ever `Some` when the provider verified the address.
         assert_eq!(
             decide(None, None, false, Some("by-email")),
             Decision::AttachTo("by-email".into())

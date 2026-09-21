@@ -4,12 +4,9 @@ use crate::config::Config;
 
 pub const NAME: &str = "nourl_session";
 
-/// SameSite=Lax rather than Strict so the OAuth callback redirect in phase 2b
-/// still carries the freshly set cookie.
-///
-/// `Max-Age` comes from the same `session_days` the token's `exp` is built
-/// from, so the browser stops sending the cookie exactly when the server would
-/// start rejecting it.
+/// `SameSite=Lax`, or the OAuth callback redirect would not carry it.
+/// `Max-Age` shares `session_days` with the token's `exp`, so the browser
+/// stops sending it exactly when the server would start rejecting it.
 pub fn session(config: &Config, token: String) -> Cookie<'static> {
     Cookie::build((NAME, token))
         .http_only(true)
@@ -20,8 +17,8 @@ pub fn session(config: &Config, token: String) -> Cookie<'static> {
         .build()
 }
 
-/// Same attributes with an immediate expiry — browsers only drop a cookie when
-/// the replacement matches on name, path and domain.
+/// Same attributes, immediate expiry: a browser drops a cookie only when the
+/// replacement matches on name, path and domain.
 pub fn cleared(config: &Config) -> Cookie<'static> {
     Cookie::build((NAME, ""))
         .http_only(true)

@@ -8,8 +8,7 @@ use crate::config::Config;
 use crate::error::AppError;
 
 pub const COOKIE: &str = "oauth_state";
-/// Long enough to sign in at the provider, short enough that an abandoned flow
-/// stops being usable.
+/// Long enough to sign in, short enough that an abandoned flow goes stale.
 const TTL_SECONDS: i64 = 600;
 
 /// What the cookie remembers between the two requests.
@@ -17,18 +16,14 @@ const TTL_SECONDS: i64 = 600;
 pub struct Flow {
     /// Echoed as the `state` parameter and compared on the way back.
     pub nonce: String,
-    /// Whether the flow started from a signed-in browser, and so means "attach
-    /// this identity to my account" rather than "sign me in".
+    /// Whether this means "attach to my account" rather than "sign me in".
     pub link: bool,
     pub exp: i64,
 }
 
-/// Mints a nonce and the cookie that remembers it.
-///
-/// Signed rather than stored: Lambda keeps nothing between requests, and a
-/// plain cookie would let anything able to write cookies for this host — a
-/// neighbouring subdomain, say — forge the `link` flag and graft its own
-/// provider identity onto somebody else's account.
+/// Mints a nonce and the cookie remembering it. Signed, not stored: Lambda
+/// keeps nothing between requests, and a plain cookie would let a neighbouring
+/// subdomain forge `link` and graft its identity onto someone's account.
 pub fn issue(config: &Config, link: bool) -> Result<(String, Cookie<'static>), AppError> {
     let nonce = format!(
         "{}{}",
@@ -49,17 +44,12 @@ pub fn issue(config: &Config, link: bool) -> Result<(String, Cookie<'static>), A
     Ok((nonce, build(config, token, TTL_SECONDS)))
 }
 
-/// The flow this cookie describes, if it verifies, has not expired, and names
-/// the nonce the provider handed back. Any doubt at all answers `None`.
-///
-/// The `exp` check is the crate's; the nonce comparison is what ties the
-/// callback to the browser that started it.
+/// The flow this cookie describes, if it verifies, is unexpired, and names the
+/// nonce handed back. Any doubt answers `None`. The nonce comparison is what
+/// ties the callback to the browser that started it.
 pub fn verify(config: &Config, cookie_value: &str, state_param: &str) -> Option<Flow> {
     let mut validation = Validation::new(Algorithm::HS256);
-    // The default is 60 seconds of grace, meant for clocks that disagree
-    // between issuer and verifier. Here both timestamps come from this
-    // server's own clock, so there is nothing to forgive — and a ten-minute
-    // window that quietly runs to eleven is not the one that was documented.
+    // No leeway: both timestamps come from this server's own clock.
     validation.leeway = 0;
     let flow = jsonwebtoken::decode::<Flow>(
         cookie_value,
@@ -71,8 +61,7 @@ pub fn verify(config: &Config, cookie_value: &str, state_param: &str) -> Option<
     (!state_param.is_empty() && flow.nonce == state_param).then_some(flow)
 }
 
-/// Same attributes with an immediate expiry — a browser only drops a cookie
-/// when the replacement matches on name and path.
+/// Same attributes, immediate expiry: the replacement must match to drop it.
 pub fn cleared(config: &Config) -> Cookie<'static> {
     build(config, String::new(), 0)
 }
@@ -81,11 +70,9 @@ fn build(config: &Config, value: String, max_age: i64) -> Cookie<'static> {
     Cookie::build((COOKIE, value))
         .http_only(true)
         .secure(config.cookie_secure)
-        // Lax, not Strict: the provider's redirect is a cross-site top-level
-        // navigation, and Strict would withhold the cookie exactly then.
+        // Lax: Strict withholds the cookie on the provider's own redirect.
         .same_site(SameSite::Lax)
-        // Narrower than the session cookie: nothing outside the auth routes
-        // has any use for it.
+        // Narrower than the session cookie; nothing else needs it.
         .path("/api/auth")
         .max_age(time::Duration::seconds(max_age))
         .build()
@@ -120,8 +107,7 @@ mod tests {
             "the flag decides whether this attaches to a session"
         );
 
-        // The nonce in the parameter has to be the one in the cookie: that is
-        // the whole point — it proves this browser started the flow.
+        // Proves this browser started the flow.
         assert!(verify(&config, cookie.value(), "some-other-nonce").is_none());
     }
 
@@ -130,18 +116,14 @@ mod tests {
         let ours = config("secret-a");
         let theirs = config("secret-b");
         let (nonce, cookie) = issue(&theirs, true).unwrap();
-        // Signed with a different secret: a cookie planted by a neighbouring
-        // subdomain must not be able to claim `link`.
+        // A cookie from a neighbouring subdomain must not claim `link`.
         assert!(verify(&ours, cookie.value(), &nonce).is_none());
         assert!(verify(&ours, "not-a-token", &nonce).is_none());
         assert!(verify(&ours, "", "").is_none());
     }
 
-    /// Ten minutes is plenty to sign in at a provider; an abandoned flow left
-    /// open all day must not still be usable.
-    ///
-    /// One second past is past. `jsonwebtoken` defaults to sixty seconds of
-    /// leeway, which [`verify`] turns off — this is the test that says so.
+    /// One second past is past: `jsonwebtoken` defaults to sixty seconds of
+    /// leeway, which [`verify`] turns off.
     #[test]
     fn an_expired_state_is_refused_even_with_the_right_nonce() {
         let config = config("secret-a");
@@ -193,9 +175,8 @@ mod tests {
         assert_eq!(gone.max_age(), Some(time::Duration::ZERO));
     }
 
-    /// Secure follows the session cookie's own setting, so a deployment that
-    /// had to turn it off for an exotic local setup does not end up with a
-    /// state cookie the browser refuses to store.
+    /// Secure follows the session cookie, so a local setup that turned it off
+    /// does not end up with a state cookie the browser refuses.
     #[test]
     fn secure_follows_the_deployments_own_setting() {
         let mut config = config("secret-a");

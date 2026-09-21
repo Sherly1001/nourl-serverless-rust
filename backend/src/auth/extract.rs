@@ -7,10 +7,8 @@ use crate::auth::{cookie, jwt};
 use crate::error::AppError;
 use crate::users::{self, User};
 
-/// Resolves the session cookie to a live user, or explains why not.
-///
-/// The user is reloaded on every request so `token_version` can revoke tokens
-/// that have not expired — the price of a long-lived session.
+/// Reloads the user every request, so `token_version` can revoke a token that
+/// has not expired — the price of a long-lived session.
 async fn current_user(state: &AppState, parts: &Parts) -> Result<Option<User>, AppError> {
     let jar = CookieJar::from_headers(&parts.headers);
     let Some(raw) = jar.get(cookie::NAME).map(|c| c.value().to_string()) else {
@@ -43,9 +41,8 @@ impl FromRequestParts<AppState> for CurrentUser {
     }
 }
 
-/// `None` when no cookie was sent. A cookie that is present but invalid is
-/// still an error — silently downgrading a rejected session to anonymous
-/// would let a revoked user keep writing to unowned links.
+/// `None` when no cookie was sent. A present-but-invalid one is still an
+/// error: downgrading to anonymous would let a revoked user keep writing.
 pub struct OptionalUser(pub Option<User>);
 
 impl FromRequestParts<AppState> for OptionalUser {
@@ -59,10 +56,8 @@ impl FromRequestParts<AppState> for OptionalUser {
     }
 }
 
-/// A `CurrentUser` that also carries the admin flag.
-///
-/// Rejecting here rather than inside each handler means a new admin route
-/// cannot forget the check: the type is the permission.
+/// A `CurrentUser` with the admin flag. The type is the permission, so a new
+/// admin route cannot forget the check.
 pub struct AdminUser(pub User);
 
 impl FromRequestParts<AppState> for AdminUser {
@@ -80,14 +75,9 @@ impl FromRequestParts<AppState> for AdminUser {
     }
 }
 
-/// An [`AdminUser`] who is also the root of the chain — the admin nobody
-/// promoted, seeded directly in the database.
-///
-/// Reserved for what is deployment configuration rather than day-to-day
-/// administration: the sign-in settings decide how *everyone* authenticates,
-/// including whether password login exists at all, so turning them off is a way
-/// to lock the system rather than to run it. Promoted admins manage accounts;
-/// the root decides how accounts get in.
+/// An [`AdminUser`] nobody promoted. Reserved for deployment configuration
+/// rather than administration: promoted admins manage accounts, the root
+/// decides how accounts get in at all.
 pub struct RootAdmin(pub User);
 
 impl FromRequestParts<AppState> for RootAdmin {

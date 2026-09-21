@@ -4,9 +4,8 @@ use argon2::password_hash::{PasswordHash, PasswordHasher, PasswordVerifier, Salt
 
 use crate::error::AppError;
 
-/// argon2id with the crate defaults, encoded as a PHC string (algorithm,
-/// parameters and salt travel with the hash, so parameters can change later
-/// without invalidating stored hashes).
+/// argon2id as a PHC string: parameters and salt travel with the hash, so
+/// they can change without invalidating stored ones.
 pub fn hash(password: &str) -> Result<String, AppError> {
     let salt = SaltString::generate(&mut OsRng);
     Argon2::default()
@@ -15,8 +14,7 @@ pub fn hash(password: &str) -> Result<String, AppError> {
         .map_err(AppError::internal)
 }
 
-/// False for a wrong password *and* for a stored hash we cannot parse — a
-/// corrupt record must not become an authentication bypass.
+/// False for an unparseable stored hash too: corruption is not a bypass.
 pub fn verify(password: &str, stored: &str) -> bool {
     PasswordHash::new(stored).is_ok_and(|parsed| {
         Argon2::default()

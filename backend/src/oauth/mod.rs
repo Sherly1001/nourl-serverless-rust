@@ -1,8 +1,5 @@
-//! Signing in with GitHub, Google or Facebook.
-//!
-//! Everything a provider needs sits behind [`Provider`], so the routes never
-//! learn which one they are talking to and the integration tests can hand the
-//! router a stub instead of a live OAuth app.
+//! Signing in with GitHub, Google or Facebook, all behind [`Provider`] so the
+//! routes never learn which, and a test can hand the router a stub.
 
 pub mod account;
 pub mod facebook;
@@ -17,11 +14,9 @@ use async_trait::async_trait;
 use crate::error::AppError;
 use crate::settings::MethodConfig;
 
-/// Which provider, and the `users` field its id is stored in.
-///
-/// One enum rather than three code paths: every lookup, link and disconnect is
-/// the same query with a different field name, and the field never comes from
-/// user input — only from here.
+/// Which provider, and the `users` field its id lives in. One enum, because
+/// every lookup is the same query with a different field — and that field
+/// never comes from user input.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ProviderKind {
     Github,
@@ -53,11 +48,9 @@ impl ProviderKind {
     }
 }
 
-/// What every provider boils down to.
-///
-/// `email_verified` is false unless the provider positively says otherwise: it
-/// is the only thing standing between "sign in with a provider" and "take over
-/// an account by claiming its email address".
+/// What every provider boils down to. `email_verified` is false unless one
+/// says otherwise: it is all that stands between signing in and taking over an
+/// account by claiming its address.
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct Profile {
     pub id: String,
@@ -68,10 +61,8 @@ pub struct Profile {
     pub avatar_url: Option<String>,
 }
 
-/// The three calls an OAuth sign-in needs, in the order it needs them.
-///
-/// A trait rather than free functions so the integration tests can hand the
-/// router a stub: the alternative is a live GitHub app in CI.
+/// The three calls an OAuth sign-in needs. A trait so a test can stub it; the
+/// alternative is a live GitHub app in CI.
 #[async_trait]
 pub trait Provider: Send + Sync {
     fn kind(&self) -> ProviderKind;
@@ -90,8 +81,7 @@ pub trait Provider: Send + Sync {
     async fn profile(&self, access_token: &str) -> Result<Profile, AppError>;
 }
 
-/// One implementation per kind, so a handler can go straight from a path
-/// segment to the thing that talks to that provider.
+/// One per kind, so a path segment maps straight to its provider.
 pub struct Providers {
     github: Arc<dyn Provider>,
     google: Arc<dyn Provider>,
@@ -129,9 +119,7 @@ impl Providers {
     }
 }
 
-/// Percent-encodes a query value. Hand-rolled rather than pulling a crate for
-/// a handful of call sites — and `reqwest`'s encoder only applies to bodies it
-/// builds, not to a URL assembled here.
+/// Hand-rolled: `reqwest`'s encoder only covers bodies it builds itself.
 pub fn form_encode(value: &str) -> String {
     let mut out = String::with_capacity(value.len());
     for byte in value.as_bytes() {
@@ -145,16 +133,13 @@ pub fn form_encode(value: &str) -> String {
     out
 }
 
-/// One message for every failure on the way to a profile.
-///
-/// The provider's own wording is deliberately dropped rather than forwarded: it
-/// is not ours to show, and it has been known to echo request parameters back.
+/// One message for every failure. A provider's own wording is dropped — it has
+/// been known to echo request parameters back.
 pub fn failed() -> AppError {
     AppError::validation("could not complete the sign-in with that provider")
 }
 
-/// A response that parsed but named nobody. Separate from [`failed`] only in
-/// wording; neither says anything the provider told us.
+/// Parsed but named nobody. Differs from [`failed`] only in wording.
 pub fn unusable() -> AppError {
     AppError::validation("the provider returned no usable account")
 }
@@ -171,8 +156,7 @@ mod tests {
             ProviderKind::parse("facebook"),
             Some(ProviderKind::Facebook)
         );
-        // Anything else is not a provider, and must not become a Mongo field
-        // name — the field is what the lookup queries on.
+        // Anything else must not become a Mongo field name.
         assert_eq!(ProviderKind::parse("hash_passwd"), None);
         assert_eq!(ProviderKind::parse("GitHub"), None);
 
@@ -198,8 +182,7 @@ mod tests {
         assert_eq!(form_encode("plain-value_1.0~"), "plain-value_1.0~");
     }
 
-    /// Nothing a provider says reaches the browser: both messages are fixed
-    /// strings, so a provider cannot put words in our mouth.
+    /// Fixed strings, so a provider cannot put words in our mouth.
     #[test]
     fn a_failure_says_nothing_the_provider_told_us() {
         assert_eq!(

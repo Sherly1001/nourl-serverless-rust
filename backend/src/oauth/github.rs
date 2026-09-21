@@ -45,11 +45,9 @@ pub fn parse_user(body: &str) -> Result<Profile, AppError> {
     })
 }
 
-/// The primary verified address, or the first verified one, or nothing.
-///
-/// Anything unverified is dropped: an unverified address is a claim, not a
-/// fact, and this value decides whether an identity may join an account that
-/// already exists.
+/// The primary verified address, else the first verified, else nothing.
+/// Unverified is a claim, not a fact, and this decides whether an identity may
+/// join an account that already exists.
 pub fn pick_verified_email(body: &str) -> Option<String> {
     let emails: Vec<Email> = serde_json::from_str(body).ok()?;
     let verified = || emails.iter().filter(|e| e.verified);
@@ -122,8 +120,7 @@ impl Provider for Github {
             .map_err(|_| failed())?;
         let mut profile = parse_user(&user)?;
 
-        // A second call, because /user only carries a public email — which may
-        // be absent, and is never marked verified.
+        // A second call: /user's email is public, absent, or unverified.
         if let Ok(response) = client
             .get(EMAILS)
             .bearer_auth(access_token)

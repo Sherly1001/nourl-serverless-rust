@@ -12,9 +12,8 @@ pub struct Claims {
     pub exp: i64,
 }
 
-/// `session_days` comes from `Config::session_days` (`JWT_SESSION_DAYS`). The
-/// cookie's `Max-Age` must be built from the same value, or the browser would
-/// keep sending a token the server already rejects.
+/// The cookie's `Max-Age` must come from the same `session_days`, or the
+/// browser keeps sending a token the server already rejects.
 pub fn encode(
     secret: &str,
     user_id: &str,
@@ -34,8 +33,7 @@ pub fn encode(
     .map_err(AppError::internal)
 }
 
-/// Any failure — bad signature, expired, malformed — is a 401. The reason is
-/// deliberately not echoed back to the caller.
+/// Every failure is a 401; the reason is not echoed back.
 pub fn decode(secret: &str, token: &str) -> Result<Claims, AppError> {
     jsonwebtoken::decode::<Claims>(
         token,
@@ -78,8 +76,7 @@ mod tests {
             let token = encode(SECRET, "user-1", 0, configured).unwrap();
             let claims = decode(SECRET, &token).unwrap();
             let days = (claims.exp - chrono::Utc::now().timestamp()) / 86_400;
-            // `configured` normally; one less only if a whole second elapsed
-            // between minting and reading.
+            // One less only if a whole second elapsed between mint and read.
             assert!(
                 ((configured - 1)..=configured).contains(&days),
                 "expiry was {days} days out, expected {configured}"
