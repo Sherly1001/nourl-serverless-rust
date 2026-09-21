@@ -6,9 +6,8 @@ use crate::components::avatar::Avatar;
 use crate::components::tooltip::Tooltip;
 use crate::datetime::{from_rfc3339, local_offset_minutes, to_display};
 
-/// The link's owner, when that is somebody other than whoever is being asked
-/// about it. `None` covers all three of "nobody owns it", "you do", and "not
-/// signed in" — none of which is a fact worth putting in front of the caller.
+/// The owner, when that is somebody else. `None` covers nobody owning it, you
+/// owning it, and not being signed in.
 pub fn other_owner(existing: &UrlEntry, auth: &AuthContext) -> Option<String> {
     let name = existing.owner.as_ref()?.username.clone()?;
     let me = auth.user.get().map(|u| u.username);
@@ -22,12 +21,9 @@ fn shown_expiry(stamp: Option<&String>) -> String {
         .unwrap_or_else(|| "never".into())
 }
 
-/// One fact about the link being replaced, and what it becomes.
-///
-/// Stacked rather than side by side: a destination is the thing being judged
-/// here, and two of them sharing a line leaves neither enough room to be read.
-/// Each still truncates — a dialog that grows to fit a tracking-parameter tail
-/// pushes its own buttons off the screen.
+/// One fact about the link being replaced, and what it becomes. Stacked, since
+/// two destinations sharing a line leave neither room to be read; truncated,
+/// since a dialog that grows pushes its own buttons off screen.
 #[component]
 fn Change(label: &'static str, was: String, now: String) -> impl IntoView {
     let changed = was != now;
@@ -59,18 +55,9 @@ fn Change(label: &'static str, was: String, now: String) -> impl IntoView {
     }
 }
 
-/// What replacing a link would change, and the one or two questions that cannot
-/// be answered for the caller.
-///
-/// The hit count is left alone by default: pointing a link somewhere else does
-/// not on its own mean the visits it already had stop counting, and only the
-/// person replacing it knows whether this is the same link with a new target or
-/// a different link wearing the same code.
-///
-/// Ownership likewise. An admin may write over anybody's link, and fixing a
-/// broken destination should not quietly acquire it — so taking it is a
-/// separate tick, offered only when the link is somebody else's and is going to
-/// survive this write.
+/// What replacing a link changes, and the questions that cannot be answered
+/// for the caller: the hit count and the owner both stay unless ticked, since
+/// repointing a link implies neither.
 #[component]
 pub fn ReplacementDetails(
     existing: UrlEntry,
@@ -79,8 +66,7 @@ pub fn ReplacementDetails(
     #[prop(into)]
     expires: Signal<String>,
     reset_hits: RwSignal<bool>,
-    /// Absent when the link is about to be deleted rather than replaced: there
-    /// is nothing left to take.
+    /// Absent when the link is being deleted: nothing left to take.
     #[prop(default = None)]
     claim: Option<RwSignal<bool>>,
     /// Whose the link is, when that is not the person being asked.

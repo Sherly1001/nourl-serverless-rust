@@ -2,32 +2,22 @@ use leptos::prelude::*;
 
 use crate::dropdown::dismiss_on_outside_click;
 
-/// A modal confirmation, replacing `window.confirm`.
-///
-/// The browser dialog cannot be styled, blocks the whole page, and on some
-/// browsers is suppressed entirely after repeated use — which would silently
-/// turn "delete" into a no-op.
-///
-/// Closing is handled here: the caller only says what to do on confirm.
+/// A modal confirmation. Not `window.confirm`, which cannot be styled and is
+/// suppressed after repeated use — silently turning "delete" into a no-op.
+/// Closing is handled here; the caller only says what confirming does.
 #[component]
 pub fn ConfirmDialog(
     open: RwSignal<bool>,
     #[prop(into)] title: Signal<String>,
     #[prop(into)] message: Signal<String>,
     #[prop(default = "Delete")] confirm_label: &'static str,
-    /// Colour of the confirm button. Red by default, because most of what
-    /// wants confirming is a deletion — but taking a flag away is not the same
-    /// weight as destroying an account, and should not look like it.
+    /// Red by default, but taking a flag away should not look like deleting.
     #[prop(into, default = Signal::derive(|| "btn-error".to_string()))]
     confirm_class: Signal<String>,
-    /// Anything the caller needs answered before confirming — a choice of what
-    /// to do, say. Drawn between the message and the buttons. A `ViewFn`
-    /// because the dialog's body is rebuilt every time it opens.
+    /// Drawn between message and buttons; a `ViewFn`, since it is rebuilt.
     #[prop(optional, into)]
     extra: Option<ViewFn>,
-    /// Holds the confirm button shut while `extra` is still missing something
-    /// it asked for — a password, say. Cancel always stays live: a dialog you
-    /// cannot answer must still be one you can leave.
+    /// Holds confirm shut while `extra` wants something. Cancel stays live.
     #[prop(optional, into)]
     confirm_disabled: Signal<bool>,
     on_confirm: Callback<()>,
@@ -36,22 +26,11 @@ pub fn ConfirmDialog(
     let cancel: NodeRef<leptos::html::Button> = NodeRef::new();
     // Stored so the `Show` body, which is an `Fn`, can reach it more than once.
     let extra = StoredValue::new(extra);
-    // Backdrop click and Escape both dismiss — the same helper the dropdowns
-    // use, since "outside the card" is exactly the backdrop.
+    // "Outside the card" is exactly the backdrop.
     dismiss_on_outside_click(card, open.write_only());
 
-    // Opening moves focus into the dialog, so it can be dealt with from the
-    // keyboard without hunting for it and a screen reader lands here rather
-    // than wherever the page was.
-    //
-    // Cancel rather than confirm: most of what gets confirmed here deletes
-    // something, and a focused confirm button puts that one keystroke from
-    // whoever was already typing. Cancel is also the one button that is never
-    // disabled, so the dialogs waiting on something in `extra` still land
-    // somewhere real.
-    //
-    // A frame late, because the button does not exist until `Show` has
-    // rendered it.
+    // Focus lands on Cancel: most of this deletes something, and Cancel is the
+    // one button never disabled. A frame late, since `Show` renders it first.
     Effect::new(move |_| {
         if !open.get() {
             return;

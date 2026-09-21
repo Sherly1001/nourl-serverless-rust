@@ -17,10 +17,8 @@ pub fn usable_url(raw: Option<&str>) -> Option<String> {
         .map(String::from)
 }
 
-/// A picture when there is one, the name's first letter when there is not.
-///
-/// `size` is the Tailwind size class (`size-8` in the navbar, `size-6` in a
-/// table row) so both shapes stay perfectly round at any scale.
+/// A picture, or the name's first letter. `size` is the Tailwind class, so
+/// both shapes stay round at any scale.
 #[component]
 pub fn Avatar(
     /// Already-trimmed image url, or `None` for the lettered fallback.

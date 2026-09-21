@@ -24,10 +24,8 @@ use crate::list::{
 use crate::toast::use_toasts;
 use crate::ui::row_input_class;
 
-/// What the table sorts by until told otherwise: most recently touched first,
-/// which is what someone opening the page usually wants to see. The server
-/// applies the same order when no sort is sent, so cycling a column back to
-/// "off" lands here too.
+/// Most recently touched first, which is also what the server applies when no
+/// sort is sent — so cycling a column back to "off" lands here.
 pub const DEFAULT_SORT: Sort = Sort {
     field: "updated_at",
     desc: true,
@@ -42,12 +40,9 @@ fn delete_message(codes: &[String]) -> String {
     }
 }
 
-/// What the takeover dialog says, given every link the action covers and who
-/// owns each.
-///
-/// The dialog exists because of the owned ones — an unowned link is nobody's to
-/// defend — but the action covers the rest too, so counting only the takeovers
-/// would describe less than the button is about to do.
+/// What the takeover dialog says. The owned links are why it appears, but the
+/// action covers the rest too — counting only takeovers would describe less
+/// than the button is about to do.
 fn claim_message(links: &[(String, Option<String>)]) -> String {
     let taken = links.iter().filter(|(_, owner)| owner.is_some()).count();
     match links {
@@ -521,8 +516,6 @@ pub fn MyUrls() -> impl IntoView {
                             </button>
                         </Show>
                         <Show when=has_selection>
-                            // Plain `btn`: `.btn` and `.input` share the same
-                            // --size, so this lines up with the search box.
                             <button
                                 class="gap-2 btn btn-error"
                                 on:click=move |_| {
@@ -554,16 +547,10 @@ pub fn MyUrls() -> impl IntoView {
                     </div>
                 </div>
 
-                // Fills the viewport below the header and scrolls internally, so
-                // the page itself never grows and the next page loads as the
-                // bottom comes into view.
                 <div
                     class="overflow-auto rounded-lg border h-[calc(100vh-16rem)] border-base-content/10"
                     on:scroll=on_scroll
                 >
-                    // The header carries its own background, which separates it
-                    // from the rows — so the first row needs no rule above it.
-                    // FlyonUI already leaves the last row without one below.
                     <table class="table table-fixed table-pinned min-w-[84rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead class="sticky top-0 z-10 bg-base-200">
                             <tr>
@@ -620,10 +607,6 @@ pub fn MyUrls() -> impl IntoView {
                                 }}
                             </Show>
 
-                            // Keyed on content, not just the code: the cells
-                            // are captured values, so a row whose code stayed
-                            // the same would keep showing its old destination
-                            // after an edit. `updated_at` moves on every write.
                             <For
                                 each=move || items.get()
                                 key=|entry| {
@@ -667,27 +650,6 @@ pub fn MyUrls() -> impl IntoView {
                                                 editing.get().as_deref() == Some(code.as_str())
                                             })
                                     };
-                                    // Usernames are unique, and the owner cell
-                                    // has nothing else to identify them by: the
-                                    // list strips the owner's id before it
-                                    // leaves the server.
-                                    // Whether the server will allow it depends
-                                    // on where the owner sits in the chain,
-                                    // which this page has no way to know — so
-                                    // the offer is made and the refusal, if
-                                    // there is one, comes back as a toast.
-                                    // Every value a closure needs is stored
-                                    // rather than captured: `Show` and
-                                    // `Tooltip` take `Fn` children, and a
-                                    // `StoredValue` is `Copy`, so no closure
-                                    // has to own a `String`.
-                                    // Stored rather than captured by value so
-                                    // the closure stays `Copy` — both the cell
-                                    // columns and the action column ask.
-                                    // Every cell is read out of `entry` first:
-                                    // `Show`'s children is an `Fn` closure, so
-                                    // a conditional column would otherwise move
-                                    // the entry away from the ones after it.
                                     view! {
                                         <tr>
                                             <td>
@@ -714,18 +676,6 @@ pub fn MyUrls() -> impl IntoView {
                                                 when=is_editing
                                                 fallback=move || {
                                                     view! {
-                                                        // The columns are a
-                                                        // fixed width, so a
-                                                        // long value clips.
-                                                        // `Tooltip` shows
-                                                        // the whole value on
-                                                        // hover, and only
-                                                        // when it was cut.
-                                                        // Clicking copies the
-                                                        // shareable link rather
-                                                        // than the bare code —
-                                                        // that is the thing
-                                                        // worth pasting.
                                                         <td class="font-mono">
                                                             <Tooltip
                                                                 text=code.get_value()
@@ -798,10 +748,6 @@ pub fn MyUrls() -> impl IntoView {
                                                     {if has_owner {
                                                         let name = owner_name.clone();
                                                         view! {
-                                                            // `min-w-0` and the truncation matter in a
-                                                            // fixed-width column: a name nobody chose
-                                                            // to keep short would otherwise run across
-                                                            // the columns beside it.
                                                             <span class="flex gap-2 items-center min-w-0">
                                                                 <span class="shrink-0">
                                                                     <Avatar
@@ -814,9 +760,6 @@ pub fn MyUrls() -> impl IntoView {
                                                                     text=name.clone()
                                                                     class="block opacity-70 truncate"
                                                                 >
-                                                                    // Cloned rather than moved: the
-                                                                    // children are rebuilt on every
-                                                                    // re-render of the row.
                                                                     {name.clone()}
                                                                 </Tooltip>
                                                             </span>
@@ -1012,9 +955,6 @@ pub fn MyUrls() -> impl IntoView {
                 on_confirm=delete_confirmed
             />
 
-            // A rename onto a code you own deletes the link that was there, so
-            // it is the destructive one; saving over the row you are editing
-            // only changes where it points.
             <ConfirmDialog
                 open=conflict_open
                 title=Signal::derive(move || {
@@ -1062,8 +1002,6 @@ pub fn MyUrls() -> impl IntoView {
                             let owner = other_owner(&existing, &auth)
                                 .and_then(|_| existing.owner.clone());
                             let claim = (!renaming && owner.is_some()).then_some(claim_owner);
-                            // Nothing to take when the link is about to be
-                            // deleted rather than replaced.
                             view! {
                                 <ReplacementDetails
                                     existing=existing

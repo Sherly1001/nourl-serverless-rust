@@ -21,29 +21,22 @@ const OPEN_DELAY: Duration = Duration::from_millis(400);
 /// have a sticky header over them, and a bubble there explains nothing.
 const TOOLTIP_MIN_ROOM_PX: f64 = 120.0;
 
-/// Keeps the bubble inside the window: anchored to the cell's left edge, but
-/// pushed back when that would run it off the right side, and never negative.
-///
-/// `bubble_width` is what it really is, not the maximum — clamping a two-word
-/// label as though it were `max-w-96` drags it hundreds of pixels off target.
+/// Anchored to the cell's left edge, pushed back to stay on screen, never
+/// negative. `bubble_width` is the real width: clamping a short label as
+/// `max-w-96` would drag it hundreds of pixels off target.
 fn clamp_left(anchor_left: f64, bubble_width: f64, viewport_width: f64) -> f64 {
     let rightmost = viewport_width - bubble_width - VIEWPORT_MARGIN_PX;
     anchor_left.min(rightmost.max(VIEWPORT_MARGIN_PX)).max(0.0)
 }
 
-/// The arrow's width, and how close to a corner it may get before the rounded
-/// border starts cutting into it.
+/// How close to a corner before the rounded border cuts into it.
 const ARROW_SIZE_PX: f64 = 8.0;
 const ARROW_INSET_PX: f64 = 8.0;
 
-/// Where the arrow sits along the bubble's own width, measured from its left
-/// edge.
-///
-/// Not a fixed inset: [`clamp_left`] slides the bubble left to keep it on
-/// screen, and an arrow that stays put then points at whatever happens to be
-/// under it. So it tracks the anchor, stopping at the bubble's own corners.
+/// Tracks the anchor rather than sitting at a fixed inset, since [`clamp_left`]
+/// slides the bubble — stopping at the bubble's own corners.
 fn arrow_left(anchor_left: f64, bubble_left: f64, bubble_width: f64) -> f64 {
-    // A little into the anchor, so the arrow lands over it rather than beside.
+    // A little in, so the arrow lands over the anchor rather than beside.
     let target = anchor_left + ARROW_INSET_PX - bubble_left;
     let rightmost = bubble_width - ARROW_SIZE_PX - ARROW_INSET_PX;
     target.clamp(ARROW_INSET_PX, rightmost.max(ARROW_INSET_PX))
@@ -56,39 +49,21 @@ fn viewport_width() -> f64 {
         .unwrap_or(1024.0)
 }
 
-/// Shows `text` in a bubble on hover.
-///
-/// Two uses, one component: by default it truncates its children and reveals
-/// the full value only when something was actually cut, which is what a table
-/// cell wants. With `only_when_clipped=false` it always shows, which is what an
-/// icon-only button wants — there the text is a label, not a repeat.
-///
-/// The bubble is `position: fixed` because the cell it lives in clips its
-/// overflow — an absolutely positioned one would be cut off by the very
-/// truncation it exists to explain. Fixed elements escape ancestor overflow, so
-/// the coordinates are measured from the anchor at hover time.
-///
-/// Escaping overflow is not the same as escaping *stacking*, so it is also
-/// drawn through a `Portal` into `<body>`. A pinned table cell is
-/// `position: sticky` with a `z-index`, which makes it a stacking context, and
-/// inside one the bubble's `z-50` competes only with its siblings — leaving it
-/// painted under the sticky header it was supposed to cover.
+/// A bubble on hover, revealing a clipped value or labelling an icon-only
+/// button. `fixed` to escape the cell's overflow, and portalled to `<body>` to
+/// escape its stacking context — a pinned cell's `z-index` would bury it.
 #[component]
 pub fn Tooltip(
     /// The full text, shown only when it does not already fit.
     #[prop(into)]
     text: String,
-    /// Wrapper classes. The default truncates; a button wrapper wants to lay
-    /// out inline instead.
+    /// The default truncates; a button wrapper lays out inline instead.
     #[prop(default = "block truncate")]
     class: &'static str,
-    /// When true (the default) the bubble appears only if the children were
-    /// clipped. Set false for a label that should always show.
+    /// False for a label that should always show, not only when clipped.
     #[prop(default = true)]
     only_when_clipped: bool,
-    /// `ChildrenFn`, not `Children`: a table row rebuilds its cells whenever
-    /// the row re-renders, so the children have to be constructible more than
-    /// once.
+    /// `ChildrenFn`: a row rebuilds its cells, so these are built more than once.
     children: ChildrenFn,
 ) -> impl IntoView {
     let (shown, set_shown) = signal(false);
@@ -106,20 +81,12 @@ pub fn Tooltip(
     });
     // Bumped on enter and leave, so a late timer knows it is stale.
     let (hover, set_hover) = signal(0u32);
-    // Stored, not moved: `Portal` rebuilds its children, so the text has to
-    // survive being read more than once.
+    // `Portal` rebuilds its children, so the text is read more than once.
     let body = StoredValue::new(text.clone());
 
-    // While the bubble is up, anything that moves the anchor takes it down. It
-    // is `position: fixed` at coordinates measured on hover, so a scroll leaves
-    // it hanging over whatever slid underneath — and a wheel or a dragged
-    // scrollbar moves the anchor without moving the pointer, so `mouseleave`
-    // never fires.
-    //
-    // Registered only while showing, so a table of rows costs one listener
-    // rather than one each. The capture phase is what makes it work at all:
-    // `scroll` does not bubble, so a listener on the document hears a scrolling
-    // table body on the way down or not at all.
+    // Anything that moves the anchor takes the bubble down: a wheel or a
+    // dragged scrollbar moves it without moving the pointer, so `mouseleave`
+    // never fires. Capture phase, since `scroll` does not bubble.
     type Listener = send_wrapper::SendWrapper<(web_sys::Document, Closure<dyn FnMut()>)>;
     let listener: StoredValue<Option<Listener>> = StoredValue::new(None);
     let unlisten = move || {
@@ -158,8 +125,7 @@ pub fn Tooltip(
         }
         listener.set_value(Some(send_wrapper::SendWrapper::new((document, hide))));
     });
-    // A leaked listener outlives the signals it writes to and panics on the next
-    // scroll anywhere on the page.
+    // A leak outlives its signals and panics on the next scroll anywhere.
     on_cleanup(unlisten);
 
     view! {
@@ -221,8 +187,6 @@ pub fn Tooltip(
                     }
                 >
                     {body.get_value()}
-                    // Kept over the anchor however far the bubble slid — see
-                    // `arrow_left`.
                     <span
                         class=move || {
                             format!(

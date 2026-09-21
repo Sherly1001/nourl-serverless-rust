@@ -45,8 +45,6 @@ pub fn AccountMenu() -> impl IntoView {
                 when=move || auth.user.get().is_some()
                 fallback=|| {
                     view! {
-                        // Plain `btn`, not `btn-sm`: every control in the
-                        // navbar shares the same height.
                         <a href="#/login" class="gap-2 btn btn-primary">
                             <span class="icon-[tabler--login] size-5"></span>
                             "Sign in"

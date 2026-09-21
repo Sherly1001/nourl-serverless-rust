@@ -213,8 +213,6 @@ pub fn Shorten() -> impl IntoView {
                                 url=url
                                 expires=expiry
                                 reset_hits=reset_hits_toggle
-                                // Only somebody else's link can be taken; your
-                                // own is already yours.
                                 claim=owner.is_some().then_some(claim_owner)
                                 other_owner=owner
                             />

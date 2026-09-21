@@ -12,12 +12,8 @@ use crate::api;
 use crate::auth::use_auth;
 use crate::toast::use_toasts;
 
-/// Turns the form's draft back into a request.
-///
-/// A secret left untouched is sent as `None`, which the server reads as "keep
-/// what you have" — the page is never given the stored secret, so it has
-/// nothing to echo back. A field cleared on purpose sends an empty string,
-/// which is how a credential is retired.
+/// An untouched secret is sent as `None`, which the server keeps — the page is
+/// never given it, so it has nothing to echo. An empty string retires one.
 pub fn to_update(
     enabled: bool,
     client_id: &str,
@@ -57,11 +53,8 @@ fn usable(update: &MethodUpdate, view: &MethodView) -> bool {
     update.enabled && has_id && has_secret
 }
 
-/// Whether saving this would leave nobody a way in: password login off and not
-/// one provider both enabled and fully credentialled.
-///
-/// Checked here because the server does not: it stores what it is told, and
-/// the account that could undo it would have no way to sign in and do so.
+/// Whether saving would leave nobody a way in. Checked here because the server
+/// stores what it is told, and undoing it would need a sign-in.
 pub fn locks_everyone_out(request: &UpdateSettingsRequest, stored: &AdminSettings) -> bool {
     if request.password.enabled {
         return false;
@@ -147,11 +140,6 @@ fn ProviderCard(
                     />
                 </div>
 
-                // A `<form>` around the pair, and `display: contents` so it
-                // does not change the layout: Chrome warns about a password
-                // field outside one, since a browser's own credential handling
-                // has nothing to hang off otherwise. Nothing submits it — the
-                // page saves all four methods at once.
                 <form
                     class="contents"
                     autocomplete="off"

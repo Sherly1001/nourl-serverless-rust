@@ -45,17 +45,9 @@ enum Pane {
     Years,
 }
 
-/// A date and time field, written here rather than taken from FlyonUI because
-/// FlyonUI's is flatpickr and this build ships no JavaScript components.
-///
-/// `<input type="datetime-local">` was the other option and cannot be used: its
-/// format and its 12-hour clock come from the browser's locale, and its picker
-/// button is not stylable past a colour.
-///
-/// The signal holds exactly what the field shows, `yyyy/mm/dd hh:mm`, rather
-/// than a canonical stamp: text that parses to nothing has to survive on
-/// screen for the user to correct, and the caller has to be able to tell an
-/// empty field from an unfinished one.
+/// A date and time field. FlyonUI's is flatpickr and `datetime-local` takes
+/// its format from the locale, so neither fits. The signal holds what the
+/// field shows, so text that parses to nothing survives to be corrected.
 #[component]
 pub fn DateTimePicker(
     #[prop(into)] id: String,
@@ -218,10 +210,6 @@ pub fn DateTimePicker(
                 inputmode="numeric"
                 autocomplete="off"
                 placeholder="yyyy/mm/dd hh:mm"
-                // Room for the buttons sitting on top of the field — for the
-                // one that is always there, and for the clear button only
-                // while it is showing. Reserving both either way costs the
-                // narrow field the end of its own text.
                 class=move || {
                     let base = if small {
                         row_input_class(invalid.get())
@@ -241,7 +229,6 @@ pub fn DateTimePicker(
                 disabled=move || disabled.get()
                 node_ref=text_input
                 prop:value=value
-                // Reaching for the field means the popover is in the way.
                 on:focus=move |_| set_open.set(false)
                 on:click=move |_| set_open.set(false)
                 on:input=move |ev| {
@@ -329,7 +316,6 @@ pub fn DateTimePicker(
                         <button
                             class="font-semibold cursor-pointer btn btn-text btn-sm"
                             type="button"
-                            // The years pane is the top of the stack.
                             disabled=move || pane.get() == Pane::Years
                             on:click=move |_| {
                                 set_pane
@@ -367,8 +353,6 @@ pub fn DateTimePicker(
                         </button>
                     </div>
 
-                    // One height for all three panes, so stepping between them
-                    // does not make the popover jump.
                     <div class="min-h-56">
                         <Show when=move || pane.get() == Pane::Days>
                             <div class="grid grid-cols-7 mb-1 text-xs text-center opacity-60">
@@ -525,11 +509,9 @@ pub fn DateTimePicker(
     }
 }
 
-/// One half of the clock.
-///
-/// The field keeps its own text rather than rendering `part` directly: a value
-/// reformatted on every keystroke would rewrite `1` to `01` under the cursor,
-/// and `19` could then never be typed at all.
+/// One half of the clock. It keeps its own text rather than rendering `part`:
+/// reformatting every keystroke would rewrite `1` to `01` under the cursor,
+/// and `19` could never be typed.
 #[component]
 fn ClockField(
     label: &'static str,
@@ -599,16 +581,9 @@ fn ClockField(
     }
 }
 
-/// Where the popover goes, in viewport coordinates.
-///
-/// It is positioned `fixed` rather than `absolute` because the field can sit
-/// inside a box that scrolls — the URL table is one — and an absolutely
-/// positioned popover is clipped by it. The cost is that nothing moves it when
-/// that box scrolls, which is what [`follow_scroll`] is for.
-///
-/// Below the field by default, flipping above only when there is no room below
-/// and more room there. Right-aligned with the field, pulled back inside the
-/// window rather than hanging off either edge.
+/// Where the popover goes, in viewport coordinates: `fixed`, or the scrolling
+/// box around the field would clip it — hence [`follow_scroll`]. Below unless
+/// there is no room, right-aligned, pulled back inside the window.
 fn popover_spot(field: &web_sys::Element, height: f64) -> (f64, f64) {
     let Some(window) = web_sys::window() else {
         return (0.0, 0.0);
@@ -629,15 +604,9 @@ fn popover_spot(field: &web_sys::Element, height: f64) -> (f64, f64) {
     (left.max(GAP), top.max(GAP))
 }
 
-/// Closes the popover once the field has been scrolled out of sight.
-///
-/// A popover positioned `fixed` is not clipped by the box its field scrolls
-/// in — that is the point of it — so without this it would go on hovering over
-/// whatever the box scrolled to next, anchored to a row nobody can see.
-///
-/// An observer rather than a rect comparison because the field is clipped by
-/// its scrolling ancestors rather than by the window, and reproducing that
-/// means walking the whole chain.
+/// Closes the popover once the field scrolls out of sight — being `fixed`, it
+/// would otherwise hover over a row nobody can see. An observer, because the
+/// field is clipped by its ancestors rather than by the window.
 fn close_when_out_of_view(field: &web_sys::Element, set_open: WriteSignal<bool>) {
     let seen = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
         let gone = entries.iter().any(|entry| {
@@ -661,13 +630,9 @@ fn close_when_out_of_view(field: &web_sys::Element, set_open: WriteSignal<bool>)
     });
 }
 
-/// Re-runs `place` whenever anything scrolls or the window resizes.
-///
-/// Capture phase: a scroll inside a div does not bubble, so a listener on the
-/// window only hears about it on the way down. The closures are owned by the
-/// cleanup, which is what keeps them alive for exactly as long as the
-/// listeners are registered — the same arrangement as
-/// [`crate::dropdown::dismiss_on_outside_click`], and for the same reason.
+/// Re-runs `place` on any scroll or resize. Capture phase, since a scroll
+/// inside a div does not bubble. The cleanup owns the closures, as in
+/// [`crate::dropdown::dismiss_on_outside_click`].
 fn follow_scroll(place: impl Fn() + Clone + 'static) {
     let Some(window) = web_sys::window() else {
         return;

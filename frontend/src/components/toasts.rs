@@ -16,11 +16,8 @@ fn percent_left(remaining: u32, total: u32) -> u32 {
     (remaining * 100) / total
 }
 
-/// One toast, owning its own countdown.
-///
-/// The timer lives here rather than in the queue so that hovering pauses only
-/// the toast under the pointer, and so a dismissed toast takes its timer with
-/// it.
+/// One toast, owning its countdown: hovering pauses only the one under the
+/// pointer, and dismissing takes its timer with it.
 #[component]
 fn ToastCard(toast: Toast) -> impl IntoView {
     let toasts = use_toasts();
@@ -59,9 +56,6 @@ fn ToastCard(toast: Toast) -> impl IntoView {
     let message = toast.message.clone();
 
     view! {
-        // One element carries the alert colours, so the bar below is drawn on
-        // the card rather than behind it — as a sibling it was painted over by
-        // the alert's own background.
         <div
             class=format!(
                 "flex overflow-hidden flex-col gap-0 p-0 w-80 max-w-full rounded-lg border-0 shadow-lg shrink-0 pointer-events-auto motion-preset-slide-left motion-duration-200 alert {}",
@@ -71,7 +65,6 @@ fn ToastCard(toast: Toast) -> impl IntoView {
             on:mouseenter=move |_| set_paused.set(true)
             on:mouseleave=move |_| set_paused.set(false)
         >
-            // Across the top of the card, draining as the timer runs down.
             <div class="w-full h-1 shrink-0 bg-black/10">
                 <div
                     class="h-full transition-all ease-linear bg-black/40 duration-50"
@@ -82,10 +75,6 @@ fn ToastCard(toast: Toast) -> impl IntoView {
             <div class="flex gap-3 items-start p-4">
                 <span class=icon.clone()></span>
                 <span class="flex-1 break-words">{message.clone()}</span>
-                // Deliberately not a `btn`: `.btn-text` sets its own neutral
-                // colour, which ignores the alert's `--color-*-content` and
-                // leaves the ✕ a different shade from the message beside it.
-                // With no colour of its own it simply inherits.
                 <button
                     class="inline-flex justify-center items-center rounded opacity-70 transition hover:opacity-100 shrink-0 size-6 hover:bg-black/10"
                     aria-label="Dismiss"
@@ -98,19 +87,13 @@ fn ToastCard(toast: Toast) -> impl IntoView {
     }
 }
 
-/// The stack itself: fixed to the top right, newest at the bottom of the pile.
-///
-/// `pointer-events-none` on the container keeps the empty space beside the
-/// toasts clickable; each card turns pointer events back on for itself.
+/// The stack, newest at the bottom. `pointer-events-none` on the container
+/// keeps the space beside it clickable; each card turns them back on.
 #[component]
 pub fn ToastStack() -> impl IntoView {
     let toasts = use_toasts();
 
     view! {
-        // `top-20` clears the navbar; the height cap keeps a full stack from
-        // running off the bottom of the window.
-        // `overflow-x-clip` because the entry animation slides each card in from
-        // the right, which would otherwise widen the scroll area for a moment.
         <div class="flex overflow-y-auto fixed right-4 top-20 z-50 flex-col gap-2 items-end pointer-events-none overflow-x-clip max-h-[calc(100vh-6rem)]">
             <For each=move || toasts.items() key=|toast| toast.id let:toast>
                 <ToastCard toast=toast />

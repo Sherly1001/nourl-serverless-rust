@@ -338,8 +338,6 @@ pub fn Login() -> impl IntoView {
                                 .into_iter()
                                 .map(|provider| {
                                     view! {
-                                        // A link, not a button: the consent screen
-                                        // needs a top-level navigation.
                                         <a
                                             href=api::oauth_start(provider.name)
                                             class="gap-2 w-full btn btn-soft"
@@ -354,7 +352,6 @@ pub fn Login() -> impl IntoView {
                     </div>
                 </Show>
 
-                // Not a failure of this page: an admin switched everything off.
                 <Show when=move || {
                     !methods.get().password && enabled_providers(&methods.get()).is_empty()
                 }>

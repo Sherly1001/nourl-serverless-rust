@@ -423,9 +423,6 @@ pub fn AccountPage() -> impl IntoView {
                                 let removable = move || {
                                     auth.user.get().is_some_and(|me| can_disconnect(&me, name))
                                 };
-                                // A provider the site does not offer is no row
-                                // at all — unless already connected, or there
-                                // would be no way to disconnect it.
                                 view! {
                                     <Show when=move || offered() || is_connected()>
                                         <div class="flex gap-3 justify-between items-center">
@@ -449,8 +446,6 @@ pub fn AccountPage() -> impl IntoView {
                                                     when=removable
                                                     fallback=move || {
                                                         view! {
-                                                            // Only while refused: a bubble on a
-                                                            // working button explains nothing.
                                                             <Tooltip
                                                                 text=LAST_WAY_IN
                                                                 class="inline-flex"
@@ -503,8 +498,6 @@ pub fn AccountPage() -> impl IntoView {
                 confirm_disabled=Signal::derive(move || !close_ready())
                 extra=move || {
                     view! {
-                        // With no links either answer does the same thing, and
-                        // a question that changes nothing still has to be read.
                         <Show when=owns_links>
                             <fieldset class="flex flex-col gap-2 mb-6">
                                 <legend class="mb-1 text-sm font-semibold">"Your links"</legend>
@@ -513,10 +506,6 @@ pub fn AccountPage() -> impl IntoView {
                                     .map(|choice| {
                                         view! {
                                             <label class="flex gap-3 items-start text-sm cursor-pointer">
-                                                // No nudge: `radio-sm` and the
-                                                // `text-sm` line box are both
-                                                // 20px, so `items-start` lands
-                                                // it right.
                                                 <input
                                                     type="radio"
                                                     name="closing-links"
@@ -532,9 +521,6 @@ pub fn AccountPage() -> impl IntoView {
                             </fieldset>
                         </Show>
                         <Show when=has_password>
-                            // A form, not a bare label: browsers warn about a
-                            // loose password field. Enter stays inert on
-                            // purpose.
                             <form
                                 class="mb-6"
                                 on:submit=move |ev: leptos::ev::SubmitEvent| ev.prevent_default()

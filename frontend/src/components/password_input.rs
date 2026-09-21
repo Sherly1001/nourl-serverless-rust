@@ -53,8 +53,6 @@ pub fn PasswordInput(
             <input
                 id=id
                 node_ref=node_ref.unwrap_or_default()
-                // `pe-12` keeps the text clear of the button, which sits
-                // inside the box so the field reads as one control.
                 class=move || format!("{} pe-12", input_class(invalid.get()))
                 type=move || field_type(shown.get())
                 autocomplete=move || autocomplete.get()
@@ -68,7 +66,6 @@ pub fn PasswordInput(
                     }
                 }
             />
-            // `type=button`: a bare one submits the form it is in.
             <button
                 type="button"
                 class="flex absolute inset-y-0 right-0 items-center px-4 rounded-e-md text-base-content/60 hover:text-base-content"
