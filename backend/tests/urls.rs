@@ -59,7 +59,6 @@ async fn create_rejects_invalid_input() {
 #[tokio::test]
 async fn malformed_body_returns_json_validation_error() {
     let (app, db) = test_app().await;
-    // missing `url` field
     let resp = app
         .clone()
         .oneshot(json_request("POST", "/api/urls", json!({"code": "lmao"})))
@@ -68,7 +67,6 @@ async fn malformed_body_returns_json_validation_error() {
     assert_eq!(resp.status(), StatusCode::BAD_REQUEST);
     let v = body_json(resp).await;
     assert_eq!(v["error"]["code"], "validation");
-    // invalid json body
     let resp = app
         .oneshot(
             Request::builder()
@@ -133,7 +131,6 @@ async fn owned_urls_are_protected() {
         assert_eq!(v["error"]["code"], "forbidden");
         let msg = v["error"]["message"].as_str().unwrap();
         assert!(msg.contains("'own'"), "{msg}");
-        // target url must not leak to anonymous callers / non-owners
         assert!(!msg.contains("https://a.com"), "{msg}");
     }
     db.drop().await.unwrap();
@@ -310,7 +307,6 @@ async fn owners_may_edit_and_delete_their_own_links() {
     assert_eq!(renamed["code"], "renamed");
     assert_eq!(renamed["owner"]["username"], "owner4");
 
-    // The old code is gone rather than duplicated.
     let old_code = app
         .clone()
         .oneshot(request("DELETE", "/api/urls/editable"))
@@ -358,7 +354,6 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
         .await
         .unwrap();
 
-    // Someone else's code: 403, and still no url leak.
     let onto_theirs = app
         .clone()
         .oneshot(authed_request(
@@ -373,8 +368,7 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
     let message = body_json(onto_theirs).await["error"]["message"].to_string();
     assert!(!message.contains("theirs.example"), "leaked: {message}");
 
-    // Your own code: the same answer as re-creating it, rather than silently
-    // destroying the other link.
+    // The same answer as re-creating it, rather than destroying the other.
     app.clone()
         .oneshot(authed_request(
             "POST",
@@ -396,7 +390,6 @@ async fn a_rename_may_not_land_on_a_code_that_is_taken() {
         .unwrap();
     assert_eq!(onto_own.status(), StatusCode::CONFLICT);
 
-    // The rejections left every document where it was.
     for code in ["movable", "occupied", "anonymous", "alsomine"] {
         let count = db
             .collection::<mongodb::bson::Document>("urls")
@@ -449,7 +442,6 @@ async fn a_rename_takes_over_an_unowned_code() {
         "the mover keeps ownership of the code it moved into"
     );
 
-    // Exactly one document survives under that code, and the old one is gone.
     let urls = db.collection::<mongodb::bson::Document>("urls");
     assert_eq!(
         urls.count_documents(doc! {"code": "anonymous"})
@@ -508,9 +500,7 @@ async fn admins_may_edit_anyones_link() {
         "an admin edit must not steal the link"
     );
 
-    // Editing someone's link in place is allowed. Moving another link on top of
-    // it deletes theirs, so it is asked about rather than done — but an admin
-    // may answer, where anyone else gets a 403.
+    // Editing theirs is allowed; moving onto it deletes theirs, so it asks.
     app.clone()
         .oneshot(authed_request(
             "POST",
@@ -588,7 +578,6 @@ async fn list_requires_auth_and_shows_only_your_own() {
             .await
             .unwrap();
     }
-    // An unowned link belongs to nobody's list.
     db.collection("urls")
         .insert_one(doc! {"code": "orphan", "url": "https://example.com"})
         .await
@@ -637,8 +626,7 @@ async fn admins_see_everything_and_search_narrows_it() {
             .await
             .unwrap();
     }
-    // Anonymous links have no owner to scope by, so only the unscoped admin
-    // view can reach them at all.
+    // No owner to scope by, so only the unscoped admin view reaches them.
     db.collection("urls")
         .insert_one(doc! {"code": "orphan", "url": "https://example.com"})
         .await
@@ -681,9 +669,7 @@ async fn admins_see_everything_and_search_narrows_it() {
     assert_eq!(body["total"], 1);
     assert_eq!(body["items"][0]["code"], "alpha");
 
-    // `mine` puts an admin back in the ordinary view. The account page counts
-    // through this endpoint to say how many links closing the account would
-    // take with it, and closing an account only ever touches its owner's.
+    // `mine` is how the account page counts what closing would take.
     let mine = app
         .clone()
         .oneshot(authed_get("/api/urls?mine=true", &admin))
@@ -703,7 +689,6 @@ async fn admins_see_everything_and_search_narrows_it() {
         "an ordinary account is already scoped, so mine changes nothing"
     );
 
-    // A rejected sort field must not reach Mongo.
     let bad_sort = app
         .oneshot(authed_get("/api/urls?sort=hash_passwd,1", &admin))
         .await
@@ -800,8 +785,7 @@ async fn creating_over_an_unowned_code_claims_it() {
         "a claimed link belongs in the author's list"
     );
 
-    // Editing is not claiming: a PUT at an unowned link leaves it unowned, so
-    // fixing a stray link does not quietly absorb it.
+    // Editing is not claiming: a PUT leaves an unowned link unowned.
     db.collection("urls")
         .insert_one(doc! {"code": "stray", "url": "https://old.example"})
         .await
@@ -881,8 +865,7 @@ async fn dates_come_back_as_rfc3339_strings() {
         "an edit must move updated_at"
     );
 
-    // A legacy document whose created_at is already a string must survive the
-    // same pipeline rather than aborting the aggregation.
+    // A legacy string date must not abort the aggregation.
     db.collection("urls")
         .insert_one(doc! {"code": "legacy", "url": "https://old.example", "created_at": "2020-01-01T00:00:00Z"})
         .await
@@ -896,11 +879,8 @@ async fn dates_come_back_as_rfc3339_strings() {
     db.drop().await.unwrap();
 }
 
-/// Every link here shares one `updated_at`, so the order is decided entirely by
-/// the tiebreak the sort carries. The `_id`s are handed out in reverse of the
-/// codes, so insertion order and `_id` order disagree: a pipeline that drops
-/// `_id` before it sorts has no tiebreak left, pages the rows in whatever order
-/// the collection scan hands back, and the same link surfaces on two pages.
+/// Every link shares one `updated_at`, so only the tiebreak decides the order.
+/// Without it the same link surfaces on two pages.
 #[tokio::test]
 async fn tied_sort_keys_page_in_id_order() {
     let (app, db) = test_app().await;

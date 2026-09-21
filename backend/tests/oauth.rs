@@ -234,8 +234,7 @@ async fn a_provider_that_is_off_never_starts_a_flow() {
     assert_eq!(location(&response), "/#/login?error=oauth_disabled");
     assert!(state_set_cookie(&response).is_none(), "nothing to remember");
 
-    // A path segment that is not a provider at all takes the same exit, and
-    // never reaches a database lookup built from it.
+    // A non-provider segment never reaches a lookup built from it.
     let nonsense = app
         .oneshot(request("GET", "/api/auth/hash_passwd"))
         .await
@@ -256,12 +255,10 @@ async fn the_callback_creates_an_account_then_signs_the_same_one_in() {
 
     let landed = flow(&app, "github", "code=ok", None).await;
     assert_eq!(landed.status(), StatusCode::FOUND);
-    // Carrying a fragment of its own, so Facebook's `#_=_` on the callback URL
-    // is replaced rather than left over the site root as an unknown route.
+    // Its own fragment, or Facebook's `#_=_` routes to an unknown page.
     assert_eq!(location(&landed), "/#/");
     let session = session_cookie(&landed).expect("a callback signs you in");
-    // Single use: the state is spent, so a replayed callback has nothing to
-    // match against.
+    // Single use: a replayed callback has nothing to match against.
     assert!(
         state_set_cookie(&landed).is_some_and(|c| c.contains("Max-Age=0")),
         "a spent state must be cleared"
@@ -311,8 +308,7 @@ async fn a_callback_without_a_matching_state_fails_closed() {
     let cookie = state_cookie(&started).unwrap();
     let nonce = nonce_of(&cookie);
 
-    // No cookie at all — which is also what a replayed callback looks like,
-    // since a successful one clears it.
+    // Also what a replayed callback looks like: a success clears it.
     let bare = app
         .clone()
         .oneshot(request(
@@ -347,8 +343,7 @@ async fn a_callback_without_a_matching_state_fails_closed() {
         .unwrap();
     assert_eq!(location(&denied), "/#/login?error=oauth_denied");
 
-    // The exchange itself failed. Whatever the provider said about it stays
-    // between us and the provider.
+    // Whatever the provider said stays between us and the provider.
     let broken = app
         .oneshot(authed_get(
             &format!("/api/auth/github/callback?code=bad-code&state={nonce}"),
@@ -379,8 +374,7 @@ async fn a_verified_email_joins_the_account_that_already_has_it() {
     .await;
     enable(&db, "github").await;
 
-    // A password account, with the same address on it — stored in a different
-    // case, which is still the same mailbox.
+    // The same mailbox, stored in a different case.
     app.clone()
         .oneshot(json_request(
             "POST",
@@ -532,10 +526,8 @@ async fn a_signed_in_browser_links_the_identity_instead_of_forking_an_account() 
     db.drop().await.unwrap();
 }
 
-/// A session cookie the server no longer honours must not turn a sign-in into
-/// a 401 page: the browser is mid-navigation, so the only useful answer is a
-/// redirect. It falls back to an ordinary sign-in, which can only ever reach
-/// the identity's own account.
+/// A dead cookie must not turn a sign-in into a 401 page: the browser is
+/// mid-navigation, so it falls back to an ordinary sign-in.
 #[tokio::test]
 async fn a_stale_session_does_not_break_the_flow() {
     let (app, db) = test_app_with_providers(
@@ -555,8 +547,7 @@ async fn a_stale_session_does_not_break_the_flow() {
         .await
         .unwrap();
     let stale = session_cookie(&registered).unwrap();
-    // Logging out bumps `token_version`, so the cookie is now a token the
-    // server rejects.
+    // Logging out bumps `token_version`, so the cookie is now dead.
     app.clone()
         .oneshot(authed_request(
             "POST",
@@ -619,8 +610,7 @@ async fn a_provider_can_be_disconnected_but_never_the_last_way_in() {
         "last_login_method"
     );
 
-    // With a password set, it may go. Setting one bumps `token_version`, and
-    // the response carries the replacement cookie.
+    // Setting a password bumps `token_version`, hence the new cookie.
     let with_password = app
         .clone()
         .oneshot(authed_request(

@@ -240,8 +240,7 @@ async fn logout_revokes_every_outstanding_token() {
         .unwrap();
     assert_eq!(logout.status(), StatusCode::OK);
 
-    // The very same token must now be dead — this is the token_version bump,
-    // not merely the cookie being cleared in the browser.
+    // The token itself is dead, not merely the cookie cleared.
     let reused = app
         .oneshot(helpers::authed_get("/api/auth/me", &cookie))
         .await
@@ -796,8 +795,7 @@ async fn closing_your_account_needs_your_password() {
 async fn an_admin_cannot_close_their_own_account() {
     let (app, db) = test_app().await;
     let cookie = account_with_a_link(&app, "the-admin", "admins-link").await;
-    // Promoted rather than seeded — `promoted_by` is what marks a root, and a
-    // root has a different refusal because it can never resign.
+    // Promoted, not seeded: a root is refused differently.
     db.collection::<mongodb::bson::Document>("users")
         .update_one(
             mongodb::bson::doc! {"username": "the-admin"},
@@ -823,9 +821,7 @@ async fn an_admin_cannot_close_their_own_account() {
     let refused = close().await;
     assert_eq!(refused.status(), StatusCode::FORBIDDEN);
 
-    // The password is checked first. A caller who has not proved who they are
-    // is told that and nothing else — not what standing the account holds, nor
-    // what it would have to give up to close it.
+    // Checked first: an unproven caller learns nothing about the account.
     let unproven = app
         .clone()
         .oneshot(helpers::authed_request(

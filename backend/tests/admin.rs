@@ -86,7 +86,6 @@ async fn the_user_list_strips_secrets_and_counts_links() {
     let rendered = body.to_string();
     assert!(!rendered.contains("hash_passwd"), "never leak the hash");
     assert!(!rendered.contains("$argon2"), "never leak the hash");
-    // Both buckets go through the same projection, so check both.
     assert_eq!(body["admins"][0]["username"], "boss");
     assert_eq!(body["admins"][0]["has_password"], true);
 
@@ -114,8 +113,7 @@ async fn the_user_list_strips_secrets_and_counts_links() {
 async fn users_sort_by_their_own_fields_only() {
     let (app, db) = test_app().await;
     let boss = admin(&app, &db, "the-boss").await;
-    // Two ordinary accounts: the sort applies to the bucket, and the admin is
-    // not in it.
+    // The sort applies to the bucket, which the admin is not in.
     account(&app, "aaa-member").await;
     account(&app, "zzz-member").await;
 
@@ -146,8 +144,7 @@ async fn users_sort_by_their_own_fields_only() {
         .unwrap();
     assert_eq!(wrong_collection.status(), StatusCode::BAD_REQUEST);
 
-    // Derived from the chain rather than stored, so there is no field to sort
-    // on — the tree is ordered by its own shape.
+    // Derived from the chain, so there is no field to sort on.
     let derived = app
         .oneshot(authed_get("/api/admin/users?sort=admin_level,-1", &boss))
         .await
@@ -223,13 +220,11 @@ async fn users_can_be_ordered_by_how_many_links_they_own() {
             ("idle".to_string(), 0)
         ]
     );
-    // Ascending is the same three rows, reversed — the join happening before
-    // the paging must not drop or duplicate anyone.
+    // The join before the paging must not drop or duplicate anyone.
     let ascending = by_count("1").await;
     assert_eq!(ascending.first().unwrap().0, "idle");
     assert_eq!(ascending.len(), 3);
 
-    // And paging still works on top of the joined order.
     let paged = app
         .oneshot(authed_get(
             "/api/admin/users?sort=url_count,-1&limit=1&skip=1",
@@ -280,8 +275,7 @@ async fn the_admin_tree_honours_the_sort_but_not_the_search() {
         ["z-second", "m-root", "a-third"]
     );
 
-    // A search that matches one admin still returns all three: the client
-    // highlights the match, it does not prune the tree.
+    // The client highlights a match; it does not prune the tree.
     assert_eq!(names("q=z-second&sort=username,1").await.len(), 3);
 
     db.drop().await.unwrap();
@@ -294,7 +288,6 @@ async fn searching_users_narrows_the_page_and_the_total() {
     account(&app, "findme").await;
     account(&app, "hidden").await;
 
-    // Also findable by a profile field, not only the username.
     let cookie = account(&app, "byemail").await;
     app.clone()
         .oneshot(authed_request(
@@ -326,7 +319,6 @@ async fn searching_users_narrows_the_page_and_the_total() {
         .unwrap();
     assert_eq!(body_json(by_email).await["items"][0]["username"], "byemail");
 
-    // A regex metacharacter is matched literally rather than as a wildcard.
     let literal = app
         .oneshot(authed_get("/api/admin/users?q=find.me", &boss))
         .await
@@ -416,7 +408,6 @@ async fn an_admin_may_promote_others_but_never_themselves() {
     let self_demote = set_admin(&app, &boss, &own, json!({"is_admin": false})).await;
     assert_eq!(self_demote.status(), StatusCode::BAD_REQUEST);
 
-    // And the refusal must have changed nothing.
     let still_admin = app
         .clone()
         .oneshot(authed_get("/api/auth/me", &boss))
@@ -455,7 +446,6 @@ async fn a_promotee_hangs_one_below_whoever_promoted_them() {
     assert_eq!(third["admin_level"], 2);
     assert_eq!(third["promoted_by"], id_of(&app, &one, "chain-two").await);
 
-    // An account outside the tree has neither depth nor a parent.
     account(&app, "nobody").await;
     let plain = row_of(&app, &one, "nobody").await;
     assert!(plain["admin_level"].is_null());
@@ -484,13 +474,11 @@ async fn admins_come_back_whole_and_everyone_else_is_paged() {
         .unwrap();
     let body = body_json(listed).await;
 
-    // The search narrowed the bucket...
     assert_eq!(body["items"].as_array().unwrap().len(), 1);
     assert_eq!(body["items"][0]["username"], "plain-a");
     assert_eq!(body["total"], 1, "the total counts ordinary accounts only");
 
-    // ...but left the tree intact, or "split-two" would have had no parent to
-    // hang from.
+    // ...intact, or "split-two" would have no parent to hang from.
     let admins: Vec<&str> = body["admins"]
         .as_array()
         .unwrap()
@@ -499,7 +487,6 @@ async fn admins_come_back_whole_and_everyone_else_is_paged() {
         .collect();
     assert_eq!(admins, ["split-one", "split-two"]);
 
-    // And nobody is in both buckets.
     assert!(
         !body["items"]
             .as_array()
@@ -516,7 +503,6 @@ async fn admins_come_back_whole_and_everyone_else_is_paged() {
 async fn an_admin_may_act_only_inside_their_own_subtree() {
     let (app, db) = test_app().await;
     let root = admin(&app, &db, "tree-root").await;
-    // Two branches off the same root.
     let left = promote(&app, &root, "tree-left").await;
     let right = promote(&app, &root, "tree-right").await;
     promote(&app, &left, "tree-left-child").await;
@@ -535,8 +521,7 @@ async fn an_admin_may_act_only_inside_their_own_subtree() {
 
     let demote = json!({"is_admin": false});
 
-    // Sideways is refused even at the same depth: the right branch is not the
-    // left branch's to touch, however equal their levels look.
+    // Sideways is refused even at equal depth: not your branch.
     assert_eq!(
         set_admin(&app, &left, &id_right, demote.clone())
             .await
@@ -550,14 +535,12 @@ async fn an_admin_may_act_only_inside_their_own_subtree() {
         StatusCode::FORBIDDEN,
         "nor anyone the other branch promoted"
     );
-    // Upward is refused.
     assert_eq!(
         set_admin(&app, &right_child, &id_root, demote.clone())
             .await
             .status(),
         StatusCode::FORBIDDEN
     );
-    // Nothing changed.
     assert_eq!(row_of(&app, &root, "tree-right").await["admin_level"], 1);
     assert_eq!(row_of(&app, &root, "tree-root").await["admin_level"], 0);
 
@@ -594,10 +577,8 @@ async fn demoting_an_admin_demotes_everyone_below_them() {
         assert!(row["promoted_by"].is_null(), "{name} kept its parent");
         assert!(row["admin_level"].is_null());
     }
-    // The other branch is untouched.
     assert_eq!(row_of(&app, &root, "casc-other").await["is_admin"], true);
 
-    // And the whole demoted branch is out of the admin pages.
     for cookie in [&mid, &leaf] {
         let locked_out = app
             .clone()
@@ -626,7 +607,6 @@ async fn an_admin_can_be_moved_within_the_part_of_the_tree_you_control() {
     let (id_left, id_right) = (id("move-left").await, id("move-right").await);
     let id_child = id("move-child").await;
 
-    // The root moves the left branch under the right one.
     let moved = set_admin(
         &app,
         &root,
@@ -637,8 +617,7 @@ async fn an_admin_can_be_moved_within_the_part_of_the_tree_you_control() {
     assert_eq!(moved.status(), StatusCode::OK);
     assert_eq!(body_json(moved).await["promoted_by"], id_right);
 
-    // The subtree came along, and everyone's depth followed from the pointer
-    // rather than needing a rewrite.
+    // Depth followed from the pointer rather than needing a rewrite.
     assert_eq!(row_of(&app, &root, "move-left").await["admin_level"], 2);
     assert_eq!(row_of(&app, &root, "move-child").await["admin_level"], 3);
 
@@ -651,7 +630,6 @@ async fn an_admin_can_be_moved_within_the_part_of_the_tree_you_control() {
     )
     .await;
     assert_eq!(cycle.status(), StatusCode::BAD_REQUEST);
-    // Nor can an account vouch for itself.
     let itself = set_admin(
         &app,
         &root,
@@ -660,7 +638,6 @@ async fn an_admin_can_be_moved_within_the_part_of_the_tree_you_control() {
     )
     .await;
     assert_eq!(itself.status(), StatusCode::BAD_REQUEST);
-    // The refusals left the tree as it was.
     assert_eq!(row_of(&app, &root, "move-right").await["admin_level"], 1);
 
     db.drop().await.unwrap();
@@ -696,7 +673,6 @@ async fn a_move_cannot_reach_outside_the_callers_subtree() {
     .await;
     assert_eq!(sideways.status(), StatusCode::FORBIDDEN);
 
-    // An ordinary account cannot hold up a branch.
     let under_plain = set_admin(
         &app,
         &root,
@@ -706,7 +682,6 @@ async fn a_move_cannot_reach_outside_the_callers_subtree() {
     .await;
     assert_eq!(under_plain.status(), StatusCode::BAD_REQUEST);
 
-    // Nor can a parent that does not exist.
     let missing = set_admin(
         &app,
         &root,
@@ -716,7 +691,6 @@ async fn a_move_cannot_reach_outside_the_callers_subtree() {
     .await;
     assert_eq!(missing.status(), StatusCode::BAD_REQUEST);
 
-    // None of it moved anything.
     assert_eq!(row_of(&app, &root, "graft-child").await["admin_level"], 2);
 
     db.drop().await.unwrap();
@@ -749,8 +723,7 @@ async fn deleting_a_user_orphans_their_links_with_a_deadline() {
     let boss = admin(&app, &db, "del-boss").await;
     let doomed = account(&app, "doomed").await;
 
-    // One link with no expiry, and one that already expires sooner than the
-    // grace period — the sooner deadline must win.
+    // The sooner of an existing expiry and the grace period must win.
     app.clone()
         .oneshot(authed_request(
             "POST",
@@ -791,7 +764,6 @@ async fn deleting_a_user_orphans_their_links_with_a_deadline() {
     );
     assert_eq!(outcome["grace_days"], 7);
 
-    // The account is gone.
     assert!(
         db.collection::<mongodb::bson::Document>("users")
             .find_one(doc! {"username": "doomed"})
@@ -800,8 +772,7 @@ async fn deleting_a_user_orphans_their_links_with_a_deadline() {
             .is_none()
     );
 
-    // The links survive, unowned, each with a deadline. They are not deleted:
-    // somebody may still be following them.
+    // Not deleted: somebody may still be following them.
     let urls = db.collection::<mongodb::bson::Document>("urls");
     for code in ["no-expiry", "expires-soon"] {
         let row = urls
@@ -862,24 +833,18 @@ async fn deleting_obeys_the_same_subtree_rule_as_demoting() {
     let id_left = id_of(&app, &root, "dsub-left").await;
     let id_right = id_of(&app, &root, "dsub-right").await;
 
-    // A sibling branch is not yours to delete.
     assert_eq!(delete(&left, id_right.clone()).await, StatusCode::FORBIDDEN);
-    // Nor is anyone above you.
     assert_eq!(delete(&left, id_root).await, StatusCode::FORBIDDEN);
-    // Nor your own account.
     assert_eq!(delete(&left, id_left).await, StatusCode::BAD_REQUEST);
 
-    // And every refusal left the account in place.
     assert_eq!(row_of(&app, &root, "dsub-right").await["is_admin"], true);
     assert_eq!(row_of(&app, &root, "dsub-left").await["is_admin"], true);
 
     db.drop().await.unwrap();
 }
 
-/// Deleting an admin has to take the branch below them down too. Leaving those
-/// accounts pointing at an id that no longer exists would strand them outside
-/// the tree: nothing walking upward could reach them, so nobody could ever
-/// demote or delete them again.
+/// The branch has to come down too: pointing at an id that no longer exists
+/// would strand those accounts where nothing walking upward could reach them.
 #[tokio::test]
 async fn deleting_an_admin_demotes_the_branch_below_them() {
     let (app, db) = test_app().await;
@@ -1007,14 +972,12 @@ async fn an_admin_can_resign_unless_they_are_the_root() {
     let id_root = id_of(&app, &root, "res-root").await;
     let id_mid = id_of(&app, &root, "res-mid").await;
 
-    // The root is refused: resigning would cascade through every admin and
-    // leave the pages unreachable.
+    // A root resigning would cascade through every admin.
     let root_quits = set_admin(&app, &root, &id_root, json!({"is_admin": false})).await;
     assert_eq!(root_quits.status(), StatusCode::BAD_REQUEST);
     assert_eq!(row_of(&app, &root, "res-root").await["is_admin"], true);
 
-    // A promoted admin may go, and takes their branch with them — the same
-    // cascade any demotion has.
+    // A promoted admin takes their branch, as any demotion does.
     let resigned = set_admin(&app, &mid, &id_mid, json!({"is_admin": false})).await;
     assert_eq!(resigned.status(), StatusCode::OK);
     let body = body_json(resigned).await;
@@ -1117,8 +1080,7 @@ async fn settings_round_trip_without_ever_returning_a_secret() {
         "the secret must never come back out"
     );
 
-    // Saving again without the secret keeps the stored one: the page cannot
-    // send back a value it was never given.
+    // The page cannot send back a secret it was never given.
     let resaved = app
         .clone()
         .oneshot(authed_request(
@@ -1207,8 +1169,7 @@ async fn saved_settings_drive_the_public_methods_endpoint() {
         "the public endpoint says which methods, not how they are configured"
     );
 
-    // Enabled but with the credential retired: not offered, because sending
-    // someone into that redirect would only break.
+    // Enabled without credentials is not offered: the redirect would break.
     assert_eq!(configure("").await.status(), StatusCode::OK);
     let methods = app
         .oneshot(request("GET", "/api/auth/methods"))
@@ -1352,11 +1313,8 @@ async fn the_session_says_whether_you_are_the_root() {
     db.drop().await.unwrap();
 }
 
-/// A grant with no parent named leaves an existing admin where they are.
-///
-/// The alternative — defaulting to the caller — would make a stray toggle of an
-/// admin switch re-parent someone, and their whole branch, onto whoever clicked
-/// it. Restructuring the tree is worth asking for explicitly.
+/// A grant naming no parent leaves an existing admin where they are: the
+/// alternative lets a stray toggle re-parent a whole branch.
 #[tokio::test]
 async fn re_granting_an_existing_admin_does_not_move_them() {
     let (app, db) = test_app().await;
@@ -1367,8 +1325,7 @@ async fn re_granting_an_existing_admin_does_not_move_them() {
     let id_mid = id_of(&app, &root, "idem-mid").await;
     let id_leaf = id_of(&app, &root, "idem-leaf").await;
 
-    // The root re-grants a deep admin without naming a parent. Under the old
-    // default this pulled them up to depth 1.
+    // Under the old default this pulled them up to depth 1.
     let again = set_admin(&app, &root, &id_leaf, json!({"is_admin": true})).await;
     assert_eq!(again.status(), StatusCode::OK);
     assert_eq!(body_json(again).await["promoted_by"], id_mid);
@@ -1389,7 +1346,6 @@ async fn re_granting_an_existing_admin_does_not_move_them() {
     assert_eq!(moved.status(), StatusCode::OK);
     assert_eq!(row_of(&app, &root, "idem-leaf").await["admin_level"], 1);
 
-    // A fresh account still lands under whoever promoted it.
     account(&app, "idem-new").await;
     let id_new = id_of(&app, &root, "idem-new").await;
     assert_eq!(
@@ -1496,7 +1452,6 @@ async fn a_bulk_delete_orphans_the_links_and_reports_the_deadline() {
     assert_eq!(body["orphaned"], 2);
     assert_eq!(body["grace_days"], 7);
 
-    // The links outlive their owner, unowned and on a deadline.
     let link = db
         .collection::<mongodb::bson::Document>("urls")
         .find_one(doc! {"code": "a"})
@@ -1582,7 +1537,6 @@ async fn bulk_refuses_an_empty_selection_and_an_absurd_one() {
         .unwrap();
     assert_eq!(huge.status(), StatusCode::BAD_REQUEST);
 
-    // And it is admin-only, like everything else under /api/admin.
     let plain = account(&app, "ordinary").await;
     let refused = app
         .oneshot(authed_request(
@@ -1598,19 +1552,15 @@ async fn bulk_refuses_an_empty_selection_and_an_absurd_one() {
     db.drop().await.unwrap();
 }
 
-/// Switches `failCommand` on for one collection, or off again.
-///
-/// Scoped by namespace because the whole suite runs against one mongod and
-/// every test has its own throwaway database — an unscoped failpoint would fail
-/// writes belonging to whatever else happened to be running.
+/// Switches `failCommand` on for one collection, or off. Scoped by namespace:
+/// the suite shares one mongod, so an unscoped failpoint hits other tests.
 async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
     let admin_db = db.client().database("admin");
     let command = if on {
         doc! {
             "configureFailPoint": "failCommand",
-            // Not `times: 1`: the first write has to land, or there is nothing
-            // for the rollback to undo and the test proves only that a failed
-            // write fails.
+            // Not `times: 1`: the first write must land, or there is nothing
+            // for the rollback to undo.
             "mode": {"skip": 1},
             "data": {
                 "failCommands": ["update"],
@@ -1624,10 +1574,8 @@ async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
     admin_db.run_command(command).await.unwrap();
 }
 
-/// The rollback itself, which no other test reaches: every refusal they
-/// exercise is caught before a single write, so they would all pass with the
-/// transaction taken out. Here the first promotion succeeds and the second is
-/// made to fail, and the first has to be gone afterwards.
+/// The rollback itself, which no other test reaches — the rest are caught
+/// before any write, so they pass with the transaction taken out.
 #[tokio::test]
 async fn a_write_failing_partway_undoes_the_writes_before_it() {
     let (app, db) = test_app().await;
@@ -1663,12 +1611,8 @@ async fn a_write_failing_partway_undoes_the_writes_before_it() {
     db.drop().await.unwrap();
 }
 
-/// An admin dragged up past more than one of the selected accounts must be
-/// counted once, not once per level it climbed.
-///
-/// The tree is A → B → C → {D, E}, plus B → F, and the selection is B, C and D.
-/// Working deepest-first, C hands E up to B, and then B hands both E and F up
-/// to A — so E is moved twice while only ever keeping one flag.
+/// An admin dragged up past two of the selected accounts moves twice and keeps
+/// one flag, so it must be counted once.
 #[tokio::test]
 async fn an_admin_moved_up_twice_is_reported_once() {
     let (app, db) = test_app().await;
@@ -1704,7 +1648,6 @@ async fn an_admin_moved_up_twice_is_reported_once() {
         "E and F kept the flag; E climbing two levels is still one account"
     );
 
-    // And the tree says the same thing.
     assert_eq!(row_of(&app, &a, "tree-e").await["is_admin"], true);
     assert_eq!(row_of(&app, &a, "tree-f").await["is_admin"], true);
     for gone in ["tree-b", "tree-c", "tree-d"] {

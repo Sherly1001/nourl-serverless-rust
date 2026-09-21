@@ -48,8 +48,7 @@ async fn an_oauth_method_needs_credentials_before_it_counts_as_enabled() {
     db.collection::<mongodb::bson::Document>("settings")
         .insert_one(doc! {
             "_id": "auth",
-            // Toggled on in the admin UI but never given credentials: offering
-            // it on the login page would send users to a broken redirect.
+            // Enabled without credentials would be a broken redirect.
             "github": {"enabled": true},
             "google": {"enabled": true, "client_id": "g-id"},
             "facebook": {"enabled": true, "client_id": "f-id", "client_secret": "f-secret"},

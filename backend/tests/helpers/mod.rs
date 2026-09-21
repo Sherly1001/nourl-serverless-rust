@@ -34,8 +34,7 @@ pub async fn test_app_with_providers(
         jwt_secret: JWT_SECRET.into(),
         session_days: SESSION_DAYS,
         cookie_secure: false,
-        // The production default, so the tests assert on the number a real
-        // deployment uses unless it says otherwise.
+        // The production default, so tests assert on a real deployment's number.
         orphan_grace_days: 7,
     };
     (

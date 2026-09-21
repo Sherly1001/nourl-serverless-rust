@@ -62,11 +62,8 @@ async fn usernames_are_unique() {
     db.drop().await.unwrap();
 }
 
-/// The unique indexes are partial (`$type: "string"`) rather than sparse,
-/// because sparse skips only *missing* fields. An account can legitimately
-/// carry an explicit `null` provider id — phase 2b links one provider at a
-/// time — and a sparse unique index would reject the second such account,
-/// failing `ensure_indexes` and killing the Lambda on cold start.
+/// Sparse skips only missing fields, so a sparse unique index would reject the
+/// second account carrying an explicit `null` provider id.
 #[tokio::test]
 async fn explicit_null_provider_ids_do_not_collide() {
     let db = helpers::test_db().await;
