@@ -43,10 +43,8 @@ pub fn demote_warning(user: &AdminUserInfo, below: usize) -> String {
     }
 }
 
-/// The same dialog aimed at yourself. Worth its own wording: the server calls
-/// this resigning and treats it as a different act — it needs nobody's
-/// permission — and "Remove admin from sher?" asked of sher reads as though
-/// somebody else were doing it.
+/// The same dialog aimed at yourself, which the server treats as a different
+/// act — and "Remove admin from sher?" asked of sher reads as somebody else.
 pub fn resign_warning(below: usize) -> String {
     match below {
         0 => "Give up your own admin flag? You will lose the admin pages.".to_string(),
@@ -94,11 +92,8 @@ pub fn bulk_result(word: &str, affected: u64, below: u64, moved: u64) -> String 
     }
 }
 
-/// A bulk request the server refused whole, worded for a toast.
-///
-/// The selection is judged as a unit, so the admin needs to know how much of it
-/// was the problem rather than only that something was — one refused row out of
-/// forty is a different thing to untick than thirty-nine.
+/// A refused bulk request, worded for a toast. One refused row out of forty is
+/// a different thing to untick than thirty-nine, so the count matters.
 pub fn bulk_refusal(message: &str, rejected: &[shared::RejectedId]) -> String {
     let Some(first) = rejected.first() else {
         return message.to_string();

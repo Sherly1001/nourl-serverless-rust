@@ -559,8 +559,6 @@ pub fn Users() -> impl IntoView {
 
                 <label class="flex gap-2 items-center input">
                     <span class="opacity-60 icon-[tabler--search] size-4"></span>
-                    // Deliberately not `type="search"`: browsers draw their own
-                    // clear button inside one, next to the app's.
                     <input
                         type="text"
                         class="grow"
@@ -579,18 +577,12 @@ pub fn Users() -> impl IntoView {
                     </Show>
                 </label>
 
-                // One table, two groups: the admin chain first, indented by
-                // depth, then everyone else. Grouping rather than two tables
-                // keeps the columns aligned down the whole page.
                 <div
                     class="overflow-auto rounded-lg border max-h-[70vh] border-base-content/10"
                     on:scroll=on_scroll
                 >
                     <table class="table table-fixed min-w-[60rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead node_ref=head class="sticky top-0 z-10 bg-base-200">
-                            // `border-0` on the row itself: the group headings
-                            // below carry the same background, so a rule here
-                            // would only cut one band in two.
                             <tr class="border-0">
                                 <th class="px-3 w-10">
                                     <input
@@ -624,9 +616,6 @@ pub fn Users() -> impl IntoView {
                         <tbody>
                             <Show when=move || !admin_rows.with(Vec::is_empty)>
                                 <tr class="border-0">
-                                    // No rules of its own: the header above it
-                                    // and the rows below both draw their own,
-                                    // and its background is separation enough.
                                     <td
                                         colspan="7"
                                         style=under_head
@@ -664,12 +653,6 @@ pub fn Users() -> impl IntoView {
 
                             <Show when=move || !items.get().is_empty() || showing_ghosts()>
                                 <tr class="border-0">
-                                    // Sticky under the header, which is exactly
-                                    // 2.5rem tall, so scrolling through a long
-                                    // tree never loses which group is on screen.
-                                    // The label is muted on its own: `opacity`
-                                    // on the cell would fade the background too
-                                    // and let the rows scroll through it.
                                     <td
                                         colspan="7"
                                         style=under_head
@@ -680,7 +663,6 @@ pub fn Users() -> impl IntoView {
                                 </tr>
                             </Show>
 
-                            // Nothing hangs off a non-admin, so never a chevron.
                             <For
                                 each=move || items.get()
                                 key=|user: &AdminUserInfo| row_key(user, false, false)

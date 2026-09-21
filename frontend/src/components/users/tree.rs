@@ -61,15 +61,9 @@ pub fn may_manage(
     descends_from(row.promoted_by.as_deref(), &actor.id, parent_of)
 }
 
-/// Whether this row is the actor giving up their own flag.
-///
-/// The one thing [`may_manage`] refuses that the server allows: resigning has a
-/// route of its own, and needs no permission — the flag was a favour, and
-/// whoever granted it can grant it again.
-///
-/// A root is refused, matching the server. Nobody is above them to put it back,
-/// and the cascade would take every admin on the system down with them, leaving
-/// the admin pages reachable only by editing the collection.
+/// Whether this row is the actor resigning — the one thing [`may_manage`]
+/// refuses that the server allows, since the flag was a favour and can be
+/// granted again. A root is refused: nobody is above them to put it back.
 pub fn may_resign(actor: &UserInfo, row: &AdminUserInfo) -> bool {
     actor.is_admin && !actor.is_root && actor.id == row.id && row.is_admin
 }
@@ -111,14 +105,9 @@ pub fn descendants<'a>(id: &str, admins: &'a [AdminUserInfo]) -> Vec<&'a AdminUs
         .collect()
 }
 
-/// The admins in the order they should be drawn: each root followed by its
-/// branch, depth first, so a row always appears under its parent.
-///
-/// Whatever order the server returned is kept between siblings, which is how
-/// the sort control reaches a tree that cannot itself be sorted flat. Anything
-/// unreachable from a root — only possible from a hand-edited database — is
-/// appended rather than dropped, because a page that silently omits an admin is
-/// worse than one that shows an odd-looking row.
+/// Each root followed by its branch, depth first. The server's order is kept
+/// between siblings, which is how the sort control reaches the tree. Anything
+/// unreachable from a root is appended rather than silently omitted.
 pub fn tree_order(admins: &[AdminUserInfo]) -> Vec<AdminUserInfo> {
     let mut children: HashMap<&str, Vec<&AdminUserInfo>> = HashMap::new();
     let mut roots: Vec<&AdminUserInfo> = Vec::new();
@@ -168,13 +157,9 @@ pub fn matches(user: &AdminUserInfo, needle: &str) -> bool {
     .any(|field| field.to_lowercase().contains(needle))
 }
 
-/// The tree narrowed to the search: every hit, plus the admins above it.
-///
-/// The server deliberately sends the chain whole — dropping an admin whose name
-/// does not match would cut every admin below them loose — so narrowing it is
-/// this side's job. Ancestors are kept even when they do not match, because a
-/// hit shown without its chain would sit at an indent that points at nothing.
-/// An empty needle is not a search and leaves the tree alone.
+/// Every hit, plus the admins above it: the server sends the chain whole, so
+/// narrowing is this side's job, and a hit without its chain would sit at an
+/// indent pointing at nothing. An empty needle leaves the tree alone.
 pub fn search_tree(ordered: &[AdminUserInfo], needle: &str) -> Vec<AdminUserInfo> {
     if needle.is_empty() {
         return ordered.to_vec();
@@ -208,12 +193,9 @@ pub fn has_children(id: &str, admins: &[AdminUserInfo]) -> bool {
         .any(|row| row.promoted_by.as_deref() == Some(id))
 }
 
-/// Hides the branch under every collapsed node, keeping the node itself.
-///
-/// Works on the already-ordered list rather than the tree, because depth-first
-/// order means a branch is exactly the run of deeper rows that follows its
-/// root — so one pass with a depth watermark is enough, and nesting collapses
-/// inside collapses costs nothing extra.
+/// Hides the branch under every collapsed node, keeping the node. Works on the
+/// ordered list: depth-first means a branch is the run of deeper rows that
+/// follows, so one pass with a watermark handles nesting too.
 pub fn visible_rows(ordered: &[AdminUserInfo], collapsed: &HashSet<String>) -> Vec<AdminUserInfo> {
     let mut rows = Vec::with_capacity(ordered.len());
     // Set while skipping: everything deeper than this is inside a folded branch.

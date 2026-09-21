@@ -15,16 +15,9 @@ use crate::list::short_datetime;
 
 use super::tree::{may_manage, may_move_under, may_resign};
 
-/// What `<For>` keys a row by.
-///
-/// The id alone is not enough: a move changes where a row sits and how deep it
-/// is drawn but not who it is, so keying on the id would let Leptos reuse the
-/// old node and leave the tree showing the shape it had before the move.
-/// `branching` is in the key for the same reason: a row that gains or loses its
-/// first child is drawn differently — chevron or no chevron — while everything
-/// about the row itself stays the same. So is `matched`: both are read once
-/// when the row is built, so a row that survives a keystroke would otherwise
-/// keep the highlight, or the chevron, it had for the previous search.
+/// What `<For>` keys a row by. The id alone would let Leptos reuse a node
+/// across a move and keep drawing the old shape; `branching` and `matched` are
+/// read once when the row is built, so they belong in the key too.
 pub fn row_key(user: &AdminUserInfo, branching: bool, matched: bool) -> String {
     format!(
         "{}@{}@{}@{branching}@{matched}",
@@ -34,11 +27,9 @@ pub fn row_key(user: &AdminUserInfo, branching: bool, matched: bool) -> String {
     )
 }
 
-/// Whether a row that draws no chevron still has to reserve its width.
-///
-/// Every admin does, roots included: without it a childless root starts at a
-/// different depth from a branching one, and the tree is read by where a row
-/// starts. Accounts with no rank never branch, so they keep the edge.
+/// Whether a chevron-less row still reserves the width. Every admin does, or a
+/// childless root starts at a different depth from a branching one — and the
+/// tree is read by where a row starts.
 pub fn needs_gutter(is_admin: bool) -> bool {
     is_admin
 }
@@ -48,16 +39,9 @@ pub fn needs_gutter(is_admin: bool) -> bool {
 const MENU_GAP: f64 = 4.0;
 const MENU_MAX_HEIGHT: f64 = 256.0;
 
-/// Where a row's menu should sit, as inline style in viewport coordinates.
-///
-/// The table body scrolls and clips, so a menu positioned inside it is cut off
-/// against the bottom edge and paints over the sticky header once its own row
-/// has scrolled away. `position: fixed` takes it out of that box: it is pinned
-/// to the trigger's edges, dropped on whichever side has more room, and capped
-/// to the room actually there so it scrolls internally instead of off-screen.
-/// `trigger` is the button's `(top, bottom, right)` and `viewport` its
-/// `(width, height)`, both in CSS pixels — plain numbers so the placement can be
-/// checked without a browser.
+/// Where a row's menu sits, in viewport coordinates. `fixed`, or the scrolling
+/// table body clips it; dropped on whichever side has room and capped to it.
+/// Plain numbers, so the placement can be checked without a browser.
 pub fn menu_placement(trigger: (f64, f64, f64), viewport: (f64, f64)) -> String {
     let (top, bottom, edge_right) = trigger;
     let (width, height) = viewport;
@@ -82,11 +66,8 @@ pub fn sign_in_methods(user: &AdminUserInfo) -> Vec<String> {
     methods
 }
 
-/// One account, in whichever group it belongs to.
-///
-/// A component rather than an inline closure because the tree and the bucket
-/// below it both render one. `admin_level` drives the indent, so an account
-/// with no rank simply sits flush and the same markup serves both.
+/// One account, in whichever group. `admin_level` drives the indent, so an
+/// account with no rank sits flush and the same markup serves both.
 #[component]
 #[allow(clippy::too_many_arguments)]
 pub fn UserRow(
@@ -311,8 +292,6 @@ pub fn UserRow(
             on:dragleave=on_dragleave
             on:drop=on_drop
         >
-            // Empty rather than absent when the row is out of reach: a missing
-            // cell would shift every column after it out of line.
             <td>
                 <Show when=move || manageable>
                     <input
@@ -334,11 +313,7 @@ pub fn UserRow(
             </td>
 
             <td class=if movable { "cursor-grab active:cursor-grabbing" } else { "" }>
-                // `items-stretch` so each guide runs the full height of the
-                // row and the guides of consecutive rows join into one line.
                 <span class="flex items-stretch -my-2">
-                    // One guide per level above this row: the vertical rules
-                    // that make the chain read as a tree rather than an indent.
                     {(0..level)
                         .map(|_| {
                             view! {
@@ -347,17 +322,11 @@ pub fn UserRow(
                         })
                         .collect_view()}
                     <span class="flex overflow-hidden gap-2 items-center py-2 pl-1 min-w-0">
-                        // The gutter earns its space wherever a sibling might
-                        // have a chevron — see `needs_gutter`.
                         <Show
                             when=move || branching
                             fallback=move || {
                                 needs_gutter(is_admin)
                                     .then(|| {
-                                        // `size-6`, matching the chevron button exactly:
-                                        // `btn-xs btn-square` is `--size-field * 6` =
-                                        // 24px, and a 20px spacer would start this row's
-                                        // name 4px left of a sibling that has a chevron.
                                         view! { <span class="shrink-0 size-6"></span> }
                                     })
                             }
@@ -398,16 +367,12 @@ pub fn UserRow(
                         <span class="flex flex-col min-w-0">
                             <span class="flex gap-2 items-center min-w-0">
                                 <Tooltip text=username.clone() class="block truncate">
-                                    // Cloned rather than moved: the children
-                                    // are rebuilt whenever the row re-renders.
                                     {username.clone()}
                                 </Tooltip>
                                 <Show when=move || mine>
                                     <span class="badge badge-soft badge-sm">"you"</span>
                                 </Show>
                             </span>
-                            // Searchable, so it is shown: a filter that matches
-                            // on something invisible looks broken.
                             {user
                                 .email
                                 .clone()
@@ -469,8 +434,6 @@ pub fn UserRow(
             </td>
             <td class="text-right">
                 <div class="inline-flex relative gap-1 items-center" node_ref=menu_root>
-                    // Moving only makes sense for a row already in the tree,
-                    // and only where there is somewhere to move it to.
                     <Show when={
                         let empty = destinations.is_empty();
                         move || is_admin && manageable && !empty
@@ -492,10 +455,6 @@ pub fn UserRow(
                     </Show>
                     <Show when=move || menu_open.get()>
                         <ul
-                            // No padding of its own: the heading sticks to the
-                            // very top of the scroll box, and padding there
-                            // would leave a transparent strip for the entries
-                            // to scroll through above it.
                             class="overflow-y-auto z-30 w-56 rounded-lg border shadow-lg bg-base-100 border-base-content/10 motion-preset-slide-down motion-duration-200"
                             style=move || menu_style.get()
                             role="menu"
