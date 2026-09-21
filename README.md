@@ -14,12 +14,15 @@ make test                # workspace tests (needs mongo-up)
 make fmt                 # rustfmt + leptosfmt + rustywind + prettier + terraform fmt
 ```
 
-`mongo-up` runs mongod as a single-node replica set, because a transaction
-spans more than one document and mongod only offers those on a replica set —
-production is Atlas, so a standalone container would leave the transactional
-paths untested locally. A container created before this replaces itself the
-next time the target runs; anything in it is lost, so `mongodump` first if it
-holds something you want.
+`mongo-up` runs mongod as a single-node replica set with test commands on: a
+transaction spans more than one document and mongod only offers those on a
+replica set, and `failCommand` is how a test makes a write fail halfway through
+one. Production is Atlas, so a standalone container would leave those paths
+untested locally.
+
+A container whose flags no longer match replaces itself the next time the target
+runs. The data lives in a named volume and survives that; `make mongo-reset`
+removes the volume too, which is how to actually start over.
 
 The backend binary auto-detects Lambda (`AWS_LAMBDA_RUNTIME_API` env) and
 otherwise runs as a plain TCP server on `PORT` (default 9669).
@@ -166,6 +169,43 @@ terraform import -var-file=envs/dev.tfvars \
   aws_cloudwatch_log_group.lambda /aws/lambda/nourl-dev-api
 ```
 
+## Links
+
+Following a link is one atomic update: the same call that finds it raises
+`hits` and stamps `last_hit_at`. An expired link is not found, so it is not
+counted either — the redirect's own filter excludes it without waiting for
+Mongo's TTL monitor, which sweeps about once a minute.
+
+`expires_at` is RFC3339 and must be in the future. On a create or an edit it
+carries three meanings, which is one more than `null` can: **absent** leaves
+whatever is stored alone, so fixing a destination does not un-expire a link; an
+**empty string** removes the expiry; a stamp sets it. The form sends the
+browser's own offset — `2026-08-09T14:30:00+09:00` — rather than converting to
+UTC itself, so no calendar arithmetic happens client-side.
+
+### Replacing a link
+
+A code you already own answers 409 rather than overwriting, and the error
+carries the link it collided with, so the page can show what would change.
+Sending the write again with `overwrite: true` goes through. `reset_hits` and
+`claim` are asked for separately, because neither follows from replacing a
+destination: a link pointing somewhere new has not necessarily stopped counting
+its old visits, and fixing somebody's broken link is not a reason to acquire it.
+
+A code **somebody else** owns is still a flat 403 with no url in it — the error
+must stay useless as a way to look up other people's links. A code **nobody**
+owns is overwritten silently, since an unowned link is already deletable by
+anyone.
+
+### Claiming
+
+An orphaned code is dying of the deadline its owner's departure put on it, so
+claiming an unowned link clears that expiry in the same write. A link that has
+an owner is taken _off_ them, so it follows the rule that governs reaching into
+anyone else's affairs: an admin's reach runs down their own branch of the chain
+and no further — not sideways into a peer's branch, and not upwards. Both are a
+button on the My URLs row; the second asks first.
+
 ## Accounts
 
 Anyone can register; the account owns every link it creates. Links with no
@@ -208,6 +248,19 @@ it to their own parent so it keeps the flag one level shallower.
 An admin deleting _someone else_ never deletes their links. They become unowned
 and get `expires_at = min(existing, now + 7 days)`, so an orphaned code frees
 itself within a week unless somebody claims it by re-creating or editing it.
+
+Ticking several rows on `#/users` sends **one request**, not one per row:
+`POST /api/admin/users/bulk` checks every id before it writes anything and
+commits the writes together, so a selection is applied whole or refused whole —
+a refusal names every id it was about, not just the first. The accounts are
+handled deepest-first, which is what stops a cascade reporting rows the admin
+ticked as though they were collateral. A hundred ids at a time; the page splits
+a longer selection, and the all-or-nothing guarantee then holds per request
+rather than across the lot.
+
+Links deliberately work the other way. Deleting `/a` has no bearing on `/b`, and
+each one asks its own permission question, so a bulk delete or claim is one
+request per link and a refusal on one says nothing about the rest.
 
 **Closing your own account** is the one place that choice is yours: `#/account`
 asks whether your links go with you — gone the moment the account is — or stay
