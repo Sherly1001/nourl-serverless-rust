@@ -1712,3 +1712,190 @@ async fn claiming_through_an_edit_obeys_the_chain_too() {
 
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_bulk_delete_removes_every_named_link() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "bulkdel").await;
+    for code in ["bd-1", "bd-2", "bd-3"] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                &cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let gone = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &cookie,
+            json!({"codes": ["bd-1", "bd-3"], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(gone.status(), StatusCode::OK);
+    let body = body_json(gone).await;
+    assert_eq!(body["affected"], 2);
+    assert_eq!(
+        body["entries"].as_array().unwrap().len(),
+        0,
+        "a delete leaves nothing to show"
+    );
+
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    assert_eq!(urls.count_documents(doc! {}).await.unwrap(), 1);
+    assert!(
+        urls.find_one(doc! {"code": "bd-2"})
+            .await
+            .unwrap()
+            .is_some(),
+        "the link nobody named is untouched"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// The answer carries the links as they now stand, so a page patches its rows
+/// rather than reloading and losing everything scrolled so far.
+#[tokio::test]
+async fn a_bulk_claim_answers_with_the_links_it_took() {
+    let (app, db) = test_app().await;
+    let boss = account(&app, "bulkclaim").await;
+    make_admin(&db, "bulkclaim", None).await;
+    for code in ["bc-1", "bc-2"] {
+        db.collection::<mongodb::bson::Document>("urls")
+            .insert_one(doc! {"code": code, "url": "https://a.example"})
+            .await
+            .unwrap();
+    }
+
+    let taken = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &boss,
+            json!({"codes": ["bc-1", "bc-2"], "action": "claim"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(taken.status(), StatusCode::OK);
+    let body = body_json(taken).await;
+    assert_eq!(body["affected"], 2);
+    let entries = body["entries"].as_array().unwrap();
+    assert_eq!(entries.len(), 2);
+    for entry in entries {
+        assert_eq!(entry["owner"]["username"], "bulkclaim");
+    }
+
+    db.drop().await.unwrap();
+}
+
+/// One refusal refuses the lot, and the answer names every code that was the
+/// problem rather than only the first.
+#[tokio::test]
+async fn a_refused_code_rolls_the_whole_selection_back() {
+    let (app, db) = test_app().await;
+    let owner = account(&app, "bulkowner").await;
+    let other = account(&app, "bulkother").await;
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &owner,
+            json!({"code": "mine-1", "url": "https://a.example"}),
+        ))
+        .await
+        .unwrap();
+    app.clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls",
+            &other,
+            json!({"code": "theirs-1", "url": "https://b.example"}),
+        ))
+        .await
+        .unwrap();
+
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &owner,
+            json!({"codes": ["mine-1", "theirs-1", "no-such-code"], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+
+    let rejected = body_json(refused).await["error"]["rejected"].clone();
+    let rejected = rejected.as_array().expect("every bad code is named");
+    assert_eq!(rejected.len(), 2, "both, not just the first");
+    assert_eq!(rejected[0]["id"], "theirs-1");
+    assert_eq!(rejected[0]["code"], "forbidden");
+    assert_eq!(rejected[1]["id"], "no-such-code");
+    assert_eq!(rejected[1]["code"], "not_found");
+
+    assert_eq!(
+        db.collection::<mongodb::bson::Document>("urls")
+            .count_documents(doc! {})
+            .await
+            .unwrap(),
+        2,
+        "the link that could have gone is still there"
+    );
+
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn bulk_urls_refuses_an_empty_selection_and_an_absurd_one() {
+    let (app, db) = test_app().await;
+    let cookie = account(&app, "bulklimits").await;
+
+    let empty = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &cookie,
+            json!({"codes": [], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(empty.status(), StatusCode::BAD_REQUEST);
+
+    let codes: Vec<String> = (0..101).map(|n| format!("code-{n}")).collect();
+    let huge = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &cookie,
+            json!({"codes": codes, "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(huge.status(), StatusCode::BAD_REQUEST);
+
+    // Claiming is an admin power, in bulk as singly.
+    let refused = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &cookie,
+            json!({"codes": ["whatever"], "action": "claim"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::FORBIDDEN);
+
+    db.drop().await.unwrap();
+}

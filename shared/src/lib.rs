@@ -82,6 +82,33 @@ pub struct ApiErrorBody {
     pub rejected: Option<Vec<RejectedId>>,
 }
 
+/// What a bulk action does to every link it names.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum UrlBulkAction {
+    Delete,
+    Claim,
+}
+
+/// `POST /api/urls/bulk`. Every code is checked before anything is written and
+/// the writes commit together, so a selection is applied whole or refused
+/// whole — as on the users endpoint, though links do not cascade.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BulkUrlsRequest {
+    pub codes: Vec<String>,
+    pub action: UrlBulkAction,
+}
+
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+pub struct BulkUrlsResponse {
+    /// Links the action applied to.
+    pub affected: u64,
+    /// The links as they now stand, so a page can patch its rows rather than
+    /// reload. Empty for a delete, which leaves nothing to show.
+    #[serde(default)]
+    pub entries: Vec<UrlEntry>,
+}
+
 /// One refused id. `code` is what the error would have carried on its own.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RejectedId {

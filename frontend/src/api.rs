@@ -3,10 +3,10 @@ use serde::Serialize;
 use serde::de::DeserializeOwned;
 use shared::{
     AdminOrphans, AdminSettings, AdminUserListResponse, ApiError, ApiErrorBody, AuthMethods,
-    BulkAction, BulkUsersRequest, BulkUsersResponse, ChangePasswordRequest, DeleteAccountRequest,
-    DeleteUserResponse, LoginRequest, RegisterRequest, SetAdminRequest, SetAdminResponse,
-    UpdateProfileRequest, UpdateSettingsRequest, UrlEntry, UrlListResponse, UrlUpsertRequest,
-    UserInfo,
+    BulkAction, BulkUrlsRequest, BulkUrlsResponse, BulkUsersRequest, BulkUsersResponse,
+    ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest, RegisterRequest,
+    SetAdminRequest, SetAdminResponse, UpdateProfileRequest, UpdateSettingsRequest, UrlBulkAction,
+    UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
 };
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
@@ -191,6 +191,30 @@ pub async fn delete_user(
         AdminOrphans::Reparent => "reparent",
     };
     read_json(Request::delete(&format!("/api/admin/users/{id}")).query([("orphans", choice)])).await
+}
+
+/// A whole selection of links, in as few requests as the cap allows. The
+/// server is all-or-nothing within a request, so a split selection can land in
+/// part — which is why an error carries what the earlier chunks did.
+pub async fn bulk_urls(
+    codes: Vec<String>,
+    action: UrlBulkAction,
+) -> Result<BulkUrlsResponse, (BulkUrlsResponse, ApiErrorBody)> {
+    let mut total = BulkUrlsResponse::default();
+    for chunk in codes.chunks(BULK_CHUNK) {
+        let request = BulkUrlsRequest {
+            codes: chunk.to_vec(),
+            action,
+        };
+        match send_json::<_, BulkUrlsResponse>(Request::post("/api/urls/bulk"), &request).await {
+            Ok(response) => {
+                total.affected += response.affected;
+                total.entries.extend(response.entries);
+            }
+            Err(err) => return Err((total, err)),
+        }
+    }
+    Ok(total)
 }
 
 /// Mirrors the server's own `BULK_MAX`. A longer selection is sent in several,

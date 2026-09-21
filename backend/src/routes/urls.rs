@@ -3,7 +3,8 @@ use axum::extract::{Path, Query, State};
 use futures::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 use shared::{
-    DeleteResponse, UrlEntry, UrlListResponse, UrlUpsertRequest, validate_code, validate_url,
+    BulkUrlsRequest, BulkUrlsResponse, DeleteResponse, RejectedId, UrlBulkAction, UrlEntry,
+    UrlListResponse, UrlUpsertRequest, validate_code, validate_url,
 };
 
 use crate::app::AppState;
@@ -310,6 +311,120 @@ pub async fn claim_url(
     }
     urls.update_one(doc! {"code": &code}, update).await?;
     Ok(Json(fetch_entry(&state, &code).await?))
+}
+
+/// The cap on one request; a client ticking more sends several.
+const BULK_MAX: usize = 100;
+
+/// Resolves every named link and checks the caller may do `action` to it,
+/// collecting refusals rather than stopping at the first.
+async fn bulk_targets(
+    state: &AppState,
+    session: &mut mongodb::ClientSession,
+    user: &User,
+    codes: &[String],
+    action: UrlBulkAction,
+) -> Result<Vec<Document>, AppError> {
+    let urls = state.db.collection::<Document>("urls");
+    let mut seen = std::collections::HashSet::new();
+    let mut targets = Vec::with_capacity(codes.len());
+    let mut rejected = Vec::new();
+    for code in codes {
+        if !seen.insert(code.as_str()) {
+            continue;
+        }
+        let refuse = |err: AppError| RejectedId {
+            id: code.clone(),
+            code: err.code.to_string(),
+            message: err.message,
+        };
+        let Some(existing) = urls
+            .find_one(doc! {"code": code})
+            .session(&mut *session)
+            .await?
+        else {
+            rejected.push(refuse(AppError::not_found("code not found")));
+            continue;
+        };
+        // Deleting asks `may_write`; claiming asks who may take it.
+        let allowed = match action {
+            UrlBulkAction::Delete => may_write(&existing, Some(user)),
+            UrlBulkAction::Claim => {
+                owner_id(&existing) != Some(user.id.as_str())
+                    && may_claim(state, &mut *session, user, &existing).await?
+            }
+        };
+        if allowed {
+            targets.push(existing);
+        } else {
+            rejected.push(refuse(owned_error(code)));
+        }
+    }
+    if rejected.is_empty() {
+        return Ok(targets);
+    }
+    Err(AppError::validation("some of those links cannot be changed").on_rejected(rejected))
+}
+
+/// Delete or claim a selection in one request. All-or-nothing, as the users
+/// endpoint is: checked whole, written whole. Links do not cascade, so the
+/// reason here is consistency rather than correctness.
+pub async fn bulk_urls(
+    State(state): State<AppState>,
+    CurrentUser(user): CurrentUser,
+    AppJson(body): AppJson<BulkUrlsRequest>,
+) -> Result<Json<BulkUrlsResponse>, AppError> {
+    if body.codes.is_empty() {
+        return Err(AppError::validation("no links were named"));
+    }
+    if body.codes.len() > BULK_MAX {
+        return Err(AppError::validation(format!(
+            "no more than {BULK_MAX} links at a time"
+        )));
+    }
+    if body.action == UrlBulkAction::Claim && !user.is_admin {
+        return Err(AppError::forbidden("only an admin can claim a link"));
+    }
+
+    let urls = state.db.collection::<Document>("urls");
+    let mut session = state.db.client().start_session().await?;
+    session.start_transaction().await?;
+    let targets = bulk_targets(&state, &mut session, &user, &body.codes, body.action).await?;
+
+    let mut result = BulkUrlsResponse::default();
+    for existing in &targets {
+        let code = existing.get_str("code").unwrap_or_default().to_string();
+        match body.action {
+            UrlBulkAction::Delete => {
+                urls.delete_one(doc! {"code": &code})
+                    .session(&mut session)
+                    .await?;
+            }
+            UrlBulkAction::Claim => {
+                let mut update = doc! {
+                    "$set": {"owner": &user.id, "updated_at": bson::DateTime::now()},
+                };
+                // An orphan is dying of that deadline, so rescuing takes it off.
+                if owner_id(existing).is_none() {
+                    update.insert("$unset", doc! {"expires_at": ""});
+                }
+                urls.update_one(doc! {"code": &code}, update)
+                    .session(&mut session)
+                    .await?;
+            }
+        }
+        result.affected += 1;
+    }
+    session.commit_transaction().await?;
+
+    // Outside the transaction, so the entries carry the joined owner.
+    if body.action == UrlBulkAction::Claim {
+        for existing in &targets {
+            let code = existing.get_str("code").unwrap_or_default();
+            result.entries.push(fetch_entry(&state, code).await?);
+        }
+    }
+    Ok(Json(result))
 }
 
 pub async fn list_urls(

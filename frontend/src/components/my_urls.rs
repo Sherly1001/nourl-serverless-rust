@@ -2,7 +2,7 @@ use std::collections::HashSet;
 
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
+use shared::{UrlBulkAction, UrlEntry, UrlUpsertRequest, validate_code, validate_url};
 use wasm_bindgen::JsCast;
 
 use crate::api;
@@ -36,6 +36,19 @@ fn delete_message(codes: &[String]) -> String {
         [one] => format!("Delete /{one}? This cannot be undone."),
         many => format!("Delete {} links? This cannot be undone.", many.len()),
     }
+}
+
+/// What a refused selection says. The count matters: one link out of forty is
+/// a different thing to untick than thirty-nine.
+fn refusal_message(message: &str, rejected: &[shared::RejectedId]) -> String {
+    let Some(first) = rejected.first() else {
+        return message.to_string();
+    };
+    let links = match rejected.len() {
+        1 => "1 link was".to_string(),
+        n => format!("{n} links were"),
+    };
+    format!("{message}: {links} refused — {}", first.message)
 }
 
 /// What the takeover dialog says. The owned links are why it appears, but the
@@ -213,38 +226,44 @@ pub fn MyUrls() -> impl IntoView {
         set_debounced.set(String::new());
     };
 
-    // One per link: links do not cascade, so a refusal says nothing about the rest.
+    // One request per hundred, refused whole: one unreachable link stops a chunk.
     let claim_many = move |codes: Vec<String>| {
         spawn_local(async move {
-            let mut taken = 0usize;
-            let mut failed = Vec::new();
-            let mut last_owner = String::new();
-            for code in codes {
-                match api::claim_url(&code).await {
-                    Ok(updated) => {
-                        last_owner = updated
-                            .owner
-                            .as_ref()
-                            .and_then(|o| o.username.clone())
-                            .unwrap_or_default();
-                        set_items.update(|rows| {
-                            if let Some(row) = rows.iter_mut().find(|row| row.code == code) {
-                                *row = updated;
-                            }
-                        });
-                        selected.update(|set| {
-                            set.remove(&code);
-                        });
-                        taken += 1;
+            let outcome = api::bulk_urls(codes, UrlBulkAction::Claim).await;
+            let (done, failure) = match outcome {
+                Ok(done) => (done, None),
+                Err((done, err)) => (done, Some(err)),
+            };
+            for entry in &done.entries {
+                let code = entry.code.clone();
+                set_items.update(|rows| {
+                    if let Some(row) = rows.iter_mut().find(|row| row.code == code) {
+                        *row = entry.clone();
                     }
-                    Err(err) => failed.push(format!("/{code}: {}", err.message)),
-                }
+                });
+                selected.update(|set| {
+                    set.remove(&code);
+                });
             }
-            match (taken, failed.as_slice()) {
-                (0, []) => {}
-                (1, []) => toasts.success(format!("1 link is {last_owner}'s now")),
-                (n, []) => toasts.success(format!("{n} links are {last_owner}'s now")),
-                (_, problems) => toasts.error(format!("Could not claim {}", problems.join("; "))),
+            let owner = done
+                .entries
+                .first()
+                .and_then(|entry| entry.owner.as_ref())
+                .and_then(|owner| owner.username.clone())
+                .unwrap_or_default();
+            match (done.affected, failure) {
+                (0, None) => {}
+                (1, None) => toasts.success(format!("1 link is {owner}'s now")),
+                (n, None) => toasts.success(format!("{n} links are {owner}'s now")),
+                (n, Some(err)) => {
+                    if n > 0 {
+                        toasts.success(format!("{n} claimed before it stopped"));
+                    }
+                    toasts.error(refusal_message(
+                        &err.message,
+                        err.rejected.as_deref().unwrap_or_default(),
+                    ));
+                }
             }
         });
     };
@@ -258,38 +277,43 @@ pub fn MyUrls() -> impl IntoView {
         claim_many(codes);
     });
 
-    // Asks only when something is taken from somebody.
+    // Always asks: even a claim that takes nothing can be refused whole.
     let ask_claim = move |entries: Vec<UrlEntry>| {
-        if entries.iter().any(|entry| entry.owner.is_some()) {
-            pending_claim.set(entries);
-            claim_open.set(true);
-            return;
-        }
-        claim_many(entries.into_iter().map(|entry| entry.code).collect());
+        pending_claim.set(entries);
+        claim_open.set(true);
     };
 
     let delete_confirmed = Callback::new(move |()| {
         let codes = pending_delete.get_untracked();
         spawn_local(async move {
-            let mut failed = Vec::new();
-            let mut deleted = 0usize;
-            for code in codes {
-                match api::delete_url(&code).await {
-                    Ok(()) => {
-                        set_items.update(|rows| rows.retain(|row| row.code != code));
-                        set_total.update(|t| *t = t.saturating_sub(1));
-                        selected.update(|set| {
-                            set.remove(&code);
-                        });
-                        deleted += 1;
-                    }
-                    Err(err) => failed.push(format!("/{code}: {}", err.message)),
-                }
+            let outcome = api::bulk_urls(codes, UrlBulkAction::Delete).await;
+            let (done, failure) = match outcome {
+                Ok(done) => (done, None),
+                Err((done, err)) => (done, Some(err)),
+            };
+            // A delete answers with no entries, so the codes asked for are the ones gone.
+            if done.affected > 0 {
+                let gone: HashSet<String> = pending_delete
+                    .get_untracked()
+                    .into_iter()
+                    .take(done.affected as usize)
+                    .collect();
+                set_items.update(|rows| rows.retain(|row| !gone.contains(&row.code)));
+                set_total.update(|total| *total = total.saturating_sub(done.affected));
+                selected.update(|set| set.retain(|code| !gone.contains(code)));
             }
-            match (deleted, failed.as_slice()) {
-                (0, []) => {}
-                (n, []) => toasts.success(format!("Deleted {n} link(s)")),
-                (_, problems) => toasts.error(format!("Could not delete {}", problems.join("; "))),
+            match (done.affected, failure) {
+                (0, None) => {}
+                (n, None) => toasts.success(format!("Deleted {n} link(s)")),
+                (n, Some(err)) => {
+                    if n > 0 {
+                        toasts.success(format!("Deleted {n} before it stopped"));
+                    }
+                    toasts.error(refusal_message(
+                        &err.message,
+                        err.rejected.as_deref().unwrap_or_default(),
+                    ));
+                }
             }
         });
     });
@@ -881,6 +905,25 @@ mod tests {
         assert!(mixed.contains("Claim 3 links"), "{mixed}");
         assert!(mixed.contains("2 of them are taken"), "{mixed}");
         assert_eq!(claim_message(&[]), "");
+    }
+
+    #[test]
+    fn a_refusal_counts_the_links_it_was_about() {
+        let refused = |n: usize| {
+            (0..n)
+                .map(|i| shared::RejectedId {
+                    id: format!("c{i}"),
+                    code: "forbidden".into(),
+                    message: "not yours".into(),
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(
+            refusal_message("nothing changed", &refused(1)),
+            "nothing changed: 1 link was refused — not yours"
+        );
+        assert!(refusal_message("nothing changed", &refused(3)).contains("3 links were refused"));
+        assert_eq!(refusal_message("it broke", &[]), "it broke");
     }
 
     #[test]
