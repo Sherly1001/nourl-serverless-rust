@@ -49,6 +49,13 @@ pub struct UrlEntry {
     /// RFC3339, rewritten on every edit. Absent until a link is next written.
     #[serde(default)]
     pub updated_at: Option<String>,
+    /// Whether the caller may edit or delete this link. Decided by the server,
+    /// because the chain that governs it is not in anything the client holds.
+    #[serde(default)]
+    pub editable: bool,
+    /// Whether the caller may take this link off whoever owns it.
+    #[serde(default)]
+    pub claimable: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

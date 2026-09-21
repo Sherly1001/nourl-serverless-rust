@@ -100,15 +100,94 @@ fn code_in_use(entry: UrlEntry, yours: bool) -> AppError {
         .on_conflict(entry)
 }
 
-/// Nobody owns it, the caller owns it, or the caller is an admin.
-fn may_write(existing: &Document, user: Option<&User>) -> bool {
-    match owner_id(existing) {
-        None => true,
-        Some(owner) => user.is_some_and(|u| u.is_admin || u.id == owner),
+/// Nobody owns it, the caller owns it, or the caller is an admin the owner
+/// answers to. An admin's reach runs down their own branch for a link as it
+/// does for an account, so destroying one upwards is refused as taking it is.
+async fn may_write(
+    state: &AppState,
+    session: &mut mongodb::ClientSession,
+    existing: &Document,
+    user: Option<&User>,
+) -> Result<bool, AppError> {
+    let Some(owner) = owner_id(existing) else {
+        return Ok(true);
+    };
+    let Some(user) = user else {
+        return Ok(false);
+    };
+    if owner == user.id {
+        return Ok(true);
     }
+    if !user.is_admin {
+        return Ok(false);
+    }
+    // An owner id pointing nowhere reads as unowned.
+    let Some(owner) = users::find_by_id_in(&state.db, &mut *session, owner).await? else {
+        return Ok(true);
+    };
+    users::may_manage(&state.db, session, user, &owner).await
 }
 
-async fn fetch_entry(state: &AppState, code: &str) -> Result<UrlEntry, AppError> {
+/// Answers, for each row, whether the caller may edit it and may take it.
+/// Two queries whatever the page holds: the owners repeat far more often than
+/// they differ, so both lookups are done once for the set.
+async fn into_entries(
+    state: &AppState,
+    user: Option<&User>,
+    rows: Vec<Document>,
+) -> Result<Vec<UrlEntry>, AppError> {
+    let owners: Vec<String> = rows
+        .iter()
+        .filter_map(|row| row.get_str("owner_id").ok().map(str::to_string))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+
+    let mut session = state.db.client().start_session().await?;
+    let admins: std::collections::HashSet<String> = if owners.is_empty() {
+        std::collections::HashSet::new()
+    } else {
+        users::find_many_in(&state.db, &mut session, &owners)
+            .await?
+            .into_iter()
+            .filter(|owner| owner.is_admin)
+            .map(|owner| owner.id)
+            .collect()
+    };
+    let chains = if owners.is_empty() {
+        std::collections::HashMap::new()
+    } else {
+        users::ancestors_of_many(&state.db, &mut session, &owners).await?
+    };
+
+    rows.into_iter()
+        .map(|row| {
+            let owner = row.get_str("owner_id").ok().map(str::to_string);
+            let mut entry: UrlEntry = bson::from_document(row).map_err(AppError::internal)?;
+            let (editable, claimable) = match (user, owner.as_deref()) {
+                (None, None) => (true, false),
+                (None, Some(_)) => (false, false),
+                (Some(user), None) => (true, user.is_admin),
+                (Some(user), Some(owner)) if owner == user.id => (true, false),
+                (Some(user), Some(owner)) => {
+                    // Not an admin means in nobody's subtree; not found means gone.
+                    let reaches = !admins.contains(owner)
+                        || chains.get(owner).is_some_and(|up| up.contains(&user.id));
+                    (user.is_admin && reaches, user.is_admin && reaches)
+                }
+            };
+            entry.editable = editable;
+            entry.claimable = claimable;
+            Ok(entry)
+        })
+        .collect()
+}
+
+async fn fetch_entry(
+    state: &AppState,
+    user: Option<&User>,
+    code: &str,
+) -> Result<UrlEntry, AppError> {
     let rows: Vec<Document> = state
         .db
         .collection::<Document>("urls")
@@ -121,11 +200,11 @@ async fn fetch_entry(state: &AppState, code: &str) -> Result<UrlEntry, AppError>
         .await?
         .try_collect()
         .await?;
-    let doc = rows
+    into_entries(state, user, rows)
+        .await?
         .into_iter()
         .next()
-        .ok_or_else(|| AppError::internal("upserted url not found"))?;
-    bson::from_document(doc).map_err(AppError::internal)
+        .ok_or_else(|| AppError::internal("upserted url not found"))
 }
 
 /// `conflict_on_own` separates create from edit: re-creating a code you own is
@@ -149,14 +228,14 @@ async fn upsert(
     let existing_owner = existing
         .as_ref()
         .and_then(|doc| owner_id(doc).map(str::to_string));
+    let mut session = state.db.client().start_session().await?;
     if let Some(existing) = &existing {
         // Permission first: not-yours answers 403 with nothing in it.
-        if !may_write(existing, user) {
+        if !may_write(state, &mut session, existing, user).await? {
             return Err(owned_error(code));
         }
         // Writing and taking are different powers; only the second needs this.
         if claiming {
-            let mut session = state.db.client().start_session().await?;
             let allowed = match user {
                 Some(user) => may_claim(state, &mut session, user, existing).await?,
                 None => false,
@@ -171,7 +250,7 @@ async fn upsert(
         // Only worth asking when someone owns it; an unowned link is anyone's.
         if conflict_on_own && !overwrite && existing_owner.is_some() {
             let yours = existing_owner.as_deref() == user.map(|u| u.id.as_str());
-            return Err(code_in_use(fetch_entry(state, code).await?, yours));
+            return Err(code_in_use(fetch_entry(state, user, code).await?, yours));
         }
     }
 
@@ -186,12 +265,15 @@ async fn upsert(
             }
             // Deleting somebody's link is allowed, but never as a side effect.
             Some(owner) => {
-                if !may_write(&target, user) {
+                if !may_write(state, &mut session, &target, user).await? {
                     return Err(owned_error(&body.code));
                 }
                 if !overwrite {
                     let yours = user.is_some_and(|u| u.id == owner);
-                    return Err(code_in_use(fetch_entry(state, &body.code).await?, yours));
+                    return Err(code_in_use(
+                        fetch_entry(state, user, &body.code).await?,
+                        yours,
+                    ));
                 }
                 urls.delete_one(doc! {"code": &body.code}).await?;
             }
@@ -237,7 +319,7 @@ async fn upsert(
     urls.update_one(doc! {"code": code}, update)
         .upsert(true)
         .await?;
-    Ok(Json(fetch_entry(state, &body.code).await?))
+    Ok(Json(fetch_entry(state, user, &body.code).await?))
 }
 
 pub async fn create_url(
@@ -268,7 +350,8 @@ pub async fn delete_url(
         .find_one(doc! {"code": &code})
         .await?
         .ok_or_else(|| AppError::not_found("code not found"))?;
-    if !may_write(&existing, user.as_ref()) {
+    let mut session = state.db.client().start_session().await?;
+    if !may_write(&state, &mut session, &existing, user.as_ref()).await? {
         return Err(owned_error(&code));
     }
     urls.delete_one(doc! {"code": &code}).await?;
@@ -310,7 +393,7 @@ pub async fn claim_url(
         update.insert("$unset", doc! {"expires_at": ""});
     }
     urls.update_one(doc! {"code": &code}, update).await?;
-    Ok(Json(fetch_entry(&state, &code).await?))
+    Ok(Json(fetch_entry(&state, Some(&user), &code).await?))
 }
 
 /// The cap on one request; a client ticking more sends several.
@@ -347,12 +430,13 @@ async fn permitted(
 
     Ok(links
         .iter()
-        .filter(|doc| match action {
-            UrlBulkAction::Delete => may_write(doc, Some(user)),
-            UrlBulkAction::Claim => match owner_id(doc) {
-                None => true,
-                Some(owner) => owner != user.id && reaches(owner),
-            },
+        .filter(|doc| match (action, owner_id(doc)) {
+            (UrlBulkAction::Delete, None) => true,
+            (UrlBulkAction::Delete, Some(owner)) => {
+                owner == user.id || (user.is_admin && reaches(owner))
+            }
+            (UrlBulkAction::Claim, None) => true,
+            (UrlBulkAction::Claim, Some(owner)) => owner != user.id && reaches(owner),
         })
         .filter_map(|doc| doc.get_str("code").ok().map(str::to_string))
         .collect())
@@ -499,10 +583,7 @@ pub async fn bulk_urls(
             .await?
             .try_collect()
             .await?;
-        result.entries = rows
-            .into_iter()
-            .map(|doc| bson::from_document(doc).map_err(AppError::internal))
-            .collect::<Result<Vec<UrlEntry>, AppError>>()?;
+        result.entries = into_entries(&state, Some(&user), rows).await?;
     }
     Ok(Json(result))
 }
@@ -530,10 +611,7 @@ pub async fn list_urls(
         .await?
         .try_collect()
         .await?;
-    let items = rows
-        .into_iter()
-        .map(|doc| bson::from_document(doc).map_err(AppError::internal))
-        .collect::<Result<Vec<UrlEntry>, AppError>>()?;
+    let items = into_entries(&state, Some(&user), rows).await?;
 
     Ok(Json(UrlListResponse { items, total }))
 }
@@ -575,42 +653,6 @@ mod tests {
     }
 
     #[test]
-    fn may_write_permission_matrix() {
-        let owner = User {
-            id: "u1".into(),
-            username: "owner".into(),
-            display_name: None,
-            email: None,
-            avatar_url: None,
-            hash_passwd: None,
-            is_admin: false,
-            promoted_by: None,
-            token_version: 0,
-            github_id: None,
-            google_id: None,
-            facebook_id: None,
-        };
-        let other = User {
-            id: "u2".into(),
-            ..owner.clone()
-        };
-        let admin = User {
-            id: "u3".into(),
-            is_admin: true,
-            ..owner.clone()
-        };
-        let unowned = doc! {"code": "a"};
-        let owned = doc! {"code": "a", "owner": "u1"};
-
-        assert!(may_write(&unowned, None), "anonymous may write unowned");
-        assert!(may_write(&unowned, Some(&other)));
-        assert!(!may_write(&owned, None), "anonymous may not touch owned");
-        assert!(may_write(&owned, Some(&owner)));
-        assert!(!may_write(&owned, Some(&other)));
-        assert!(may_write(&owned, Some(&admin)), "admins may edit anything");
-    }
-
-    #[test]
     fn owner_id_reads_only_string_owners() {
         assert_eq!(owner_id(&doc! {"code": "a"}), None);
         assert_eq!(owner_id(&doc! {"code": "a", "owner": Bson::Null}), None);
@@ -635,6 +677,8 @@ mod tests {
             created_at: None,
             updated_at: None,
             expires_at: None,
+            editable: true,
+            claimable: false,
         }
     }
 

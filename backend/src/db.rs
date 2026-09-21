@@ -96,6 +96,8 @@ pub fn url_aggregate_pipeline(
         doc! {"$sort": sort},
         doc! {"$skip": skip},
         doc! {"$limit": limit},
+        // Outlives the `$unset` below, for permissions; `UrlEntry` ignores it.
+        doc! {"$set": {"owner_id": {"$ifNull": ["$owner.id", null]}}},
         // Last, because `$sort` above needs the `_id` this drops.
         doc! {"$unset": [
             "_id", "id", "owner._id", "owner.id", "owner.github_id",

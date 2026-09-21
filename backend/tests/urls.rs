@@ -1974,3 +1974,212 @@ async fn a_bulk_claim_obeys_the_chain_for_every_owner() {
 
     db.drop().await.unwrap();
 }
+
+/// An admin's reach runs down their own branch for a link as it does for an
+/// account: destroying one upwards is refused exactly as taking it is.
+#[tokio::test]
+async fn a_link_is_writable_only_from_below_you_in_the_chain() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "write-root").await;
+    make_admin(&db, "write-root", None).await;
+    let root_id = user_id(&db, "write-root").await;
+
+    let upper = account(&app, "write-upper").await;
+    make_admin(&db, "write-upper", Some(&root_id)).await;
+    let upper_id = user_id(&db, "write-upper").await;
+
+    let lower = account(&app, "write-lower").await;
+    make_admin(&db, "write-lower", Some(&upper_id)).await;
+
+    let peer = account(&app, "write-peer").await;
+    make_admin(&db, "write-peer", Some(&root_id)).await;
+
+    let plain = account(&app, "write-plain").await;
+
+    for (cookie, code) in [
+        (&root, "w-root"),
+        (&lower, "w-lower"),
+        (&peer, "w-peer"),
+        (&plain, "w-plain"),
+    ] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let edit = |cookie: String, code: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(authed_request(
+                "PUT",
+                &format!("/api/urls/{code}"),
+                &cookie,
+                json!({"code": code, "url": "https://moved.example"}),
+            ))
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+    let remove = |cookie: String, code: &'static str| {
+        let app = app.clone();
+        async move {
+            app.oneshot(authed_request(
+                "DELETE",
+                &format!("/api/urls/{code}"),
+                &cookie,
+                json!({}),
+            ))
+            .await
+            .unwrap()
+            .status()
+        }
+    };
+
+    // Upwards and sideways are refused, for editing and for deleting alike.
+    assert_eq!(edit(upper.clone(), "w-root").await, StatusCode::FORBIDDEN);
+    assert_eq!(remove(upper.clone(), "w-root").await, StatusCode::FORBIDDEN);
+    assert_eq!(edit(upper.clone(), "w-peer").await, StatusCode::FORBIDDEN);
+    assert_eq!(remove(upper.clone(), "w-peer").await, StatusCode::FORBIDDEN);
+
+    // Downwards, and anything an ordinary account owns, still works.
+    assert_eq!(edit(upper.clone(), "w-lower").await, StatusCode::OK);
+    assert_eq!(edit(upper.clone(), "w-plain").await, StatusCode::OK);
+    assert_eq!(remove(upper.clone(), "w-lower").await, StatusCode::OK);
+
+    // And the root reaches the whole tree.
+    assert_eq!(remove(root.clone(), "w-peer").await, StatusCode::OK);
+
+    db.drop().await.unwrap();
+}
+
+/// The same rule in bulk, where the owners are resolved as a set.
+#[tokio::test]
+async fn a_bulk_delete_obeys_the_chain_for_every_owner() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "bwd-root").await;
+    make_admin(&db, "bwd-root", None).await;
+    let root_id = user_id(&db, "bwd-root").await;
+    let under = account(&app, "bwd-under").await;
+    make_admin(&db, "bwd-under", Some(&root_id)).await;
+    let plain = account(&app, "bwd-plain").await;
+
+    for (cookie, code) in [(&root, "bwd-roots"), (&plain, "bwd-plains")] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &under,
+            json!({"codes": ["bwd-plains", "bwd-roots"], "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let rejected = body_json(refused).await["error"]["rejected"].clone();
+    assert_eq!(rejected.as_array().unwrap().len(), 1);
+    assert_eq!(rejected[0]["id"], "bwd-roots");
+
+    assert_eq!(
+        db.collection::<mongodb::bson::Document>("urls")
+            .count_documents(doc! {})
+            .await
+            .unwrap(),
+        2,
+        "the refusal left both where they were"
+    );
+
+    db.drop().await.unwrap();
+}
+
+/// The page draws the edit, delete and claim controls from these, so each row
+/// has to answer for itself rather than from the owner name alone.
+#[tokio::test]
+async fn a_listed_link_says_whether_it_may_be_edited_or_taken() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "flag-root").await;
+    make_admin(&db, "flag-root", None).await;
+    let root_id = user_id(&db, "flag-root").await;
+
+    let lower = account(&app, "flag-lower").await;
+    make_admin(&db, "flag-lower", Some(&root_id)).await;
+
+    let plain = account(&app, "flag-plain").await;
+
+    for (cookie, code) in [(&root, "f-root"), (&lower, "f-lower"), (&plain, "f-plain")] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+    db.collection("urls")
+        .insert_one(doc! {"code": "f-orphan", "url": "https://a.example"})
+        .await
+        .unwrap();
+
+    let flags = |cookie: String| {
+        let app = app.clone();
+        async move {
+            let body =
+                body_json(app.oneshot(authed_get("/api/urls", &cookie)).await.unwrap()).await;
+            body["items"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .map(|item| {
+                    (
+                        item["code"].as_str().unwrap().to_string(),
+                        (
+                            item["editable"].as_bool().unwrap(),
+                            item["claimable"].as_bool().unwrap(),
+                        ),
+                    )
+                })
+                .collect::<std::collections::HashMap<_, _>>()
+        }
+    };
+
+    let seen = flags(root.clone()).await;
+    assert_eq!(
+        seen["f-root"],
+        (true, false),
+        "your own link is not claimable"
+    );
+    assert_eq!(seen["f-lower"], (true, true), "an admin below you");
+    assert_eq!(seen["f-plain"], (true, true), "an ordinary owner");
+    assert_eq!(seen["f-orphan"], (true, true), "nobody owns it");
+
+    let seen = flags(lower.clone()).await;
+    assert_eq!(seen["f-root"], (false, false), "the admin above you");
+
+    let seen = flags(plain).await;
+    assert_eq!(
+        seen["f-plain"],
+        (true, false),
+        "yours, and not yours to take"
+    );
+
+    db.drop().await.unwrap();
+}

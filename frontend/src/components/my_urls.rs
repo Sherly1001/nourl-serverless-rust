@@ -456,27 +456,15 @@ pub fn MyUrls() -> impl IntoView {
     let selected_count = move || selected.get().len();
     // Out of the view: leptosfmt reads a `>` in an attribute as a closing bracket.
     let has_selection = move || selected_count() > 0;
-    // What is plausibly claimable; the chain is the server's to judge.
     let claimable_selection = move || {
-        let me = auth
-            .user
-            .get()
-            .map(|user| user.username)
-            .unwrap_or_default();
         let ticked = selected.get();
         items
             .get()
             .into_iter()
-            .filter(|row| ticked.contains(&row.code))
-            .filter(|row| {
-                row.owner
-                    .as_ref()
-                    .and_then(|owner| owner.username.as_deref())
-                    != Some(me.as_str())
-            })
+            .filter(|row| ticked.contains(&row.code) && row.claimable)
             .collect::<Vec<_>>()
     };
-    let can_claim = move || auth.is_admin() && !claimable_selection().is_empty();
+    let can_claim = move || !claimable_selection().is_empty();
     // Every column, plus the admin-only owner one.
     let column_count = move || if auth.is_admin() { 10 } else { 9 };
 
@@ -627,11 +615,8 @@ pub fn MyUrls() -> impl IntoView {
                                         .as_ref()
                                         .and_then(|o| usable_url(o.avatar_url.as_deref()));
                                     let has_owner = entry.owner.is_some();
-                                    let owned_by_me = auth
-                                        .user
-                                        .get_untracked()
-                                        .is_some_and(|me| me.username == owner_name);
-                                    let claimable = auth.is_admin() && !owned_by_me;
+                                    let claimable = entry.claimable;
+                                    let editable = entry.editable;
                                     let taking_over = has_owner;
                                     let hits = entry.hits;
                                     let last = short_datetime(entry.last_hit_at.as_ref());
@@ -737,32 +722,34 @@ pub fn MyUrls() -> impl IntoView {
                                                             </button>
                                                         </Tooltip>
                                                     </Show>
-                                                    <Tooltip
-                                                        text="Edit"
-                                                        class="inline-flex"
-                                                        only_when_clipped=false
-                                                    >
-                                                        <button
-                                                            class="btn btn-text btn-sm btn-square"
-                                                            aria-label="Edit link"
-                                                            on:click=move |_| begin_edit(for_edit.get_value())
+                                                    <Show when=move || editable>
+                                                        <Tooltip
+                                                            text="Edit"
+                                                            class="inline-flex"
+                                                            only_when_clipped=false
                                                         >
-                                                            <span class="icon-[tabler--pencil] size-4"></span>
-                                                        </button>
-                                                    </Tooltip>
-                                                    <Tooltip
-                                                        text="Delete"
-                                                        class="inline-flex"
-                                                        only_when_clipped=false
-                                                    >
-                                                        <button
-                                                            class="btn btn-text btn-sm btn-square text-error"
-                                                            aria-label="Delete link"
-                                                            on:click=move |_| ask_delete(vec![code.get_value()])
+                                                            <button
+                                                                class="btn btn-text btn-sm btn-square"
+                                                                aria-label="Edit link"
+                                                                on:click=move |_| begin_edit(for_edit.get_value())
+                                                            >
+                                                                <span class="icon-[tabler--pencil] size-4"></span>
+                                                            </button>
+                                                        </Tooltip>
+                                                        <Tooltip
+                                                            text="Delete"
+                                                            class="inline-flex"
+                                                            only_when_clipped=false
                                                         >
-                                                            <span class="icon-[tabler--trash] size-4"></span>
-                                                        </button>
-                                                    </Tooltip>
+                                                            <button
+                                                                class="btn btn-text btn-sm btn-square text-error"
+                                                                aria-label="Delete link"
+                                                                on:click=move |_| ask_delete(vec![code.get_value()])
+                                                            >
+                                                                <span class="icon-[tabler--trash] size-4"></span>
+                                                            </button>
+                                                        </Tooltip>
+                                                    </Show>
                                                 </span>
                                             </td>
                                         </tr>

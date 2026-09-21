@@ -200,11 +200,17 @@ anyone.
 ### Claiming
 
 An orphaned code is dying of the deadline its owner's departure put on it, so
-claiming an unowned link clears that expiry in the same write. A link that has
-an owner is taken _off_ them, so it follows the rule that governs reaching into
-anyone else's affairs: an admin's reach runs down their own branch of the chain
-and no further — not sideways into a peer's branch, and not upwards. Both are a
-button on the My URLs row; the second asks first.
+claiming an unowned link clears that expiry in the same write. Both claiming
+and taking are a button on the My URLs row; the second asks first.
+
+Editing, deleting and claiming a link somebody owns all follow the same rule:
+an admin's reach runs down their own branch of the chain and no further — not
+sideways into a peer's branch, and not upwards. A link owned by an ordinary
+account is in nobody's branch, so any admin may act on it, and an unowned one
+is anybody's. The rule is the one the chain already applies to accounts:
+destroying a link upwards is refused exactly as taking it is. Every link comes
+back carrying `editable` and `claimable`, because the chain that decides them
+is not in anything the page holds, and the row draws its buttons from those.
 
 ## Accounts
 
@@ -220,8 +226,9 @@ mongosh "$MONGO_URL" --eval \
 ```
 
 Use `nourl-dev` instead of `nourl` for the dev database. An admin sees every
-link rather than only their own, and may edit any of them — but not delete
-someone else's as a side effect of renaming their own.
+link rather than only their own, and may edit or delete the ones owned by
+accounts below them in the chain — but not delete someone else's as a side
+effect of renaming their own.
 
 Once one admin exists, the rest is done in the app: `#/users` grants and revokes
 the admin flag and deletes accounts, `#/settings` turns login methods on and off
