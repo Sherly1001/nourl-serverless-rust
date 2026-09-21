@@ -1899,3 +1899,78 @@ async fn bulk_urls_refuses_an_empty_selection_and_an_absurd_one() {
 
     db.drop().await.unwrap();
 }
+
+/// The chain decides a bulk claim the same way it decides a single one, though
+/// the owners are now resolved as a set: unowned is anyone's, an ordinary
+/// account is in no subtree, and an admin above the caller is out of reach.
+#[tokio::test]
+async fn a_bulk_claim_obeys_the_chain_for_every_owner() {
+    let (app, db) = test_app().await;
+    let root = account(&app, "bulk-root").await;
+    make_admin(&db, "bulk-root", None).await;
+    let root_id = user_id(&db, "bulk-root").await;
+    let under = account(&app, "bulk-under").await;
+    make_admin(&db, "bulk-under", Some(&root_id)).await;
+    let plain = account(&app, "bulk-plain").await;
+
+    db.collection::<mongodb::bson::Document>("urls")
+        .insert_one(doc! {"code": "free", "url": "https://a.example"})
+        .await
+        .unwrap();
+    for (cookie, code) in [(&root, "roots"), (&plain, "plains"), (&under, "unders")] {
+        app.clone()
+            .oneshot(authed_request(
+                "POST",
+                "/api/urls",
+                cookie,
+                json!({"code": code, "url": "https://a.example"}),
+            ))
+            .await
+            .unwrap();
+    }
+
+    // The root's link is above `under`, so the whole selection is refused.
+    let refused = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &under,
+            json!({"codes": ["free", "plains", "roots"], "action": "claim"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(refused.status(), StatusCode::BAD_REQUEST);
+    let rejected = body_json(refused).await["error"]["rejected"].clone();
+    let rejected = rejected.as_array().unwrap();
+    assert_eq!(rejected.len(), 1, "only the one out of reach");
+    assert_eq!(rejected[0]["id"], "roots");
+
+    // Without it, the unowned link and the ordinary account's both go.
+    let taken = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &under,
+            json!({"codes": ["free", "plains"], "action": "claim"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(taken.status(), StatusCode::OK);
+    assert_eq!(body_json(taken).await["affected"], 2);
+
+    // A link already yours is refused rather than claimed twice.
+    let again = app
+        .oneshot(authed_request(
+            "POST",
+            "/api/urls/bulk",
+            &under,
+            json!({"codes": ["unders"], "action": "claim"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(again.status(), StatusCode::BAD_REQUEST);
+
+    db.drop().await.unwrap();
+}

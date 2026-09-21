@@ -316,8 +316,51 @@ pub async fn claim_url(
 /// The cap on one request; a client ticking more sends several.
 const BULK_MAX: usize = 100;
 
-/// Resolves every named link and checks the caller may do `action` to it,
-/// collecting refusals rather than stopping at the first.
+/// Which of `links` the caller may act on, from sets fetched once — the same
+/// rules the single routes apply, so an ordinary owner is in no subtree and an
+/// admin's chain must reach the caller.
+async fn permitted(
+    state: &AppState,
+    session: &mut mongodb::ClientSession,
+    user: &User,
+    links: &[Document],
+    action: UrlBulkAction,
+) -> Result<std::collections::HashSet<String>, AppError> {
+    let owners: Vec<String> = links
+        .iter()
+        .filter_map(|doc| owner_id(doc).map(str::to_string))
+        .collect::<std::collections::HashSet<_>>()
+        .into_iter()
+        .collect();
+    let admins: std::collections::HashSet<String> =
+        users::find_many_in(&state.db, &mut *session, &owners)
+            .await?
+            .into_iter()
+            .filter(|owner| owner.is_admin)
+            .map(|owner| owner.id)
+            .collect();
+    let chains = users::ancestors_of_many(&state.db, &mut *session, &owners).await?;
+    // A non-admin owner is in nobody's subtree; one not found no longer exists.
+    let reaches = |owner: &str| {
+        !admins.contains(owner) || chains.get(owner).is_some_and(|up| up.contains(&user.id))
+    };
+
+    Ok(links
+        .iter()
+        .filter(|doc| match action {
+            UrlBulkAction::Delete => may_write(doc, Some(user)),
+            UrlBulkAction::Claim => match owner_id(doc) {
+                None => true,
+                Some(owner) => owner != user.id && reaches(owner),
+            },
+        })
+        .filter_map(|doc| doc.get_str("code").ok().map(str::to_string))
+        .collect())
+}
+
+/// Resolves every named link and checks `action` against it, collecting
+/// refusals rather than stopping at the first. One query for the links, and
+/// for a claim two more, however many codes were named.
 async fn bulk_targets(
     state: &AppState,
     session: &mut mongodb::ClientSession,
@@ -325,7 +368,23 @@ async fn bulk_targets(
     codes: &[String],
     action: UrlBulkAction,
 ) -> Result<Vec<Document>, AppError> {
-    let urls = state.db.collection::<Document>("urls");
+    let mut cursor = state
+        .db
+        .collection::<Document>("urls")
+        .find(doc! {"code": {"$in": codes}})
+        .session(&mut *session)
+        .await?;
+    let mut found: std::collections::HashMap<String, Document> = std::collections::HashMap::new();
+    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
+        if let Ok(code) = row.get_str("code") {
+            found.insert(code.to_string(), row);
+        }
+    }
+
+    let links: Vec<Document> = found.values().cloned().collect();
+    let allowed = permitted(state, session, user, &links, action).await?;
+
+    // In the order they were sent, so the refusals read that way too.
     let mut seen = std::collections::HashSet::new();
     let mut targets = Vec::with_capacity(codes.len());
     let mut rejected = Vec::new();
@@ -333,31 +392,23 @@ async fn bulk_targets(
         if !seen.insert(code.as_str()) {
             continue;
         }
-        let refuse = |err: AppError| RejectedId {
-            id: code.clone(),
-            code: err.code.to_string(),
-            message: err.message,
-        };
-        let Some(existing) = urls
-            .find_one(doc! {"code": code})
-            .session(&mut *session)
-            .await?
-        else {
-            rejected.push(refuse(AppError::not_found("code not found")));
+        let Some(existing) = found.get(code) else {
+            rejected.push(RejectedId {
+                id: code.clone(),
+                code: "not_found".into(),
+                message: "code not found".into(),
+            });
             continue;
         };
-        // Deleting asks `may_write`; claiming asks who may take it.
-        let allowed = match action {
-            UrlBulkAction::Delete => may_write(&existing, Some(user)),
-            UrlBulkAction::Claim => {
-                owner_id(&existing) != Some(user.id.as_str())
-                    && may_claim(state, &mut *session, user, &existing).await?
-            }
-        };
-        if allowed {
-            targets.push(existing);
+        if allowed.contains(code) {
+            targets.push(existing.clone());
         } else {
-            rejected.push(refuse(owned_error(code)));
+            let err = owned_error(code);
+            rejected.push(RejectedId {
+                id: code.clone(),
+                code: err.code.to_string(),
+                message: err.message,
+            });
         }
     }
     if rejected.is_empty() {
@@ -391,38 +442,67 @@ pub async fn bulk_urls(
     session.start_transaction().await?;
     let targets = bulk_targets(&state, &mut session, &user, &body.codes, body.action).await?;
 
-    let mut result = BulkUrlsResponse::default();
-    for existing in &targets {
-        let code = existing.get_str("code").unwrap_or_default().to_string();
-        match body.action {
-            UrlBulkAction::Delete => {
-                urls.delete_one(doc! {"code": &code})
-                    .session(&mut session)
-                    .await?;
-            }
-            UrlBulkAction::Claim => {
-                let mut update = doc! {
-                    "$set": {"owner": &user.id, "updated_at": bson::DateTime::now()},
+    let codes: Vec<String> = targets
+        .iter()
+        .filter_map(|doc| doc.get_str("code").ok().map(str::to_string))
+        .collect();
+    let mut result = BulkUrlsResponse {
+        affected: codes.len() as u64,
+        ..Default::default()
+    };
+    match body.action {
+        UrlBulkAction::Delete => {
+            urls.delete_many(doc! {"code": {"$in": &codes}})
+                .session(&mut session)
+                .await?;
+        }
+        UrlBulkAction::Claim => {
+            // Two writes: rescuing an orphan takes its deadline off.
+            let (mut orphans, mut owned) = (Vec::new(), Vec::new());
+            for doc in &targets {
+                let Ok(code) = doc.get_str("code") else {
+                    continue;
                 };
-                // An orphan is dying of that deadline, so rescuing takes it off.
-                if owner_id(existing).is_none() {
-                    update.insert("$unset", doc! {"expires_at": ""});
+                if owner_id(doc).is_none() {
+                    orphans.push(code.to_string());
+                } else {
+                    owned.push(code.to_string());
                 }
-                urls.update_one(doc! {"code": &code}, update)
+            }
+            let set = doc! {"owner": &user.id, "updated_at": bson::DateTime::now()};
+            if !orphans.is_empty() {
+                urls.update_many(
+                    doc! {"code": {"$in": &orphans}},
+                    doc! {"$set": &set, "$unset": {"expires_at": ""}},
+                )
+                .session(&mut session)
+                .await?;
+            }
+            if !owned.is_empty() {
+                urls.update_many(doc! {"code": {"$in": &owned}}, doc! {"$set": &set})
                     .session(&mut session)
                     .await?;
             }
         }
-        result.affected += 1;
     }
     session.commit_transaction().await?;
 
     // Outside the transaction, so the entries carry the joined owner.
     if body.action == UrlBulkAction::Claim {
-        for existing in &targets {
-            let code = existing.get_str("code").unwrap_or_default();
-            result.entries.push(fetch_entry(&state, code).await?);
-        }
+        let rows: Vec<Document> = urls
+            .aggregate(url_aggregate_pipeline(
+                doc! {"code": {"$in": &codes}},
+                codes.len() as i64,
+                0,
+                doc! {"_id": 1},
+            ))
+            .await?
+            .try_collect()
+            .await?;
+        result.entries = rows
+            .into_iter()
+            .map(|doc| bson::from_document(doc).map_err(AppError::internal))
+            .collect::<Result<Vec<UrlEntry>, AppError>>()?;
     }
     Ok(Json(result))
 }
@@ -495,13 +575,6 @@ mod tests {
     }
 
     #[test]
-    fn owner_id_reads_only_string_owners() {
-        assert_eq!(owner_id(&doc! {"code": "a"}), None);
-        assert_eq!(owner_id(&doc! {"code": "a", "owner": Bson::Null}), None);
-        assert_eq!(owner_id(&doc! {"code": "a", "owner": "u1"}), Some("u1"));
-    }
-
-    #[test]
     fn may_write_permission_matrix() {
         let owner = User {
             id: "u1".into(),
@@ -535,6 +608,13 @@ mod tests {
         assert!(may_write(&owned, Some(&owner)));
         assert!(!may_write(&owned, Some(&other)));
         assert!(may_write(&owned, Some(&admin)), "admins may edit anything");
+    }
+
+    #[test]
+    fn owner_id_reads_only_string_owners() {
+        assert_eq!(owner_id(&doc! {"code": "a"}), None);
+        assert_eq!(owner_id(&doc! {"code": "a", "owner": Bson::Null}), None);
+        assert_eq!(owner_id(&doc! {"code": "a", "owner": "u1"}), Some("u1"));
     }
 
     #[test]

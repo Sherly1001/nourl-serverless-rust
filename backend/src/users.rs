@@ -1,3 +1,5 @@
+use std::collections::HashMap;
+
 use futures::TryStreamExt;
 use mongodb::bson::{Document, doc};
 use mongodb::{ClientSession, Database};
@@ -436,6 +438,63 @@ pub async fn delete_with_cascade(
         .session(&mut *session)
         .await?;
     Ok(outcome)
+}
+
+/// The accounts holding `ids`, in one query.
+pub async fn find_many_in(
+    db: &Database,
+    session: &mut ClientSession,
+    ids: &[String],
+) -> Result<Vec<User>, AppError> {
+    let mut cursor = collection(db)
+        .find(doc! {"id": {"$in": ids}})
+        .session(&mut *session)
+        .await?;
+    let mut found = Vec::new();
+    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
+        found.push(bson::from_document(row).map_err(AppError::internal)?);
+    }
+    Ok(found)
+}
+
+/// Every account above each of `ids`, in one `$graphLookup` rather than the one
+/// per id a selection would otherwise cost. Ids with nothing above them are
+/// absent rather than empty.
+pub async fn ancestors_of_many(
+    db: &Database,
+    session: &mut ClientSession,
+    ids: &[String],
+) -> Result<HashMap<String, Vec<String>>, AppError> {
+    let pipeline = vec![
+        doc! {"$match": {"id": {"$in": ids}}},
+        doc! {"$graphLookup": {
+            "from": "users",
+            "startWith": "$promoted_by",
+            "connectFromField": "promoted_by",
+            "connectToField": "id",
+            "as": "chain",
+            "maxDepth": MAX_CHAIN_DEPTH,
+        }},
+        doc! {"$project": {"_id": 0, "id": 1, "ids": "$chain.id"}},
+    ];
+    let mut cursor = collection(db)
+        .aggregate(pipeline)
+        .session(&mut *session)
+        .await?;
+    let mut chains = HashMap::new();
+    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
+        let Ok(id) = row.get_str("id") else { continue };
+        let above = row
+            .get_array("ids")
+            .map(|ids| {
+                ids.iter()
+                    .filter_map(|id| id.as_str().map(String::from))
+                    .collect()
+            })
+            .unwrap_or_default();
+        chains.insert(id.to_string(), above);
+    }
+    Ok(chains)
 }
 
 /// Whether `actor` may act on `target`: the chain above `target` must pass
