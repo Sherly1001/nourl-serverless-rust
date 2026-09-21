@@ -18,9 +18,7 @@ fn read_hash() -> String {
         .unwrap_or_default()
 }
 
-/// A query string names no page. The OAuth callback carries its failure back
-/// as `#/login?error=code`, and pages are free to keep state there, so the
-/// route is whatever comes before the `?`.
+/// A query string names no page: the route is whatever precedes the `?`.
 pub fn parse_route(hash: &str) -> Route {
     let path = hash.split('?').next().unwrap_or(hash);
     match path.trim_start_matches('#').trim_start_matches('/') {
@@ -75,9 +73,8 @@ mod tests {
         assert_eq!(parse_route("#/nope"), Route::NotFound);
     }
 
-    /// The OAuth callback redirects to `#/login?error=code`. Without this the
-    /// route is read as `login?error=code`, matches nothing, and the one page
-    /// that knows how to explain the failure is replaced by a 404.
+    /// Without this, `#/login?error=code` matches nothing and the page that
+    /// could explain the failure is replaced by a 404.
     #[test]
     fn a_query_string_does_not_change_which_page_is_shown() {
         assert_eq!(parse_route("#/login?error=oauth_denied"), Route::Login);

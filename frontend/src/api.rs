@@ -19,8 +19,8 @@ fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
     }
 }
 
-/// The server's own error body if it sent one, else a synthesised network
-/// error — a 502 from in front of the app has no JSON to parse.
+/// The server's error body, else a synthesised one: a 502 from in front of the
+/// app has no JSON to parse.
 async fn error_of(resp: Response) -> ApiErrorBody {
     let status = resp.status();
     match resp.json::<ApiError>().await {
@@ -55,8 +55,7 @@ async fn get_json<T: DeserializeOwned>(path: &str) -> Result<T, ApiErrorBody> {
     read(resp).await
 }
 
-/// A request with no body of its own whose response *is* worth reading — a
-/// `DELETE` that reports what it did, for instance.
+/// No request body, but a response worth reading — a `DELETE` that reports.
 async fn read_json<T: DeserializeOwned>(request: RequestBuilder) -> Result<T, ApiErrorBody> {
     let resp = request.send().await.map_err(net_err)?;
     read(resp).await
@@ -84,21 +83,16 @@ pub async fn delete_url(code: &str) -> Result<(), ApiErrorBody> {
     send_empty(Request::delete(&format!("/api/urls/{code}"))).await
 }
 
-/// Takes ownership of a link. Admin-only, and a link that already has an owner
-/// can only be taken from somebody below the caller in the chain — which the
-/// page cannot work out for itself, since the list sends an owner's name and
-/// nothing about where they sit. So the button is offered and the server is
-/// the one that refuses.
+/// Admin-only, and an owned link may only be taken from below the caller in
+/// the chain — which the page cannot work out, since the list sends a name and
+/// nothing about where they sit. So the server is what refuses.
 pub async fn claim_url(code: &str) -> Result<UrlEntry, ApiErrorBody> {
     read_json(Request::post(&format!("/api/urls/{code}/claim"))).await
 }
 
-/// `params` are the query parameters, which `gloo_net` encodes and appends —
-/// see [`crate::list::list_params`] for why they are not spliced into the path.
-///
-/// Takes an abort signal because the search box refires on every pause in
-/// typing: without one, a slow early request can land after a later one and
-/// overwrite the newer results.
+/// `params` are appended by `gloo_net` — see [`crate::list::list_params`].
+/// The abort signal matters because the search box refires on every pause: a
+/// slow early request would otherwise land after a newer one.
 pub async fn list_urls(
     params: Vec<(&'static str, String)>,
     signal: Option<&web_sys::AbortSignal>,
@@ -120,8 +114,8 @@ pub async fn login(body: &LoginRequest) -> Result<UserInfo, ApiErrorBody> {
     send_json(Request::post("/api/auth/login"), body).await
 }
 
-/// The session cookie rides along automatically: `fetch` sends cookies for
-/// same-origin requests, and the Trunk dev proxy keeps the API same-origin.
+/// The cookie rides along: `fetch` sends it same-origin, which the Trunk dev
+/// proxy preserves.
 pub async fn logout() -> Result<(), ApiErrorBody> {
     send_empty(Request::post("/api/auth/logout")).await
 }
@@ -134,9 +128,8 @@ pub async fn auth_methods() -> Result<AuthMethods, ApiErrorBody> {
     get_json("/api/auth/methods").await
 }
 
-/// Where a provider flow starts. A plain URL rather than a request: the browser
-/// has to navigate there itself, since `fetch` cannot follow a cross-origin
-/// redirect and the provider needs a top-level page to show its consent screen.
+/// A URL, not a request: `fetch` cannot follow a cross-origin redirect, and
+/// the provider needs a top-level page for its consent screen.
 pub fn oauth_start(provider: &str) -> String {
     format!("/api/auth/{provider}")
 }
@@ -149,8 +142,7 @@ pub async fn change_password(body: &ChangePasswordRequest) -> Result<UserInfo, A
     send_json(Request::put("/api/auth/password"), body).await
 }
 
-/// Carries a body — the caller says what should happen to the links the account
-/// owns, and confirms with their password if they have one.
+/// The body says what happens to the links, and carries the password.
 pub async fn close_account(
     body: &DeleteAccountRequest,
 ) -> Result<DeleteUserResponse, ApiErrorBody> {
@@ -161,20 +153,16 @@ pub async fn disconnect_provider(provider: &str) -> Result<UserInfo, ApiErrorBod
     read_json(Request::delete(&format!("/api/auth/{provider}"))).await
 }
 
-/// `params` page and search the ordinary accounts only — the admins come back
-/// whole in the same response, because the tree cannot be paged without losing
-/// interior nodes.
+/// `params` page the ordinary accounts only; the admins come back whole, since
+/// paging a tree loses its interior nodes.
 pub async fn admin_users(
     params: Vec<(&'static str, String)>,
 ) -> Result<AdminUserListResponse, ApiErrorBody> {
     read_json(Request::get("/api/admin/users").query(params)).await
 }
 
-/// Promotes, demotes, or moves — the server treats all three as one write to
-/// the parent pointer. `parent` names who they hang under; `None` means the
-/// caller, which is the ordinary promotion.
-/// `orphans` decides what happens to the admins this account promoted, and is
-/// read by the server only on a demotion.
+/// Promote, demote or move: one write to the parent pointer. `None` for
+/// `parent` means the caller. `orphans` is read only on a demotion.
 pub async fn set_user_admin(
     id: &str,
     is_admin: bool,
@@ -192,9 +180,8 @@ pub async fn set_user_admin(
     .await
 }
 
-/// The response says how many links were orphaned and how long they have left,
-/// which is what the confirmation reports back. `orphans` decides what happens
-/// to the admins this account had promoted.
+/// The response counts the orphaned links and their deadline, which the
+/// confirmation reports back.
 pub async fn delete_user(
     id: &str,
     orphans: AdminOrphans,
@@ -206,17 +193,13 @@ pub async fn delete_user(
     read_json(Request::delete(&format!("/api/admin/users/{id}")).query([("orphans", choice)])).await
 }
 
-/// The most ids the server takes in one request, mirroring its own `BULK_MAX`.
-/// A selection longer than this is sent in several, which is the one place the
-/// all-or-nothing guarantee stops holding — it holds per request.
+/// Mirrors the server's own `BULK_MAX`. A longer selection is sent in several,
+/// which is where the all-or-nothing guarantee stops: it holds per request.
 pub const BULK_CHUNK: usize = 100;
 
-/// A whole selection, in as few requests as the server's cap allows.
-///
-/// The server checks every account in a request before it writes anything and
-/// commits the writes together, so within one chunk there is no per-row failure
-/// to report. Across chunks there can be: the counts returned are what the
-/// chunks that succeeded did, and the error is from the first that did not.
+/// A whole selection, in as few requests as the cap allows. Within a chunk the
+/// server is all-or-nothing; across chunks it is not, so an error carries the
+/// counts from the chunks that did land.
 pub async fn bulk_users(
     ids: Vec<String>,
     action: BulkAction,

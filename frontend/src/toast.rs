@@ -1,21 +1,17 @@
 use leptos::prelude::*;
 
-/// How long a toast stays up, by severity. An error gets much longer because
-/// it usually carries something the reader has to act on.
+/// An error stays up far longer: it usually needs acting on.
 pub const SUCCESS_MS: u32 = 3_000;
 pub const ERROR_MS: u32 = 10_000;
 
-/// Height one card occupies in the stack, including the gap below it. Used to
-/// work out how many fit rather than picking a number out of the air.
+/// One card and the gap below it, so the count is measured not guessed.
 const CARD_SLOT_PX: f64 = 88.0;
 /// Navbar, top offset and a little breathing room at the bottom.
 const STACK_CHROME_PX: f64 = 140.0;
-/// Assumed viewport when there is no window to measure — the tests, and any
-/// call before the page is laid out.
+/// Assumed when there is no window to measure: tests, and pre-layout calls.
 const ASSUMED_VIEWPORT_PX: f64 = 800.0;
 
-/// How many toasts fit beside the page at this viewport height. Always at
-/// least one, so a message can never be dropped before it is shown.
+/// Always at least one, so a message is never dropped before it is shown.
 pub fn capacity_for(viewport_px: f64) -> usize {
     let usable = viewport_px - STACK_CHROME_PX;
     ((usable / CARD_SLOT_PX).floor().max(1.0)) as usize
@@ -75,8 +71,8 @@ pub struct Toast {
     pub message: String,
 }
 
-/// Shared queue of toasts. Anything anywhere in the app can push one without
-/// owning a place to render it.
+/// A shared queue, so anything can push a toast without owning a place to
+/// render it.
 #[derive(Clone, Copy)]
 pub struct Toasts {
     items: RwSignal<Vec<Toast>>,
@@ -93,9 +89,8 @@ impl Toasts {
         self.next_id.set(id.wrapping_add(1));
         let capacity = capacity_for(viewport_height());
         self.items.update(|list| {
-            // Full stack: the oldest goes. It has been readable the longest and
-            // is nearest its own expiry, and dropping it keeps every remaining
-            // card at full height instead of squashing the pile.
+            // The oldest goes: longest read, nearest expiry, and the rest stay
+            // at full height.
             while list.len() >= capacity {
                 list.remove(0);
             }
@@ -115,8 +110,7 @@ impl Toasts {
         self.push(ToastKind::Error, message);
     }
 
-    /// Removing by id rather than index, since the list shifts as older toasts
-    /// expire underneath a newer one.
+    /// By id, not index: the list shifts as older toasts expire beneath.
     pub fn dismiss(&self, id: u32) {
         self.items
             .update(|list| list.retain(|toast| toast.id != id));

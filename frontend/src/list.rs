@@ -1,9 +1,5 @@
-//! Paging, searching and sorting shared by the table pages.
-//!
-//! Both My URLs and the admin Users page talk to endpoints that take the same
-//! `limit`/`skip`/`sort`/`q` query string, so the query builder, the sort
-//! cycle and the skeleton timings live here rather than being written twice
-//! and drifting apart.
+//! Paging, searching and sorting shared by the table pages, which talk to
+//! endpoints taking the same query string.
 
 use std::time::Duration;
 
@@ -12,31 +8,24 @@ use leptos::prelude::*;
 pub const PAGE_SIZE: u64 = 20;
 /// Long enough that typing a word is one request, short enough to feel live.
 pub const SEARCH_DEBOUNCE: Duration = Duration::from_millis(300);
-/// Distance from the bottom at which the next page starts loading, so the rows
-/// are usually there before the scrollbar reaches the end.
+/// Far enough up that rows arrive before the scrollbar reaches the end.
 pub const LOAD_MORE_MARGIN: f64 = 200.0;
 /// Placeholder rows while the first page of a query is on its way.
 pub const GHOST_ROWS: usize = 6;
-/// How long a load may take before it is worth showing skeletons. A response
-/// that beats this never draws them, so a fast query does not flash.
+/// A response beating this draws no skeletons, so a fast query cannot flash.
 pub const GHOST_DELAY: Duration = Duration::from_millis(200);
 
-/// A column the server will sort by. Each endpoint has its own whitelist —
-/// anything outside it comes back 400 — so a column with no server-side field
-/// simply gets no sort control.
+/// A column the server will sort by; each endpoint whitelists its own, and
+/// anything else comes back 400.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Sort {
     pub field: &'static str,
     pub desc: bool,
 }
 
-/// Click cycle for a column: ascending, then descending, then back to no
-/// explicit sort at all. Three clicks return to where you started, so there is
-/// always a way out without hunting for the original column.
-///
-/// `None` means "whatever the server sorts by", which is why the signal holds
-/// an `Option` rather than defaulting to a field here — that would make the
-/// third click on *that* column indistinguishable from the second.
+/// Ascending, descending, then no explicit sort — three clicks return to where
+/// you started. `None` means whatever the server sorts by, which is why the
+/// signal holds an `Option`: a default here would swallow the third click.
 pub fn cycled(current: Option<Sort>, field: &'static str) -> Option<Sort> {
     match current {
         Some(sort) if sort.field == field => {
@@ -50,14 +39,9 @@ pub fn cycled(current: Option<Sort>, field: &'static str) -> Option<Sort> {
     }
 }
 
-/// One page of results as query parameters, in the order they reach the URL.
-/// An unset sort is left out so the server applies its own default.
-///
-/// Pairs rather than a finished query string because `gloo_net` assembles the
-/// URL itself: handed a path that already carries `?…`, it joins that to its
-/// own parameters with a `&` whether or not there are any, which leaves a
-/// trailing `&` on every request. Given the pairs it encodes and joins them
-/// properly — and the search term no longer needs escaping by hand.
+/// One page as query parameters; an unset sort is left out so the server
+/// applies its own. Pairs, not a finished string: `gloo_net` assembles the URL
+/// itself and would leave a trailing `&` on every request.
 pub fn list_params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(&'static str, String)> {
     let mut params = vec![
         ("limit", PAGE_SIZE.to_string()),

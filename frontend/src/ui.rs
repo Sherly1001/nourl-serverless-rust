@@ -1,11 +1,6 @@
-/// Classes for a text input, red when it is showing an error.
-///
-/// The error state is FlyonUI's own `is-invalid` rather than a `border-error`
-/// utility. FlyonUI styles hover with
-/// `.input:hover:not(:focus,:focus-within)`, whose specificity (0,3,0) beats
-/// any single utility class — so a `border-error` input loses its red border
-/// the moment the pointer touches it. `is-invalid` comes with matching base,
-/// hover and focus rules, so the colour survives all three.
+/// Classes for a text input, red on error. FlyonUI's `is-invalid`, not a
+/// `border-error` utility: FlyonUI's hover rule outranks a bare utility, so the
+/// red would vanish the moment the pointer touched it.
 pub fn input_class(invalid: bool) -> &'static str {
     if invalid {
         "input h-13 text-lg is-invalid"
@@ -14,8 +9,7 @@ pub fn input_class(invalid: bool) -> &'static str {
     }
 }
 
-/// The same idea at table-row scale: `is-invalid` rather than a border
-/// utility, for the reason above.
+/// The same at row scale, `is-invalid` for the reason above.
 pub fn row_input_class(invalid: bool) -> &'static str {
     if invalid {
         "input input-sm is-invalid"

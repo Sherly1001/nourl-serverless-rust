@@ -1,14 +1,9 @@
-//! What a `datetime-local` input holds, and what the API takes.
-//!
-//! The input carries no timezone — it means the clock on the visitor's wall.
-//! Rather than converting to UTC here, the browser's offset is written onto the
-//! end of the string: no calendar arithmetic to get wrong at a month boundary,
-//! and the server reads it with the same `parse_from_rfc3339` as anything else.
+//! What the date field holds, and what the API takes. The browser's offset is
+//! appended rather than converted away, so there is no calendar arithmetic
+//! here to get wrong at a month boundary.
 
-/// The browser's offset from UTC in minutes, east positive.
-///
-/// `Date::getTimezoneOffset` reports the opposite sign — minutes to *add* to
-/// local time to reach UTC — so Tokyo answers `-540` and is negated here.
+/// Minutes from UTC, east positive. `Date::getTimezoneOffset` reports the
+/// opposite sign — Tokyo answers `-540` — so it is negated here.
 pub fn local_offset_minutes() -> i32 {
     -(js_sys::Date::new_0().get_timezone_offset() as i32)
 }
@@ -47,16 +42,13 @@ pub fn to_rfc3339(local: &str, offset_minutes: i32) -> Option<String> {
     ))
 }
 
-/// Whether a stamp is still ahead of the browser's clock. The server enforces
-/// this too — this only saves a round trip to hear it.
+/// The server enforces this too; here it only saves a round trip.
 pub fn is_future(rfc3339: &str) -> bool {
     let at = js_sys::Date::new(&wasm_bindgen::JsValue::from_str(rfc3339)).get_time();
     !at.is_nan() && at > js_sys::Date::now()
 }
 
-/// The reverse of [`to_rfc3339`]: what the picker should show for a stamp the
-/// API returned, in the visitor's own zone and cut to the minute.
-///
+/// The reverse of [`to_rfc3339`], in the visitor's zone and cut to the minute.
 /// By hand rather than through `Date`, so it can be tested off a browser.
 pub fn from_rfc3339(stamp: &str, offset_minutes: i32) -> Option<String> {
     let (date, time) = stamp.split_once('T')?;
@@ -136,18 +128,9 @@ fn field_bounds(index: usize, done: &[i64]) -> Option<(i64, i64)> {
     }
 }
 
-/// Punctuates a half-typed date, so the field fills itself in: `2026` becomes
-/// `2026/`, and a separator typed early pads what came before it — `2026/4/`
-/// becomes `2026/04/`.
-///
-/// A finished field is also pulled inside its own range, so `2028/18/24 88:88`
-/// lands on `2028/12/24 23:59` instead of sitting there as an error the typist
-/// has to unpick. Half-typed digits are left alone — `2026/1` is on its way to
-/// October, not a month clamped to one.
-///
-/// Pasted text goes through the same mill, whatever it was punctuated with,
-/// which is what turns `2026-04-12T18:30:45.000Z` into a value this field can
-/// hold. Digits past the minutes belong to no field and are dropped.
+/// Punctuates and pads a half-typed date, and pulls a finished field into
+/// range — but never a half-typed one, since `2026/1` is on its way to October.
+/// Pasted text goes through the same mill, whatever punctuated it.
 pub fn mask_display(input: &str) -> String {
     const FIELDS: [(usize, Option<char>); 5] = [
         (4, Some('/')),

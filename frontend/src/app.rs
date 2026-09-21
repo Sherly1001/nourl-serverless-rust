@@ -19,8 +19,7 @@ pub fn App() -> impl IntoView {
     let auth = provide_auth();
     provide_toasts();
 
-    // Which tab is showing, marked on the link that leads there. `btn-soft`
-    // rather than a colour swap: it is the same button, lit, so the row still
+    // `btn-soft`, not a colour swap: the same button lit, so the row still
     // reads as one set of tabs.
     let tab = move |target: Route| {
         if route.get() == target {
@@ -38,10 +37,6 @@ pub fn App() -> impl IntoView {
     };
 
     view! {
-        // Sticky, and below the row menus (`z-30`) rather than above them: a
-        // header that paints over an open dropdown is worse than one a
-        // dropdown briefly covers. The page's own sticky table heads sit at
-        // `z-10`, so those still scroll under it.
         <div class="sticky top-0 z-20 border-b shadow-sm navbar bg-base-200 border-base-content/10">
             <div class="navbar-start">
                 <a href="#/" class="flex gap-2 items-center text-xl font-bold">
@@ -70,8 +65,6 @@ pub fn App() -> impl IntoView {
                         "Users"
                     </a>
                 </Show>
-                // The sign-in settings belong to the root alone, so an ordinary
-                // admin must not be offered a link that only ends in a 403.
                 <Show when=move || auth.is_root()>
                     <a
                         href="#/settings"
@@ -87,10 +80,6 @@ pub fn App() -> impl IntoView {
             </div>
         </div>
 
-        // The table needs room; a form reads better narrow, so the width
-        // follows the route rather than being one compromise for both. The URL
-        // table is the widest of them — nine columns and an action pair — and
-        // anything narrower than this scrolls the actions out of reach.
         <main class=move || {
             let width = match route.get() {
                 Route::MyUrls => "max-w-[86rem]",

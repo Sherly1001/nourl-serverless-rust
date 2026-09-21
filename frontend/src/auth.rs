@@ -4,13 +4,12 @@ use shared::UserInfo;
 
 use crate::api;
 
-/// Current session, shared through context so the navbar, the My URLs page and
-/// the login form all agree without prop-drilling.
+/// Current session, shared through context so everything agrees without
+/// prop-drilling.
 #[derive(Clone, Copy)]
 pub struct AuthContext {
-    /// `None` both while the first `/api/auth/me` is in flight and when logged
-    /// out — watch `loaded` to tell those apart, or a page will flash its
-    /// signed-out state before the session resolves.
+    /// `None` both in flight and logged out — watch `loaded` to tell them
+    /// apart, or a page flashes its signed-out state first.
     pub user: RwSignal<Option<UserInfo>>,
     pub loaded: RwSignal<bool>,
 }
@@ -20,16 +19,13 @@ impl AuthContext {
         self.user.get().is_some_and(|u| u.is_admin)
     }
 
-    /// The sign-in settings are the root's alone, so the nav entry that leads
-    /// there has to ask separately — an ordinary admin following it would only
-    /// get a 403.
+    /// The settings are the root's alone, so the nav entry asks separately.
     pub fn is_root(&self) -> bool {
         self.user.get().is_some_and(|u| u.is_root)
     }
 
-    /// Re-reads `/api/auth/me`. Called once at startup and after login/logout.
-    /// An error is indistinguishable from logged out on purpose: a 401 is the
-    /// normal answer for an anonymous visitor.
+    /// An error reads as logged out on purpose: 401 is the normal answer for
+    /// an anonymous visitor.
     pub fn refresh(&self) {
         let user = self.user;
         let loaded = self.loaded;
