@@ -19,8 +19,7 @@ pub fn App() -> impl IntoView {
     let auth = provide_auth();
     provide_toasts();
 
-    // `btn-soft`, not a colour swap: the same button lit, so the row still
-    // reads as one set of tabs.
+    // `btn-soft`: the same button lit, so the row still reads as one set.
     let tab = move |target: Route| {
         if route.get() == target {
             "gap-2 btn btn-soft btn-primary"
@@ -82,7 +81,7 @@ pub fn App() -> impl IntoView {
 
         <main class=move || {
             let width = match route.get() {
-                Route::MyUrls => "max-w-[86rem]",
+                Route::MyUrls => "max-w-[96rem]",
                 Route::Users => "max-w-6xl",
                 _ => "max-w-2xl",
             };

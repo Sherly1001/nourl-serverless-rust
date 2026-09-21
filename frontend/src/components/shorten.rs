@@ -1,6 +1,6 @@
 use leptos::prelude::*;
 use leptos::task::spawn_local;
-use shared::{UrlEntry, UrlUpsertRequest, validate_code, validate_url};
+use shared::{UrlEntry, UrlUpsertRequest};
 
 use crate::api;
 use crate::auth::use_auth;
@@ -8,42 +8,14 @@ use crate::clipboard::{copy, origin};
 use crate::components::confirm::ConfirmDialog;
 use crate::components::conflict::{ReplacementDetails, other_owner};
 use crate::components::datepicker::DateTimePicker;
-use crate::datetime::{from_display, is_future, local_offset_minutes, to_rfc3339};
+use crate::linkform::{check_code, check_expiry, check_url};
 use crate::ui::input_class;
-
-fn check_code(value: &str) -> Option<String> {
-    if value.trim().is_empty() {
-        return Some("Code is required".into());
-    }
-    validate_code(value).err()
-}
-
-fn check_url(value: &str) -> Option<String> {
-    if value.trim().is_empty() {
-        return Some("Destination URL is required".into());
-    }
-    validate_url(value).err()
-}
-
-fn check_expiry(shown: &str) -> Result<Option<String>, String> {
-    if shown.trim().is_empty() {
-        return Ok(None);
-    }
-    let stamp = from_display(shown)
-        .and_then(|local| to_rfc3339(&local, local_offset_minutes()))
-        .ok_or_else(|| "Expiry is not a valid date and time".to_string())?;
-    if !is_future(&stamp) {
-        return Err("Expiry must be in the future".into());
-    }
-    Ok(Some(stamp))
-}
 
 #[component]
 pub fn Shorten() -> impl IntoView {
     let (code, set_code) = signal(String::new());
     let (url, set_url) = signal(String::new());
-    // A field reports problems only once the user has typed in it, blurred it,
-    // or tried to submit — so the form does not open covered in red.
+    // Typed in, left, or submitted: not open covered in red.
     let (code_touched, set_code_touched) = signal(false);
     let (url_touched, set_url_touched) = signal(false);
     let (code_server_error, set_code_server_error) = signal(Option::<String>::None);
@@ -62,8 +34,7 @@ pub fn Shorten() -> impl IntoView {
         })
     });
     let url_error = Memo::new(move |_| url_touched.get().then(|| check_url(&url.get())).flatten());
-    // Unlike the other two this waits for the field to be left: half of a date
-    // is not yet a mistake.
+    // Waits to be left: half of a date is not yet a mistake.
     let expiry_error = Memo::new(move |_| {
         expiry_touched
             .get()
@@ -105,8 +76,7 @@ pub fn Shorten() -> impl IntoView {
         set_copied.set(false);
     };
 
-    // Sends the create. `overwrite` is only ever true on the second attempt,
-    // after the dialog below has been answered.
+    // `overwrite` is true only on a second attempt, after the dialog.
     let send = move |overwrite: bool| {
         let code_value = code.get_untracked();
         let url_value = url.get_untracked();
@@ -131,10 +101,7 @@ pub fn Shorten() -> impl IntoView {
                     set_result.set(Some(entry));
                     set_code_server_error.set(None);
                 }
-                // A code the caller already owns comes back with the link
-                // itself, which is an offer to replace it rather than a dead
-                // end. Everything else is a message under the code field:
-                // server-side rejections are always about the code.
+                // A code the caller owns is an offer; anything else is a field error.
                 Err(err) => match err.conflict {
                     Some(existing) => {
                         set_reset_hits.set(false);
@@ -165,9 +132,7 @@ pub fn Shorten() -> impl IntoView {
     };
 
     let code_input: NodeRef<leptos::html::Input> = NodeRef::new();
-    // `reset` re-enables the inputs, but the DOM still carries `disabled` at
-    // the moment the click handler runs, and focusing a disabled input does
-    // nothing. Waiting a frame lets the attribute clear first.
+    // A frame late: `disabled` is still on the input when the handler runs.
     let focus_code = move || {
         request_animation_frame(move || {
             if let Some(input) = code_input.get_untracked() {
@@ -181,9 +146,7 @@ pub fn Shorten() -> impl IntoView {
         }
     });
 
-    // Once the link exists the form is a record of what was created, not an
-    // editable draft: the only way on is "Create another short link", which
-    // resets it. Leaving the fields live would invite edits that go nowhere.
+    // A record of what was made, not a draft: edits here would go nowhere.
     let done = Memo::new(move |_| result.get().is_some());
 
     view! {
@@ -385,28 +348,5 @@ mod tests {
             check_url("").as_deref(),
             Some("Destination URL is required")
         );
-    }
-
-    #[test]
-    fn format_errors_come_from_shared_validators() {
-        assert!(check_code("bad/code").is_some());
-        assert!(check_url("ftp://x.com").is_some());
-    }
-
-    /// Text that parses to nothing must be an error, never a silent "no
-    /// expiry" — that would drop a deadline the user asked for.
-    #[test]
-    fn unparseable_expiry_text_is_refused_but_an_empty_field_is_not() {
-        assert!(check_expiry("").unwrap().is_none());
-        assert!(check_expiry("   ").unwrap().is_none());
-        assert!(check_expiry("nonsense").is_err());
-        assert!(check_expiry("2026/13/01 00:00").is_err());
-        assert!(check_expiry("2026/08/20").is_err());
-    }
-
-    #[test]
-    fn valid_input_has_no_error() {
-        assert!(check_code("my-code").is_none());
-        assert!(check_url("https://example.com").is_none());
     }
 }

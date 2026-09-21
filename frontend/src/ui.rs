@@ -9,24 +9,9 @@ pub fn input_class(invalid: bool) -> &'static str {
     }
 }
 
-/// The same at row scale, `is-invalid` for the reason above.
-pub fn row_input_class(invalid: bool) -> &'static str {
-    if invalid {
-        "input input-sm is-invalid"
-    } else {
-        "input input-sm"
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn the_row_input_marks_invalid_the_same_way() {
-        assert!(row_input_class(true).contains("is-invalid"));
-        assert!(!row_input_class(false).contains("is-invalid"));
-    }
 
     #[test]
     fn the_invalid_state_uses_flyonui_is_invalid() {

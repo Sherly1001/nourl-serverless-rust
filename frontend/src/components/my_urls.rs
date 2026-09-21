@@ -10,9 +10,8 @@ use crate::auth::use_auth;
 use crate::clipboard::{copy, origin, short_link};
 use crate::components::avatar::{Avatar, usable_url};
 use crate::components::confirm::ConfirmDialog;
-use crate::components::conflict::ReplacementDetails;
 use crate::components::conflict::other_owner;
-use crate::components::datepicker::DateTimePicker;
+use crate::components::edit_link::EditLinkDialog;
 use crate::components::tooltip::Tooltip;
 use crate::datetime::{
     from_display, from_rfc3339, is_future, local_offset_minutes, to_display, to_rfc3339,
@@ -22,7 +21,6 @@ use crate::list::{
     all_selected, list_params, short_datetime,
 };
 use crate::toast::use_toasts;
-use crate::ui::row_input_class;
 
 /// Most recently touched first, which is also what the server applies when no
 /// sort is sent — so cycling a column back to "off" lands here.
@@ -79,40 +77,32 @@ pub fn MyUrls() -> impl IntoView {
     let (keystroke, set_keystroke) = signal(0u32);
     let sort = RwSignal::new(Some(DEFAULT_SORT));
     let selected = RwSignal::new(HashSet::<String>::new());
-    // The row being edited, keyed by the code it had when editing began — a
-    // rename changes the code, so the original is what identifies the row.
+    // Keyed by the code editing began with: a rename changes it.
     let editing = RwSignal::new(Option::<String>::None);
-    let (draft_code, set_draft_code) = signal(String::new());
-    let (draft_url, set_draft_url) = signal(String::new());
-    let (draft_expiry, set_draft_expiry) = signal(String::new());
-    // The row being saved, the link it collided with, and whether landing on
-    // it would destroy that link rather than replace this one.
-    let (conflict, set_conflict) = signal(None::<(String, UrlEntry, bool)>);
+    let edit_open = RwSignal::new(false);
+    let draft_code = RwSignal::new(String::new());
+    let draft_url = RwSignal::new(String::new());
+    let draft_expiry = RwSignal::new(String::new());
+    // The link a save collided with, and whether landing on it destroys it.
+    let conflict = RwSignal::new(None::<(UrlEntry, bool)>);
     let reset_hits = RwSignal::new(false);
     let claim_owner = RwSignal::new(false);
-    let conflict_open = RwSignal::new(false);
-    // Which field failed local validation, if any. Only a red border: the rule
-    // it broke is the same one the placeholder implies, and a message per row
-    // would push the table around.
-    let (invalid_field, set_invalid_field) = signal(Option::<&'static str>::None);
+    // A red border only: the placeholder already implies the rule.
+    let invalid_field = RwSignal::new(Option::<&'static str>::None);
     let (saving, set_saving) = signal(false);
     let pending_delete = RwSignal::new(Vec::<String>::new());
     let confirm_open = RwSignal::new(false);
-    // The link a takeover is waiting on. Claiming an unowned one needs no
-    // confirmation — nothing is taken from anybody — but taking one off its
-    // owner does.
+    // Only a takeover needs confirming; an unowned link is nobody's to defend.
     let pending_claim = RwSignal::new(Vec::<UrlEntry>::new());
     let claim_open = RwSignal::new(false);
-    // The request in flight, so a new search can cancel it. Held locally
-    // because a JS object is neither Send nor Sync.
+    // Local, because a JS object is neither Send nor Sync.
     let inflight = StoredValue::new_local(Option::<web_sys::AbortController>::None);
     // Guards against a cancelled or overtaken response writing stale rows.
     let (generation, set_generation) = signal(0u32);
     // Raised only once a load has been slow enough to be worth showing.
     let (slow, set_slow) = signal(false);
 
-    // Reads every input untracked so callers decide when it runs: the effect
-    // below re-runs it on a new search or sort, the scroller on a new page.
+    // Untracked throughout, so callers decide when it runs.
     let fetch = move |index: u64, append: bool| {
         if auth.user.get_untracked().is_none() {
             return;
@@ -133,9 +123,7 @@ pub fn MyUrls() -> impl IntoView {
         let mine = generation.get_untracked();
         set_loading.set(true);
         set_slow.set(false);
-        // `try_` throughout: a timer or a request can outlive the page that
-        // started it, and writing a signal whose owner has been disposed panics
-        // — which in wasm is fatal to the whole app, not just to this page.
+        // `try_` throughout: writing a disposed signal is fatal in wasm.
         set_timeout(
             move || {
                 // Still the current request, and still waiting.
@@ -149,9 +137,7 @@ pub fn MyUrls() -> impl IntoView {
         );
         spawn_local(async move {
             let result = api::list_urls(params, signal.as_ref()).await;
-            // A newer request started while this one was out — including the
-            // one that aborted it, whose error is not worth showing. A page
-            // that is gone entirely reads as `None` and stops here too.
+            // A newer request started while this was out, or the page is gone.
             if generation.try_get_untracked() != Some(mine) {
                 return;
             }
@@ -173,24 +159,20 @@ pub fn MyUrls() -> impl IntoView {
         });
     };
 
-    // Start over whenever the session resolves or the query changes — a
-    // different sort or search invalidates every page already accumulated, and
-    // an open editor refers to a row that may not survive it.
+    // A new query invalidates every page accumulated, and any open editor.
     Effect::new(move |_| {
         auth.user.get();
         debounced.get();
         sort.get();
         editing.set(None);
-        // The rows are about to change, and a tick against a row that is no
-        // longer listed would delete something the user cannot see.
+        // A tick against a row no longer listed would delete it unseen.
         selected.set(HashSet::new());
         set_items.set(Vec::new());
         fetch(0, false);
     });
 
     let more_to_load = move || (items.get().len() as u64) < total.get();
-    // A fresh query has nothing to show yet; appending keeps the rows visible.
-    // Gated on `slow` so a quick response goes straight to rows.
+    // Only for a fresh query, and only once `slow` says it is worth it.
     let showing_ghosts = move || slow.get() && loading.get() && items.get().is_empty();
 
     let on_scroll = move |ev: leptos::ev::Event| {
@@ -224,20 +206,14 @@ pub fn MyUrls() -> impl IntoView {
         );
     };
 
-    // Deletes each code in turn and drops its row. Refetching instead would
-    // throw away every page scrolled so far.
-    // Clearing skips the debounce: there is nothing more to type, so waiting
-    // would only delay the results the user just asked for.
+    // Clearing skips the debounce: there is nothing more to type.
     let clear_search = move |_| {
         set_search.set(String::new());
         set_keystroke.update(|n| *n += 1);
         set_debounced.set(String::new());
     };
 
-    // One request per link, in sequence. There is no bulk endpoint for links
-    // and none is needed: unlike the admin chain, links do not cascade — taking
-    // /a has no bearing on /b — so a refusal on one says nothing about the
-    // rest, and reporting them separately is the honest thing to do.
+    // One per link: links do not cascade, so a refusal says nothing about the rest.
     let claim_many = move |codes: Vec<String>| {
         spawn_local(async move {
             let mut taken = 0usize;
@@ -282,9 +258,7 @@ pub fn MyUrls() -> impl IntoView {
         claim_many(codes);
     });
 
-    // Asks first only when something is being taken from somebody. A link
-    // nobody owns is nobody's to defend, and a dialog about it would be a
-    // question with one answer.
+    // Asks only when something is taken from somebody.
     let ask_claim = move |entries: Vec<UrlEntry>| {
         if entries.iter().any(|entry| entry.owner.is_some()) {
             pending_claim.set(entries);
@@ -326,9 +300,9 @@ pub fn MyUrls() -> impl IntoView {
     };
 
     let begin_edit = move |entry: UrlEntry| {
-        set_draft_code.set(entry.code.clone());
-        set_draft_url.set(entry.url.clone());
-        set_draft_expiry.set(
+        draft_code.set(entry.code.clone());
+        draft_url.set(entry.url.clone());
+        draft_expiry.set(
             entry
                 .expires_at
                 .as_deref()
@@ -336,30 +310,27 @@ pub fn MyUrls() -> impl IntoView {
                 .and_then(|local| to_display(&local))
                 .unwrap_or_default(),
         );
-        set_invalid_field.set(None);
+        invalid_field.set(None);
+        conflict.set(None);
+        reset_hits.set(false);
+        claim_owner.set(false);
         editing.set(Some(entry.code));
-    };
-
-    let cancel_edit = move || {
-        editing.set(None);
-        set_invalid_field.set(None);
+        edit_open.set(true);
     };
 
     let save_edit = move |original: String, overwrite: bool| {
         let code = draft_code.get_untracked().trim().to_string();
         let url = draft_url.get_untracked().trim().to_string();
-        // The same rules the server enforces, checked here so a typo costs no
-        // round trip.
+        // The server's own rules, so a typo costs no round trip.
         if validate_code(&code).is_err() {
-            set_invalid_field.set(Some("code"));
+            invalid_field.set(Some("code"));
             return;
         }
         if validate_url(&url).is_err() {
-            set_invalid_field.set(Some("url"));
+            invalid_field.set(Some("url"));
             return;
         }
-        // Empty means "no expiry", which the server reads as a removal — so a
-        // link can be freed as well as dated from the same box.
+        // Empty is a removal, so one box both sets and clears a deadline.
         let shown = draft_expiry.get_untracked();
         let expires_at = match shown.trim() {
             "" => String::new(),
@@ -368,13 +339,13 @@ pub fn MyUrls() -> impl IntoView {
                     .and_then(|local| to_rfc3339(&local, local_offset_minutes()))
                     .filter(|stamp| is_future(stamp));
                 let Some(stamp) = stamp else {
-                    set_invalid_field.set(Some("expires_at"));
+                    invalid_field.set(Some("expires_at"));
                     return;
                 };
                 stamp
             }
         };
-        set_invalid_field.set(None);
+        invalid_field.set(None);
         set_saving.set(true);
         let reset = overwrite && reset_hits.get_untracked();
         let claim = overwrite && claim_owner.get_untracked();
@@ -391,44 +362,49 @@ pub fn MyUrls() -> impl IntoView {
             match api::update_url(&original, &request).await {
                 Ok(updated) => {
                     let renamed = updated.code.clone();
+                    let mut destroyed = 0usize;
                     set_items.update(|rows| {
-                        if let Some(row) = rows.iter_mut().find(|row| row.code == original) {
-                            *row = updated;
-                        }
+                        let Some(index) = rows.iter().position(|row| row.code == original) else {
+                            return;
+                        };
+                        rows[index] = updated;
+                        // Landing on another of your links deletes it.
+                        let mut seen = 0usize;
+                        rows.retain(|row| {
+                            let keep = seen == index || row.code != renamed;
+                            seen += 1;
+                            destroyed += usize::from(!keep);
+                            keep
+                        });
                     });
-                    // A rename moves the row's identity, so a tick against the
-                    // old code would otherwise point at nothing.
+                    if destroyed > 0 {
+                        set_total.update(|total| *total = total.saturating_sub(destroyed as u64));
+                    }
+                    // A rename moves the row's identity, and the tick with it.
                     selected.update(|set| {
+                        set.remove(&renamed);
                         if set.remove(&original) {
                             set.insert(renamed);
                         }
                     });
                     editing.set(None);
-                    set_invalid_field.set(None);
+                    edit_open.set(false);
+                    invalid_field.set(None);
+                    conflict.set(None);
                     toasts.success("Link saved");
                 }
-                // A code the caller already owns is an offer, not a refusal:
-                // the dialog says what would go and sends this again.
+                // A code the caller owns is an offer, not a refusal.
                 Err(err) => match err.conflict {
                     Some(existing) => {
                         reset_hits.set(false);
                         claim_owner.set(false);
-                        set_conflict.set(Some((original, *existing, renaming)));
-                        conflict_open.set(true);
+                        conflict.set(Some((*existing, renaming)));
                     }
                     None => toasts.error(err.message),
                 },
             }
             set_saving.set(false);
         });
-    };
-
-    // Enter commits the row, Escape abandons it — the two keys a keyboard user
-    // reaches for once a table cell has turned into an input.
-    let edit_keys = move |ev: &leptos::ev::KeyboardEvent, original: &str| match ev.key().as_str() {
-        "Enter" => save_edit(original.to_string(), false),
-        "Escape" => cancel_edit(),
-        _ => {}
     };
 
     let visible_codes = move || {
@@ -454,13 +430,9 @@ pub fn MyUrls() -> impl IntoView {
 
     let empty = move || loaded_once.get() && !loading.get() && items.get().is_empty();
     let selected_count = move || selected.get().len();
-    // Kept out of the view: leptosfmt reads the `>` of a comparison inside an
-    // attribute as the element's closing bracket and mangles the markup.
+    // Out of the view: leptosfmt reads a `>` in an attribute as a closing bracket.
     let has_selection = move || selected_count() > 0;
-    // The ticked links worth claiming: the ones this admin does not already
-    // own. Whether the server will allow each is a question about the owner's
-    // place in the chain, which this page cannot answer — so the offer covers
-    // what is plausibly claimable and the refusals come back per link.
+    // What is plausibly claimable; the chain is the server's to judge.
     let claimable_selection = move || {
         let me = auth
             .user
@@ -481,8 +453,7 @@ pub fn MyUrls() -> impl IntoView {
             .collect::<Vec<_>>()
     };
     let can_claim = move || auth.is_admin() && !claimable_selection().is_empty();
-    // Checkbox, code, destination, hits, last hit, expires, created, updated,
-    // actions — plus the admin-only owner column.
+    // Every column, plus the admin-only owner one.
     let column_count = move || if auth.is_admin() { 10 } else { 9 };
 
     view! {
@@ -551,7 +522,7 @@ pub fn MyUrls() -> impl IntoView {
                     class="overflow-auto rounded-lg border h-[calc(100vh-16rem)] border-base-content/10"
                     on:scroll=on_scroll
                 >
-                    <table class="table table-fixed table-pinned min-w-[84rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
+                    <table class="table table-fixed table-pinned min-w-[86rem] [&_thead_tr]:border-b-0 [&_td]:px-3">
                         <thead class="sticky top-0 z-10 bg-base-200">
                             <tr>
                                 <th class="px-3 w-10">
@@ -581,7 +552,7 @@ pub fn MyUrls() -> impl IntoView {
                                     field="expires_at"
                                     label="Expires"
                                     sort=sort
-                                    width="w-56"
+                                    width="w-36"
                                 />
                                 <SortHeader
                                     field="created_at"
@@ -619,7 +590,6 @@ pub fn MyUrls() -> impl IntoView {
                                 let:entry
                             >
                                 {
-                                    let row_code = StoredValue::new(entry.code.clone());
                                     let code = StoredValue::new(entry.code.clone());
                                     let url = StoredValue::new(entry.url.clone());
                                     let for_edit = StoredValue::new(entry.clone());
@@ -644,12 +614,6 @@ pub fn MyUrls() -> impl IntoView {
                                     let expires = short_datetime(entry.expires_at.as_ref());
                                     let created = short_datetime(entry.created_at.as_ref());
                                     let updated = short_datetime(entry.updated_at.as_ref());
-                                    let is_editing = move || {
-                                        row_code
-                                            .with_value(|code| {
-                                                editing.get().as_deref() == Some(code.as_str())
-                                            })
-                                    };
                                     view! {
                                         <tr>
                                             <td>
@@ -672,76 +636,30 @@ pub fn MyUrls() -> impl IntoView {
                                                 />
                                             </td>
 
-                                            <Show
-                                                when=is_editing
-                                                fallback=move || {
-                                                    view! {
-                                                        <td class="font-mono">
-                                                            <Tooltip
-                                                                text=code.get_value()
-                                                                class="block cursor-pointer truncate"
-                                                            >
-                                                                <span on:click=move |_| {
-                                                                    let link = short_link(&origin(), &code.get_value());
-                                                                    copy(link.clone());
-                                                                    toasts.success(format!("Copied {link}"));
-                                                                }>{code.get_value()}</span>
-                                                            </Tooltip>
-                                                        </td>
-                                                        <td>
-                                                            <Tooltip text=url.get_value()>
-                                                                <a
-                                                                    href=url.get_value()
-                                                                    target="_blank"
-                                                                    rel="noreferrer"
-                                                                    class="link"
-                                                                >
-                                                                    {url.get_value()}
-                                                                </a>
-                                                            </Tooltip>
-                                                        </td>
-                                                    }
-                                                }
-                                            >
-                                                <td>
-                                                    <input
-                                                        class=move || {
-                                                            format!(
-                                                                "w-full font-mono {}",
-                                                                row_input_class(invalid_field.get() == Some("code")),
-                                                            )
-                                                        }
-                                                        aria-label="Code"
-                                                        prop:value=draft_code
-                                                        on:input=move |ev| {
-                                                            set_draft_code.set(event_target_value(&ev));
-                                                            set_invalid_field.set(None);
-                                                        }
-                                                        on:keydown=move |ev| {
-                                                            code.with_value(|c| edit_keys(&ev, c))
-                                                        }
-                                                    />
-                                                </td>
-                                                <td>
-                                                    <input
-                                                        class=move || {
-                                                            format!(
-                                                                "w-full {}",
-                                                                row_input_class(invalid_field.get() == Some("url")),
-                                                            )
-                                                        }
-                                                        aria-label="Destination"
-                                                        prop:value=draft_url
-                                                        on:input=move |ev| {
-                                                            set_draft_url.set(event_target_value(&ev));
-                                                            set_invalid_field.set(None);
-                                                        }
-                                                        on:keydown=move |ev| {
-                                                            code.with_value(|c| edit_keys(&ev, c))
-                                                        }
-                                                    />
-                                                </td>
-                                            </Show>
+                                            <td class="font-mono">
+                                                <Tooltip
+                                                    text=code.get_value()
+                                                    class="block cursor-pointer truncate"
+                                                >
+                                                    <span on:click=move |_| {
+                                                        let link = short_link(&origin(), &code.get_value());
+                                                        copy(link.clone());
+                                                        toasts.success(format!("Copied {link}"));
+                                                    }>{code.get_value()}</span>
+                                                </Tooltip>
+                                            </td>
+                                            <td>
+                                                <Tooltip text=url.get_value()>
+                                                    <a
+                                                        href=url.get_value()
+                                                        target="_blank"
+                                                        rel="noreferrer"
+                                                        class="link"
+                                                    >
+                                                        {url.get_value()}
+                                                    </a>
+                                                </Tooltip>
+                                            </td>
 
                                             <Show when=move || auth.is_admin()>
                                                 <td>
@@ -775,116 +693,52 @@ pub fn MyUrls() -> impl IntoView {
                                             </Show>
                                             <td>{hits}</td>
                                             <td class="whitespace-nowrap opacity-70">{last}</td>
-                                            <Show
-                                                when=is_editing
-                                                fallback={
-                                                    let expires = expires.clone();
-                                                    move || {
-                                                        view! {
-                                                            <td class="whitespace-nowrap opacity-70">
-                                                                {expires.clone()}
-                                                            </td>
-                                                        }
-                                                    }
-                                                }
-                                            >
-                                                <td>
-                                                    <DateTimePicker
-                                                        id=row_code.with_value(|c| format!("expires-{c}"))
-                                                        value=draft_expiry
-                                                        set_value=set_draft_expiry
-                                                        invalid=Signal::derive(move || {
-                                                            invalid_field.get() == Some("expires_at")
-                                                        })
-                                                        disabled=Signal::derive(move || saving.get())
-                                                        small=true
-                                                        on_keydown=Callback::new(move |
-                                                            ev: leptos::ev::KeyboardEvent|
-                                                        { code.with_value(|c| edit_keys(&ev, c)) })
-                                                    />
-                                                </td>
-                                            </Show>
-
+                                            <td class="whitespace-nowrap opacity-70">{expires}</td>
                                             <td class="whitespace-nowrap opacity-70">{created}</td>
                                             <td class="whitespace-nowrap opacity-70">{updated}</td>
                                             <td class="whitespace-nowrap">
                                                 <span class="flex gap-1 justify-end">
-                                                    <Show
-                                                        when=is_editing
-                                                        fallback=move || {
-                                                            view! {
-                                                                <Show when=move || claimable>
-                                                                    <Tooltip
-                                                                        text=if taking_over { "Take over" } else { "Claim" }
-                                                                        class="inline-flex"
-                                                                        only_when_clipped=false
-                                                                    >
-                                                                        <button
-                                                                            class="btn btn-text btn-sm btn-square"
-                                                                            aria-label="Claim link"
-                                                                            on:click=move |_| { ask_claim(vec![for_edit.get_value()]) }
-                                                                        >
-                                                                            <span class="icon-[tabler--hand-grab] size-4"></span>
-                                                                        </button>
-                                                                    </Tooltip>
-                                                                </Show>
-                                                                <Tooltip
-                                                                    text="Edit"
-                                                                    class="inline-flex"
-                                                                    only_when_clipped=false
-                                                                >
-                                                                    <button
-                                                                        class="btn btn-text btn-sm btn-square"
-                                                                        aria-label="Edit link"
-                                                                        on:click=move |_| begin_edit(for_edit.get_value())
-                                                                    >
-                                                                        <span class="icon-[tabler--pencil] size-4"></span>
-                                                                    </button>
-                                                                </Tooltip>
-                                                                <Tooltip
-                                                                    text="Delete"
-                                                                    class="inline-flex"
-                                                                    only_when_clipped=false
-                                                                >
-                                                                    <button
-                                                                        class="btn btn-text btn-sm btn-square text-error"
-                                                                        aria-label="Delete link"
-                                                                        on:click=move |_| ask_delete(vec![code.get_value()])
-                                                                    >
-                                                                        <span class="icon-[tabler--trash] size-4"></span>
-                                                                    </button>
-                                                                </Tooltip>
-                                                            }
-                                                        }
-                                                    >
+                                                    <Show when=move || claimable>
                                                         <Tooltip
-                                                            text="Save"
-                                                            class="inline-flex"
-                                                            only_when_clipped=false
-                                                        >
-                                                            <button
-                                                                class="btn btn-primary btn-sm btn-square"
-                                                                aria-label="Save changes"
-                                                                disabled=move || saving.get()
-                                                                on:click=move |_| { save_edit(code.get_value(), false) }
-                                                            >
-                                                                <span class="icon-[tabler--check] size-4"></span>
-                                                            </button>
-                                                        </Tooltip>
-                                                        <Tooltip
-                                                            text="Cancel"
+                                                            text=if taking_over { "Take over" } else { "Claim" }
                                                             class="inline-flex"
                                                             only_when_clipped=false
                                                         >
                                                             <button
                                                                 class="btn btn-text btn-sm btn-square"
-                                                                aria-label="Cancel editing"
-                                                                on:click=move |_| cancel_edit()
+                                                                aria-label="Claim link"
+                                                                on:click=move |_| { ask_claim(vec![for_edit.get_value()]) }
                                                             >
-                                                                <span class="icon-[tabler--x] size-4"></span>
+                                                                <span class="icon-[tabler--hand-grab] size-4"></span>
                                                             </button>
                                                         </Tooltip>
                                                     </Show>
+                                                    <Tooltip
+                                                        text="Edit"
+                                                        class="inline-flex"
+                                                        only_when_clipped=false
+                                                    >
+                                                        <button
+                                                            class="btn btn-text btn-sm btn-square"
+                                                            aria-label="Edit link"
+                                                            on:click=move |_| begin_edit(for_edit.get_value())
+                                                        >
+                                                            <span class="icon-[tabler--pencil] size-4"></span>
+                                                        </button>
+                                                    </Tooltip>
+                                                    <Tooltip
+                                                        text="Delete"
+                                                        class="inline-flex"
+                                                        only_when_clipped=false
+                                                    >
+                                                        <button
+                                                            class="btn btn-text btn-sm btn-square text-error"
+                                                            aria-label="Delete link"
+                                                            on:click=move |_| ask_delete(vec![code.get_value()])
+                                                        >
+                                                            <span class="icon-[tabler--trash] size-4"></span>
+                                                        </button>
+                                                    </Tooltip>
                                                 </span>
                                             </td>
                                         </tr>
@@ -955,68 +809,27 @@ pub fn MyUrls() -> impl IntoView {
                 on_confirm=delete_confirmed
             />
 
-            <ConfirmDialog
-                open=conflict_open
-                title=Signal::derive(move || {
-                    match conflict.get() {
-                        Some((.., true)) => "Replace the other link?".to_string(),
-                        _ => "Replace this link?".to_string(),
-                    }
-                })
-                message=Signal::derive(move || {
+            <EditLinkDialog
+                open=edit_open
+                original=Signal::derive(move || editing.get().unwrap_or_default())
+                code=draft_code
+                url=draft_url
+                expiry=draft_expiry
+                invalid=invalid_field
+                saving=Signal::derive(move || saving.get())
+                conflict=conflict
+                reset_hits=reset_hits
+                claim=claim_owner
+                other_owner=Signal::derive(move || {
                     conflict
                         .get()
-                        .map(|(_, existing, renaming)| {
-                            match (other_owner(&existing, &auth), renaming) {
-                                (Some(name), true) => {
-                                    format!(
-                                        "/{} belongs to {name}. Moving this link onto it deletes theirs.",
-                                        existing.code,
-                                    )
-                                }
-                                (Some(name), false) => {
-                                    format!("/{} belongs to {name}.", existing.code)
-                                }
-                                (None, true) => {
-                                    format!(
-                                        "/{} already exists. Moving this link onto it deletes it.",
-                                        existing.code,
-                                    )
-                                }
-                                (None, false) => format!("You already use /{}.", existing.code),
-                            }
-                        })
-                        .unwrap_or_default()
-                })
-                confirm_label="Replace"
-                confirm_class=Signal::derive(move || {
-                    match conflict.get() {
-                        Some((.., true)) => "btn-error".to_string(),
-                        _ => "btn-primary".to_string(),
-                    }
-                })
-                extra=ViewFn::from(move || {
-                    conflict
-                        .get()
-                        .map(|(_, existing, renaming)| {
-                            let owner = other_owner(&existing, &auth)
-                                .and_then(|_| existing.owner.clone());
-                            let claim = (!renaming && owner.is_some()).then_some(claim_owner);
-                            view! {
-                                <ReplacementDetails
-                                    existing=existing
-                                    url=draft_url
-                                    expires=draft_expiry
-                                    reset_hits=reset_hits
-                                    claim=claim
-                                    other_owner=owner
-                                />
-                            }
+                        .and_then(|(existing, _)| {
+                            other_owner(&existing, &auth).and(existing.owner)
                         })
                 })
-                on_confirm=Callback::new(move |_| {
-                    if let Some((original, ..)) = conflict.get_untracked() {
-                        save_edit(original, true);
+                on_save=Callback::new(move |overwrite: bool| {
+                    if let Some(original) = editing.get_untracked() {
+                        save_edit(original, overwrite);
                     }
                 })
             />
@@ -1059,8 +872,7 @@ mod tests {
             claim_message(&links(&[("a", Some("alice")), ("b", Some("bob"))]))
                 .contains("Take 2 links from their owners")
         );
-        // A mixed selection owns up to both numbers: the button counts
-        // everything it acts on, and only some of that is taken from anybody.
+        // A mixed selection owns up to both numbers.
         let mixed = claim_message(&links(&[
             ("a", Some("alice")),
             ("b", None),

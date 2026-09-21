@@ -1,13 +1,11 @@
 use leptos::html::Input;
 use leptos::prelude::*;
-use wasm_bindgen::JsCast;
-use wasm_bindgen::prelude::Closure;
 
 use crate::datetime::{
     add_months, days_in_month, from_display, mask_display, month_grid, today_local,
 };
 use crate::dropdown::dismiss_on_outside_click;
-use crate::ui::{input_class, row_input_class};
+use crate::ui::input_class;
 
 const MONTHS: [&str; 12] = [
     "January",
@@ -24,14 +22,9 @@ const MONTHS: [&str; 12] = [
     "December",
 ];
 
-/// How tall the popover gets, used only until it has been rendered once and
-/// can be measured. `w-80` is where the width comes from.
+/// How tall the popover gets. Only used to decide which side it opens on, so a
+/// bound is enough.
 const POPOVER_HEIGHT: f64 = 380.0;
-const POPOVER_WIDTH: f64 = 320.0;
-
-/// Between the popover and the field, and between the popover and the edge of
-/// the window.
-const GAP: f64 = 8.0;
 
 /// A year page is twelve, so that pane is the same grid as the months one.
 const YEAR_PAGE: i64 = 12;
@@ -56,62 +49,24 @@ pub fn DateTimePicker(
     #[prop(into)] invalid: Signal<bool>,
     #[prop(into)] disabled: Signal<bool>,
     #[prop(optional, into)] describedby: Option<&'static str>,
-    /// Sized for a table row rather than for a form.
-    #[prop(optional)]
-    small: bool,
     /// Runs when the field is left, which is when a half-typed date is worth
     /// complaining about.
     #[prop(optional)]
     on_blur: Option<Callback<()>>,
-    /// Keys the caller wants for itself, forwarded only while the popover is
-    /// closed — the row editor commits on Enter and abandons on Escape, and
-    /// both mean something to the popover first.
+    /// Whether the popover is showing. Supply one to keep Escape from reaching
+    /// past the popover to whatever encloses it.
     #[prop(optional)]
-    on_keydown: Option<Callback<leptos::ev::KeyboardEvent>>,
+    open: Option<RwSignal<bool>>,
 ) -> impl IntoView {
-    let (open, set_open) = signal(false);
+    let open = open.unwrap_or_else(|| RwSignal::new(false));
     let (pane, set_pane) = signal(Pane::Days);
-    // Where the popover sits, in viewport coordinates. See `popover_spot`.
-    let (spot, set_spot) = signal((0.0, 0.0));
+    // Which side of the field the popover hangs from, decided once on open.
+    let (above, set_above) = signal(false);
     let root: NodeRef<leptos::html::Div> = NodeRef::new();
-    let popover: NodeRef<leptos::html::Div> = NodeRef::new();
     let text_input: NodeRef<Input> = NodeRef::new();
     let hour_input: NodeRef<Input> = NodeRef::new();
     let minute_input: NodeRef<Input> = NodeRef::new();
-    dismiss_on_outside_click(root, set_open);
-
-    let place = move || {
-        let Some(Some(field)) = root.try_get_untracked() else {
-            return;
-        };
-        let height = popover
-            .try_get_untracked()
-            .flatten()
-            .map(|p| p.get_bounding_client_rect().height())
-            .filter(|h| *h > 0.0)
-            .unwrap_or(POPOVER_HEIGHT);
-        let _ = set_spot.try_set(popover_spot(&field, height));
-    };
-    follow_scroll(place);
-    // Runs again if the node is replaced; the guard keeps it to one observer.
-    Effect::new(move |watched: Option<bool>| {
-        if watched == Some(true) {
-            return true;
-        }
-        let Some(field) = root.get() else {
-            return false;
-        };
-        close_when_out_of_view(&field, set_open);
-        true
-    });
-    // After the popover exists, so the second pass places it by its real
-    // height rather than by the guess.
-    Effect::new(move |_| {
-        if open.get() {
-            place();
-            request_animation_frame(place);
-        }
-    });
+    dismiss_on_outside_click(root, open.write_only());
 
     // The month on screen: whatever is selected, else the month we are in.
     let (view_month, set_view_month) = signal(None::<(i64, i64)>);
@@ -149,7 +104,7 @@ pub fn DateTimePicker(
 
     // Leaving the popover puts the caller back where they started.
     let finish = move || {
-        set_open.set(false);
+        open.set(false);
         focus_field(text_input);
     };
 
@@ -157,8 +112,7 @@ pub fn DateTimePicker(
         set_value.set(format!("{y:04}/{m:02}/{d:02} {hour:02}:{minute:02}"));
     };
 
-    // Picking a day keeps the time already entered; a first pick starts at
-    // midnight, which is the earliest the chosen day can mean.
+    // Keeps the time entered; a first pick starts at midnight.
     let pick_day = move |(y, m, d): (i64, i64, i64)| {
         let (hour, minute) = selected
             .get_untracked()
@@ -180,26 +134,21 @@ pub fn DateTimePicker(
     let clear = move |_| {
         set_value.set(String::new());
         set_view_month.set(None);
-        set_open.set(false);
+        open.set(false);
     };
 
     let clearable = Memo::new(move |_| !value.get().is_empty() && !disabled.get());
 
-    // A row is tight enough that the buttons have to give the text its space
-    // back; a form has room for the larger targets.
-    let button = if small {
-        "cursor-pointer btn btn-text btn-xs btn-square text-base-content/60 hover:text-base-content"
-    } else {
-        "cursor-pointer btn btn-text btn-sm btn-square text-base-content/60 hover:text-base-content"
-    };
+    let button = "cursor-pointer btn btn-text btn-sm btn-square text-base-content/60 hover:text-base-content";
 
     let toggle = move |_| {
         if open.get_untracked() {
-            set_open.set(false);
+            open.set(false);
             return;
         }
         set_pane.set(Pane::Days);
-        set_open.set(true);
+        set_above.set(opens_above(root));
+        open.set(true);
     };
 
     view! {
@@ -211,35 +160,26 @@ pub fn DateTimePicker(
                 autocomplete="off"
                 placeholder="yyyy/mm/dd hh:mm"
                 class=move || {
-                    let base = if small {
-                        row_input_class(invalid.get())
-                    } else {
-                        input_class(invalid.get())
-                    };
-                    let room = match (small, clearable.get()) {
-                        (true, true) => "pe-16",
-                        (true, false) => "pe-9",
-                        (false, true) => "pe-20",
-                        (false, false) => "pe-12",
-                    };
-                    format!("{base} w-full {room}")
+                    let room = if clearable.get() { "pe-20" } else { "pe-12" };
+                    format!("{} w-full {room}", input_class(invalid.get()))
                 }
                 aria-invalid=move || invalid.get().to_string()
                 aria-describedby=describedby
                 disabled=move || disabled.get()
                 node_ref=text_input
                 prop:value=value
-                on:focus=move |_| set_open.set(false)
-                on:click=move |_| set_open.set(false)
+                on:focus=move |_| open.set(false)
+                on:click=move |_| open.set(false)
                 on:input=move |ev| {
-                    let typed = event_target_value(&ev);
+                    let typed: String = event_target_value(&ev)
+                        .chars()
+                        .filter(|c| c.is_ascii_digit() || matches!(c, '/' | ':' | ' '))
+                        .collect();
                     let deleting = typed.len() < value.get_untracked().len();
                     let masked = mask_display(&typed);
                     set_value
                         .set(
-                            if masked.is_empty() && !typed.is_empty() {
-                                typed
-                            } else if deleting {
+                            if deleting {
                                 masked.trim_end_matches(|c: char| !c.is_ascii_digit()).to_string()
                             } else {
                                 masked
@@ -252,24 +192,17 @@ pub fn DateTimePicker(
                     }
                 }
                 on:keydown=move |ev: leptos::ev::KeyboardEvent| {
-                    if !open.get_untracked() && let Some(callback) = on_keydown {
-                        callback.run(ev);
+                    if ev.key() == "Enter" && open.get_untracked() {
+                        ev.prevent_default();
+                        open.set(false);
                     }
                 }
             />
 
-            <div class=if small {
-                "flex absolute inset-y-0 right-1 items-center"
-            } else {
-                "flex absolute inset-y-0 right-2 items-center"
-            }>
+            <div class="flex absolute inset-y-0 right-2 items-center">
                 <Show when=move || clearable.get()>
                     <button class=button type="button" aria-label="Clear expiry" on:click=clear>
-                        <span class=if small {
-                            "icon-[tabler--x] size-4"
-                        } else {
-                            "icon-[tabler--x] size-5"
-                        }></span>
+                        <span class="icon-[tabler--x] size-5"></span>
                     </button>
                 </Show>
                 <button
@@ -281,21 +214,17 @@ pub fn DateTimePicker(
                     disabled=move || disabled.get()
                     on:click=toggle
                 >
-                    <span class=if small {
-                        "icon-[tabler--calendar] size-4"
-                    } else {
-                        "icon-[tabler--calendar] size-5"
-                    }></span>
+                    <span class="icon-[tabler--calendar] size-5"></span>
                 </button>
             </div>
 
             <Show when=move || open.get()>
                 <div
-                    node_ref=popover
-                    class="fixed z-50 p-3 w-80 border shadow-lg card bg-base-100 border-base-content/10 motion-preset-fade motion-duration-200"
-                    style=move || {
-                        let (left, top) = spot.get();
-                        format!("left:{left}px;top:{top}px")
+                    class=move || {
+                        let side = if above.get() { "bottom-full mb-2" } else { "top-full mt-2" };
+                        format!(
+                            "absolute right-0 z-50 p-3 w-80 border shadow-lg card bg-base-100 border-base-content/10 motion-preset-fade motion-duration-200 {side}",
+                        )
                     }
                     role="dialog"
                     aria-label="Choose a date and time"
@@ -526,8 +455,7 @@ fn ClockField(
 ) -> impl IntoView {
     let (text, set_text) = signal(String::new());
 
-    // Follows the value when something else moves it — a day picked for the
-    // first time, or the field cleared — and leaves half-typed text alone.
+    // Follows the value when something else moves it, not while typing.
     Effect::new(move |_| {
         let shown = part.get().map(|n| format!("{n:02}")).unwrap_or_default();
         if text.get_untracked().parse::<i64>().ok() != part.get() {
@@ -581,85 +509,24 @@ fn ClockField(
     }
 }
 
-/// Where the popover goes, in viewport coordinates: `fixed`, or the scrolling
-/// box around the field would clip it — hence [`follow_scroll`]. Below unless
-/// there is no room, right-aligned, pulled back inside the window.
-fn popover_spot(field: &web_sys::Element, height: f64) -> (f64, f64) {
+/// Whether the popover has to hang above the field to stay in the window.
+/// Below by default; it flips only when there is no room there and more room
+/// the other way.
+fn opens_above(root: NodeRef<leptos::html::Div>) -> bool {
+    let Some(element) = root.get_untracked() else {
+        return false;
+    };
     let Some(window) = web_sys::window() else {
-        return (0.0, 0.0);
+        return false;
     };
-    let axis = |value: Result<wasm_bindgen::JsValue, wasm_bindgen::JsValue>| {
-        value.ok().and_then(|v| v.as_f64()).unwrap_or(0.0)
-    };
-    let (width, viewport) = (axis(window.inner_width()), axis(window.inner_height()));
-    let rect = field.get_bounding_client_rect();
-
+    let viewport = window
+        .inner_height()
+        .ok()
+        .and_then(|v| v.as_f64())
+        .unwrap_or(0.0);
+    let rect = element.get_bounding_client_rect();
     let below = viewport - rect.bottom();
-    let top = if below < height && rect.top() > below {
-        rect.top() - height - GAP
-    } else {
-        rect.bottom() + GAP
-    };
-    let left = (rect.right() - POPOVER_WIDTH).min(width - POPOVER_WIDTH - GAP);
-    (left.max(GAP), top.max(GAP))
-}
-
-/// Closes the popover once the field scrolls out of sight — being `fixed`, it
-/// would otherwise hover over a row nobody can see. An observer, because the
-/// field is clipped by its ancestors rather than by the window.
-fn close_when_out_of_view(field: &web_sys::Element, set_open: WriteSignal<bool>) {
-    let seen = Closure::<dyn FnMut(js_sys::Array)>::new(move |entries: js_sys::Array| {
-        let gone = entries.iter().any(|entry| {
-            entry
-                .dyn_into::<web_sys::IntersectionObserverEntry>()
-                .is_ok_and(|entry| !entry.is_intersecting())
-        });
-        if gone {
-            set_open.try_set(false);
-        }
-    });
-    let Ok(observer) = web_sys::IntersectionObserver::new(seen.as_ref().unchecked_ref()) else {
-        return;
-    };
-    observer.observe(field);
-
-    let handles = send_wrapper::SendWrapper::new((observer, seen));
-    on_cleanup(move || {
-        let (observer, _seen) = handles.take();
-        observer.disconnect();
-    });
-}
-
-/// Re-runs `place` on any scroll or resize. Capture phase, since a scroll
-/// inside a div does not bubble. The cleanup owns the closures, as in
-/// [`crate::dropdown::dismiss_on_outside_click`].
-fn follow_scroll(place: impl Fn() + Clone + 'static) {
-    let Some(window) = web_sys::window() else {
-        return;
-    };
-    let scrolled = Closure::<dyn FnMut()>::new({
-        let place = place.clone();
-        move || place()
-    });
-    let resized = Closure::<dyn FnMut()>::new(place);
-    let _ = window.add_event_listener_with_callback_and_bool(
-        "scroll",
-        scrolled.as_ref().unchecked_ref(),
-        true,
-    );
-    let _ = window.add_event_listener_with_callback("resize", resized.as_ref().unchecked_ref());
-
-    let handles = send_wrapper::SendWrapper::new((window, scrolled, resized));
-    on_cleanup(move || {
-        let (window, scrolled, resized) = handles.take();
-        let _ = window.remove_event_listener_with_callback_and_bool(
-            "scroll",
-            scrolled.as_ref().unchecked_ref(),
-            true,
-        );
-        let _ =
-            window.remove_event_listener_with_callback("resize", resized.as_ref().unchecked_ref());
-    });
+    below < POPOVER_HEIGHT && rect.top() > below
 }
 
 /// The first year of the twelve-year page `year` falls in.

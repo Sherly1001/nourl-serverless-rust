@@ -4,6 +4,7 @@ pub mod avatar;
 pub mod confirm;
 pub mod conflict;
 pub mod datepicker;
+pub mod edit_link;
 pub mod login;
 pub mod my_urls;
 pub mod password_input;
