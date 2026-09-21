@@ -1574,6 +1574,10 @@ async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
     admin_db.run_command(command).await.unwrap();
 }
 
+/// `failCommand` is one setting on the server, not one per database, so two
+/// tests configuring it at once configure each other's. They take turns.
+static FAILPOINT: tokio::sync::Mutex<()> = tokio::sync::Mutex::const_new(());
+
 /// The rollback itself, which no other test reaches. A demotion that
 /// re-parents writes twice — the branch climbs out, then the flag comes off —
 /// and the second write is the one that fails here.
@@ -1585,6 +1589,7 @@ async fn a_write_failing_partway_undoes_the_writes_before_it() {
     promote(&app, &middle, "second").await;
     let ids = vec![id_of(&app, &boss, "first").await];
 
+    let _turn = FAILPOINT.lock().await;
     fail_updates_after_the_first(&db, true).await;
     let response = app
         .clone()
@@ -1706,6 +1711,42 @@ async fn a_bulk_action_costs_the_same_however_many_are_named() {
     );
     // A constant that is nonetheless absurd would satisfy the equality above.
     assert!(three < 15, "a selection should not cost {three} commands");
+
+    db.drop().await.unwrap();
+}
+
+/// One account's demotion is several writes whenever the branch below it
+/// moves, so it needs the same all-or-nothing the bulk route has.
+#[tokio::test]
+async fn a_single_demotion_that_fails_partway_leaves_the_chain_alone() {
+    let (app, db) = test_app().await;
+    let boss = admin(&app, &db, "singleboss").await;
+    let middle = promote(&app, &boss, "single-middle").await;
+    promote(&app, &middle, "single-leaf").await;
+    let id = id_of(&app, &boss, "single-middle").await;
+
+    let _turn = FAILPOINT.lock().await;
+    fail_updates_after_the_first(&db, true).await;
+    let response = set_admin(
+        &app,
+        &boss,
+        &id,
+        json!({"is_admin": false, "orphans": "reparent"}),
+    )
+    .await;
+    fail_updates_after_the_first(&db, false).await;
+
+    assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
+    assert_eq!(
+        row_of(&app, &boss, "single-middle").await["is_admin"],
+        true,
+        "the demotion never happened"
+    );
+    assert_eq!(
+        row_of(&app, &boss, "single-leaf").await["admin_level"],
+        2,
+        "so the move out from under it must not have happened either"
+    );
 
     db.drop().await.unwrap();
 }

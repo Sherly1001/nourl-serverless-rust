@@ -173,7 +173,8 @@ async fn parent_for(
     Ok(parent_id.to_string())
 }
 
-/// One write to the parent pointer, since that is all the chain stores.
+/// A change to one account's standing, which is still several writes when the
+/// branch below it moves — so it is a transaction, as the bulk route is.
 pub async fn set_user_admin(
     State(state): State<AppState>,
     AdminUser(actor): AdminUser,
@@ -181,18 +182,32 @@ pub async fn set_user_admin(
     AppJson(body): AppJson<SetAdminRequest>,
 ) -> Result<Json<SetAdminResponse>, AppError> {
     let mut session = session(&state).await?;
-    let forest = users::admin_forest(&state.db, &mut session).await?;
+    session.start_transaction().await?;
+    let answer = set_admin_in(&state, &mut session, &actor, &id, body).await?;
+    session.commit_transaction().await?;
+    Ok(answer)
+}
+
+/// One write to the parent pointer, since that is all the chain stores.
+async fn set_admin_in(
+    state: &AppState,
+    session: &mut ClientSession,
+    actor: &User,
+    id: &str,
+    body: SetAdminRequest,
+) -> Result<Json<SetAdminResponse>, AppError> {
+    let forest = users::admin_forest(&state.db, &mut *session).await?;
     // Resigning is the one thing you may do to your own standing.
     if actor.id == id && !body.is_admin {
-        return resign(&state, &mut session, &forest, &actor, body.orphans).await;
+        return resign(state, &mut *session, &forest, actor, body.orphans).await;
     }
-    let target = target_user(&state, &mut session, &forest, &actor, &id).await?;
+    let target = target_user(state, &mut *session, &forest, actor, id).await?;
     if !body.is_admin {
         let plan = demotion(
-            &state,
-            &mut session,
+            state,
+            &mut *session,
             &forest,
-            &actor,
+            actor,
             &target.id,
             body.orphans,
         )
@@ -206,17 +221,17 @@ pub async fn set_user_admin(
         }));
     }
     let parent = parent_for(
-        &state,
-        &mut session,
+        state,
+        &mut *session,
         &forest,
-        &actor,
+        actor,
         &target,
         body.promoted_by.as_deref(),
     )
     .await?;
     users::apply(
         &state.db,
-        &mut session,
+        &mut *session,
         &chain::promote_under(&parent, std::slice::from_ref(&target.id)),
         state.config.orphan_grace_days,
     )
@@ -240,6 +255,7 @@ pub async fn delete_user(
     Query(params): Query<DeleteUserParams>,
 ) -> Result<Json<DeleteUserResponse>, AppError> {
     let mut session = session(&state).await?;
+    session.start_transaction().await?;
     let forest = users::admin_forest(&state.db, &mut session).await?;
     let target = target_user(&state, &mut session, &forest, &actor, &id).await?;
     let plan = chain::plan(
@@ -256,6 +272,8 @@ pub async fn delete_user(
         state.config.orphan_grace_days,
     )
     .await?;
+    session.commit_transaction().await?;
+
     Ok(Json(DeleteUserResponse {
         id: target.id,
         deleted: true,
