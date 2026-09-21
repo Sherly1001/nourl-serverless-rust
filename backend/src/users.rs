@@ -6,6 +6,7 @@ use mongodb::{ClientSession, Database};
 use serde::{Deserialize, Serialize};
 use shared::{AdminUserInfo, LinkDisposition, UpdateProfileRequest, UserInfo};
 
+use crate::chain::{Forest, Plan};
 use crate::query::UserListParams;
 
 use crate::error::AppError;
@@ -299,88 +300,6 @@ pub async fn update_profile(
     Ok(())
 }
 
-/// Deep enough for any real hierarchy, shallow enough that a hand-edited cycle
-/// cannot turn a lookup into a long walk.
-const MAX_CHAIN_DEPTH: i32 = 32;
-
-/// Hangs `id` under `parent` and gives it the flag. Promoting and moving are
-/// one write because they are one fact — who vouches for them now — and the
-/// subtree follows, being pointers to `id` rather than a stored depth.
-pub async fn grant_admin(
-    db: &Database,
-    session: &mut ClientSession,
-    id: &str,
-    parent_id: &str,
-) -> Result<(), AppError> {
-    collection(db)
-        .update_one(
-            doc! {"id": id},
-            doc! {"$set": {"is_admin": true, "promoted_by": parent_id}},
-        )
-        .session(&mut *session)
-        .await?;
-    Ok(())
-}
-
-/// Drops the flag from `id` **and everyone below**, returning how many lost
-/// it. The cascade is the point: the flag was held on the vouching being
-/// withdrawn here, and the subtree would otherwise hang off an ordinary account.
-pub async fn revoke_admin(
-    db: &Database,
-    session: &mut ClientSession,
-    id: &str,
-) -> Result<u64, AppError> {
-    let mut ids = descendant_ids(db, &mut *session, id).await?;
-    ids.push(id.to_string());
-    let result = collection(db)
-        .update_many(
-            doc! {"id": {"$in": &ids}},
-            doc! {
-                "$set": {"is_admin": false},
-                "$unset": {"promoted_by": ""},
-            },
-        )
-        .session(&mut *session)
-        .await?;
-    Ok(result.modified_count)
-}
-
-/// Hands the admins `id` promoted up to its own parent, or makes them roots.
-/// The alternative to [`revoke_admin`]: the branch keeps its standing, one
-/// level shallower. Returns who moved, not how many — see below.
-pub async fn reparent_children(
-    db: &Database,
-    session: &mut ClientSession,
-    id: &str,
-    parent: Option<&str>,
-) -> Result<Vec<String>, AppError> {
-    let update = match parent {
-        Some(parent) => doc! {"$set": {"promoted_by": parent}},
-        // A root's children become roots, as the deleted account was.
-        None => doc! {"$unset": {"promoted_by": ""}},
-    };
-    // One admin climbing twice and two climbing once are the same count.
-    let mut cursor = collection(db)
-        .find(doc! {"promoted_by": id})
-        .projection(doc! {"_id": 0, "id": 1})
-        .session(&mut *session)
-        .await?;
-    let mut moved = Vec::new();
-    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
-        if let Ok(id) = row.get_str("id") {
-            moved.push(id.to_string());
-        }
-    }
-    if moved.is_empty() {
-        return Ok(moved);
-    }
-    collection(db)
-        .update_many(doc! {"promoted_by": id}, update)
-        .session(&mut *session)
-        .await?;
-    Ok(moved)
-}
-
 /// What deleting an account did to the links it owned.
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub struct LinkOutcome {
@@ -410,34 +329,123 @@ pub async fn delete_with_cascade(
                 .deleted_count,
             orphaned: 0,
         },
-        // A pipeline: `$unset` and a computed `$min` cannot share a plain update.
-        LinkDisposition::Orphan => {
-            let cutoff = bson::DateTime::from_millis(
-                bson::DateTime::now().timestamp_millis() + grace_days * 24 * 60 * 60 * 1000,
-            );
-            LinkOutcome {
-                orphaned: urls
-                    .update_many(
-                        doc! {"owner": id},
-                        vec![
-                            doc! {"$set": {
-                                "expires_at": {"$min": [{"$ifNull": ["$expires_at", cutoff]}, cutoff]},
-                            }},
-                            doc! {"$unset": "owner"},
-                        ],
-                    )
-                    .session(&mut *session)
-                    .await?
-                    .modified_count,
-                deleted: 0,
-            }
-        }
+        LinkDisposition::Orphan => LinkOutcome {
+            orphaned: orphan_links(db, &mut *session, &[id.to_string()], grace_days).await?,
+            deleted: 0,
+        },
     };
     collection(db)
         .delete_one(doc! {"id": id})
         .session(&mut *session)
         .await?;
     Ok(outcome)
+}
+
+/// Leaves the links of `owners` working but unowned, expiring in `grace_days`;
+/// an earlier expiry is kept, so a deadline only ever moves closer. A pipeline,
+/// because `$unset` and a computed `$min` cannot share a plain update.
+async fn orphan_links(
+    db: &Database,
+    session: &mut ClientSession,
+    owners: &[String],
+    grace_days: i64,
+) -> Result<u64, AppError> {
+    let cutoff = bson::DateTime::from_millis(
+        bson::DateTime::now().timestamp_millis() + grace_days * 24 * 60 * 60 * 1000,
+    );
+    Ok(db
+        .collection::<Document>("urls")
+        .update_many(
+            doc! {"owner": {"$in": owners}},
+            vec![
+                doc! {"$set": {
+                    "expires_at": {"$min": [{"$ifNull": ["$expires_at", cutoff]}, cutoff]},
+                }},
+                doc! {"$unset": "owner"},
+            ],
+        )
+        .session(&mut *session)
+        .await?
+        .modified_count)
+}
+
+/// Every admin as a pointer to whoever vouches for them, in one query. Refused
+/// past [`MAX_ADMINS`]: a tree that size is a corrupt one, and cascading over a
+/// guess at its shape is worse than not acting.
+pub async fn admin_forest(db: &Database, session: &mut ClientSession) -> Result<Forest, AppError> {
+    let mut cursor = collection(db)
+        .find(doc! {"is_admin": true})
+        .projection(doc! {"_id": 0, "id": 1, "promoted_by": 1})
+        .limit(MAX_ADMINS + 1)
+        .session(&mut *session)
+        .await?;
+    let mut rows = Vec::new();
+    while let Some(row) = cursor.next(&mut *session).await.transpose()? {
+        let Ok(id) = row.get_str("id") else { continue };
+        rows.push((
+            id.to_string(),
+            row.get_str("promoted_by").ok().map(str::to_string),
+        ));
+    }
+    if rows.len() as i64 > MAX_ADMINS {
+        return Err(AppError::internal(format!(
+            "more than {MAX_ADMINS} admins, so the chain cannot be worked out"
+        )));
+    }
+    Ok(Forest::new(rows))
+}
+
+/// Carries out a [`Plan`], orphaning the links of whatever it deletes. The
+/// writes are grouped by the plan, so the count follows from the shape of the
+/// chain rather than from how many accounts were named.
+pub async fn apply(
+    db: &Database,
+    session: &mut ClientSession,
+    plan: &Plan,
+    grace_days: i64,
+) -> Result<LinkOutcome, AppError> {
+    // Before the demotion, which unsets the pointers they climb.
+    for (parent, ids) in &plan.reparented {
+        let update = match parent {
+            Some(parent) => doc! {"$set": {"promoted_by": parent}},
+            // A root's children become roots, as their admin was.
+            None => doc! {"$unset": {"promoted_by": ""}},
+        };
+        collection(db)
+            .update_many(doc! {"id": {"$in": ids}}, update)
+            .session(&mut *session)
+            .await?;
+    }
+    if !plan.demoted.is_empty() {
+        collection(db)
+            .update_many(
+                doc! {"id": {"$in": &plan.demoted}},
+                doc! {"$set": {"is_admin": false}, "$unset": {"promoted_by": ""}},
+            )
+            .session(&mut *session)
+            .await?;
+    }
+    for (parent, ids) in &plan.promoted {
+        collection(db)
+            .update_many(
+                doc! {"id": {"$in": ids}},
+                doc! {"$set": {"is_admin": true, "promoted_by": parent}},
+            )
+            .session(&mut *session)
+            .await?;
+    }
+    if plan.deleted.is_empty() {
+        return Ok(LinkOutcome::default());
+    }
+    let orphaned = orphan_links(db, &mut *session, &plan.deleted, grace_days).await?;
+    collection(db)
+        .delete_many(doc! {"id": {"$in": &plan.deleted}})
+        .session(&mut *session)
+        .await?;
+    Ok(LinkOutcome {
+        orphaned,
+        deleted: 0,
+    })
 }
 
 /// The accounts holding `ids`, in one query.
@@ -473,7 +481,7 @@ pub async fn ancestors_of_many(
             "connectFromField": "promoted_by",
             "connectToField": "id",
             "as": "chain",
-            "maxDepth": MAX_CHAIN_DEPTH,
+            "maxDepth": crate::chain::MAX_CHAIN_DEPTH as i32,
         }},
         doc! {"$project": {"_id": 0, "id": 1, "ids": "$chain.id"}},
     ];
@@ -523,17 +531,8 @@ pub async fn ancestor_ids(
     chain_ids(db, session, id, "$promoted_by", "promoted_by", "id").await
 }
 
-/// Ids of every account below `id`: the ones it promoted, and so on down.
-pub async fn descendant_ids(
-    db: &Database,
-    session: &mut ClientSession,
-    id: &str,
-) -> Result<Vec<String>, AppError> {
-    chain_ids(db, session, id, "$id", "id", "promoted_by").await
-}
-
-/// Walks `promoted_by` either way. `$graphLookup`, not a loop of `find_one`s:
-/// one round trip, and it tracks visits, so a hand-edited cycle terminates.
+/// Walks `promoted_by` upwards. `$graphLookup`, not a loop of `find_one`s: one
+/// round trip, and it tracks visits, so a hand-edited cycle terminates.
 async fn chain_ids(
     db: &Database,
     session: &mut ClientSession,
@@ -550,7 +549,7 @@ async fn chain_ids(
             "connectFromField": connect_from,
             "connectToField": connect_to,
             "as": "chain",
-            "maxDepth": MAX_CHAIN_DEPTH,
+            "maxDepth": crate::chain::MAX_CHAIN_DEPTH as i32,
         }},
         doc! {"$project": {"_id": 0, "ids": "$chain.id"}},
     ];
@@ -670,7 +669,7 @@ pub async fn admins(
             "connectFromField": "promoted_by",
             "connectToField": "id",
             "as": "ancestors",
-            "maxDepth": MAX_CHAIN_DEPTH,
+            "maxDepth": crate::chain::MAX_CHAIN_DEPTH as i32,
         }},
         doc! {"$set": {"admin_level": {"$size": "$ancestors"}}},
     ];

@@ -214,3 +214,41 @@ async fn bump_token_version_invalidates_old_snapshots() {
 
     db.drop().await.unwrap();
 }
+
+/// The snapshot every chain action plans against, and the ceiling that keeps a
+/// corrupt tree from being cascaded over on a guess at its shape.
+#[tokio::test]
+async fn the_forest_is_every_admin_and_nothing_past_the_ceiling() {
+    let db = helpers::test_db().await;
+    backend::db::ensure_indexes(&db).await.unwrap();
+    let mut session = db.client().start_session().await.unwrap();
+
+    let rows: Vec<mongodb::bson::Document> = (0..3)
+        .map(|n| {
+            mongodb::bson::doc! {
+                "id": format!("chain-{n}"),
+                "username": format!("chain-{n}"),
+                "is_admin": true,
+                "promoted_by": (n > 0).then(|| format!("chain-{}", n - 1)),
+            }
+        })
+        .collect();
+    db.collection("users").insert_many(rows).await.unwrap();
+
+    let forest = users::admin_forest(&db, &mut session).await.unwrap();
+    assert!(forest.is_admin("chain-2"));
+    assert!(!forest.is_admin("nobody"));
+    assert_eq!(forest.ancestors("chain-2"), vec!["chain-1", "chain-0"]);
+    assert_eq!(forest.subtree("chain-0").len(), 2);
+
+    let absurd: Vec<mongodb::bson::Document> = (0..1000)
+        .map(|n| mongodb::bson::doc! {"id": format!("many-{n}"), "is_admin": true})
+        .collect();
+    db.collection("users").insert_many(absurd).await.unwrap();
+    assert!(
+        users::admin_forest(&db, &mut session).await.is_err(),
+        "past the ceiling the shape is unknown, so nothing may be planned from it"
+    );
+
+    db.drop().await.unwrap();
+}

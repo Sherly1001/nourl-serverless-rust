@@ -2,7 +2,8 @@ mod helpers;
 
 use axum::http::StatusCode;
 use helpers::{
-    authed_get, authed_request, body_json, json_request, request, session_cookie, test_app,
+    authed_get, authed_request, body_json, counting_app, json_request, request, session_cookie,
+    test_app,
 };
 use mongodb::bson::doc;
 use serde_json::json;
@@ -1573,18 +1574,16 @@ async fn fail_updates_after_the_first(db: &mongodb::Database, on: bool) {
     admin_db.run_command(command).await.unwrap();
 }
 
-/// The rollback itself, which no other test reaches — the rest are caught
-/// before any write, so they pass with the transaction taken out.
+/// The rollback itself, which no other test reaches. A demotion that
+/// re-parents writes twice — the branch climbs out, then the flag comes off —
+/// and the second write is the one that fails here.
 #[tokio::test]
 async fn a_write_failing_partway_undoes_the_writes_before_it() {
     let (app, db) = test_app().await;
     let boss = admin(&app, &db, "bulkboss").await;
-    account(&app, "first").await;
-    account(&app, "second").await;
-    let ids = vec![
-        id_of(&app, &boss, "first").await,
-        id_of(&app, &boss, "second").await,
-    ];
+    let middle = promote(&app, &boss, "first").await;
+    promote(&app, &middle, "second").await;
+    let ids = vec![id_of(&app, &boss, "first").await];
 
     fail_updates_after_the_first(&db, true).await;
     let response = app
@@ -1593,7 +1592,7 @@ async fn a_write_failing_partway_undoes_the_writes_before_it() {
             "POST",
             "/api/admin/users/bulk",
             &boss,
-            json!({"ids": ids, "action": "promote"}),
+            json!({"ids": ids, "action": "demote", "orphans": "reparent"}),
         ))
         .await
         .unwrap();
@@ -1602,10 +1601,14 @@ async fn a_write_failing_partway_undoes_the_writes_before_it() {
     assert_eq!(response.status(), StatusCode::INTERNAL_SERVER_ERROR);
     assert_eq!(
         row_of(&app, &boss, "first").await["is_admin"],
-        false,
-        "the promotion that succeeded must not survive the one that did not"
+        true,
+        "the demotion never happened, so neither may the move out from under it"
     );
-    assert_eq!(row_of(&app, &boss, "second").await["is_admin"], false);
+    assert_eq!(
+        row_of(&app, &boss, "second").await["admin_level"],
+        2,
+        "the re-parenting that succeeded must not survive the write that did not"
+    );
 
     db.drop().await.unwrap();
 }
@@ -1652,6 +1655,57 @@ async fn an_admin_moved_up_twice_is_reported_once() {
     for gone in ["tree-b", "tree-c", "tree-d"] {
         assert_eq!(row_of(&app, &a, gone).await["is_admin"], false);
     }
+
+    db.drop().await.unwrap();
+}
+
+/// Creates `count` ordinary accounts and answers with what deleting them all
+/// in one request costs in commands.
+async fn bulk_delete_cost(
+    app: &axum::Router,
+    boss: &str,
+    commands: &std::sync::atomic::AtomicUsize,
+    count: usize,
+    prefix: &str,
+) -> usize {
+    let mut ids = Vec::new();
+    for n in 0..count {
+        let username = format!("{prefix}{n}");
+        account(app, &username).await;
+        ids.push(id_of(app, boss, &username).await);
+    }
+
+    commands.store(0, std::sync::atomic::Ordering::Relaxed);
+    let response = app
+        .clone()
+        .oneshot(authed_request(
+            "POST",
+            "/api/admin/users/bulk",
+            boss,
+            json!({"ids": ids, "action": "delete"}),
+        ))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    commands.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// The point of planning the whole selection first: the chain is asked a fixed
+/// set of questions, so naming four times as many accounts costs the same.
+#[tokio::test]
+async fn a_bulk_action_costs_the_same_however_many_are_named() {
+    let (app, db, commands) = counting_app().await;
+    let boss = admin(&app, &db, "count-boss").await;
+
+    let three = bulk_delete_cost(&app, &boss, &commands, 3, "countsmall").await;
+    let twelve = bulk_delete_cost(&app, &boss, &commands, 12, "countlarge").await;
+
+    assert_eq!(
+        three, twelve,
+        "deleting twelve accounts issued {twelve} commands against three accounts' {three}"
+    );
+    // A constant that is nonetheless absurd would satisfy the equality above.
+    assert!(three < 15, "a selection should not cost {three} commands");
 
     db.drop().await.unwrap();
 }

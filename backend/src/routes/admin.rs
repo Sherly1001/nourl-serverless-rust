@@ -2,14 +2,15 @@ use axum::Json;
 use axum::extract::{Path, Query, State};
 use shared::{
     AdminOrphans, AdminSettings, AdminUserListResponse, BulkAction, BulkUsersRequest,
-    BulkUsersResponse, DeleteUserParams, DeleteUserResponse, LinkDisposition, RejectedId,
-    SetAdminRequest, SetAdminResponse, UpdateSettingsRequest,
+    BulkUsersResponse, DeleteUserParams, DeleteUserResponse, RejectedId, SetAdminRequest,
+    SetAdminResponse, UpdateSettingsRequest,
 };
 
 use mongodb::ClientSession;
 
 use crate::app::AppState;
 use crate::auth::extract::{AdminUser, RootAdmin};
+use crate::chain::{self, Forest, Plan};
 use crate::error::AppError;
 use crate::extract::AppJson;
 use crate::query::UserListParams;
@@ -63,6 +64,7 @@ fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
 async fn resign(
     state: &AppState,
     session: &mut ClientSession,
+    forest: &Forest,
     actor: &User,
     orphans: AdminOrphans,
 ) -> Result<Json<SetAdminResponse>, AppError> {
@@ -71,39 +73,36 @@ async fn resign(
             "you are the top admin so cannot give up the flag — it can only be removed directly in the database",
         ));
     }
-    let (demoted, reparented) = demote(state, session, actor, orphans).await?;
+    let plan = demotion(state, session, forest, actor, &actor.id, orphans).await?;
     Ok(Json(SetAdminResponse {
         id: actor.id.clone(),
         is_admin: false,
         promoted_by: None,
-        demoted,
-        reparented: reparented.len() as u64,
+        // Everyone the branch took with it, the account itself included.
+        demoted: plan.demoted.len() as u64,
+        reparented: plan.moved(),
     }))
 }
 
-/// Takes the flag off `target` and disposes of the branch per `orphans`.
-/// Re-parenting runs first: once the children hang elsewhere, revoking finds
-/// nothing below and takes only the target.
-async fn demote(
+/// Takes the flag off one account and disposes of the branch per `orphans`,
+/// which is [`chain::plan`] over a selection of one.
+async fn demotion(
     state: &AppState,
     session: &mut ClientSession,
-    target: &User,
+    forest: &Forest,
+    actor: &User,
+    target: &str,
     orphans: AdminOrphans,
-) -> Result<(u64, Vec<String>), AppError> {
-    let reparented = match orphans {
-        AdminOrphans::Demote => Vec::new(),
-        AdminOrphans::Reparent => {
-            users::reparent_children(
-                &state.db,
-                &mut *session,
-                &target.id,
-                target.promoted_by.as_deref(),
-            )
-            .await?
-        }
-    };
-    let demoted = users::revoke_admin(&state.db, session, &target.id).await?;
-    Ok((demoted, reparented))
+) -> Result<Plan, AppError> {
+    let plan = chain::plan(
+        forest,
+        &actor.id,
+        &[target.to_string()],
+        BulkAction::Demote,
+        orphans,
+    );
+    users::apply(&state.db, session, &plan, state.config.orphan_grace_days).await?;
+    Ok(plan)
 }
 
 /// Loads the target and checks the actor may touch it. Ordered so a typo reads
@@ -111,6 +110,7 @@ async fn demote(
 async fn target_user(
     state: &AppState,
     session: &mut ClientSession,
+    forest: &Forest,
     actor: &User,
     id: &str,
 ) -> Result<User, AppError> {
@@ -118,7 +118,7 @@ async fn target_user(
     let target = users::find_by_id_in(&state.db, &mut *session, id)
         .await?
         .ok_or_else(|| AppError::not_found("no such user"))?;
-    if !users::may_manage(&state.db, session, actor, &target).await? {
+    if !forest.may_manage(&actor.id, &target.id) {
         return Err(AppError::forbidden(
             "that admin is not in your part of the chain, so you cannot change their account",
         ));
@@ -132,6 +132,7 @@ async fn target_user(
 async fn parent_for(
     state: &AppState,
     session: &mut ClientSession,
+    forest: &Forest,
     actor: &User,
     target: &User,
     requested: Option<&str>,
@@ -150,32 +151,26 @@ async fn parent_for(
             "an account cannot be promoted by itself",
         ));
     }
-    let parent = users::find_by_id_in(&state.db, &mut *session, parent_id)
-        .await?
-        .ok_or_else(|| AppError::validation("no such admin to place them under"))?;
-    if !parent.is_admin {
-        return Err(AppError::validation(
-            "they can only be placed under an admin",
-        ));
+    if !forest.is_admin(parent_id) {
+        // Only the refusal needs to know whether they exist at all.
+        return Err(
+            match users::find_by_id_in(&state.db, session, parent_id).await? {
+                Some(_) => AppError::validation("they can only be placed under an admin"),
+                None => AppError::validation("no such admin to place them under"),
+            },
+        );
     }
-    if !users::ancestor_ids(&state.db, &mut *session, &parent.id)
-        .await?
-        .contains(&actor.id)
-    {
+    if !forest.ancestors(parent_id).contains(&actor.id) {
         return Err(AppError::forbidden(
             "you can only place someone under yourself or an admin below you",
         ));
     }
-    if target.is_admin
-        && users::descendant_ids(&state.db, session, &target.id)
-            .await?
-            .contains(&parent.id)
-    {
+    if target.is_admin && forest.subtree(&target.id).iter().any(|id| id == parent_id) {
         return Err(AppError::validation(
             "that would put them under one of their own admins",
         ));
     }
-    Ok(parent.id)
+    Ok(parent_id.to_string())
 }
 
 /// One write to the parent pointer, since that is all the chain stores.
@@ -186,30 +181,46 @@ pub async fn set_user_admin(
     AppJson(body): AppJson<SetAdminRequest>,
 ) -> Result<Json<SetAdminResponse>, AppError> {
     let mut session = session(&state).await?;
+    let forest = users::admin_forest(&state.db, &mut session).await?;
     // Resigning is the one thing you may do to your own standing.
     if actor.id == id && !body.is_admin {
-        return resign(&state, &mut session, &actor, body.orphans).await;
+        return resign(&state, &mut session, &forest, &actor, body.orphans).await;
     }
-    let target = target_user(&state, &mut session, &actor, &id).await?;
+    let target = target_user(&state, &mut session, &forest, &actor, &id).await?;
     if !body.is_admin {
-        let (demoted, reparented) = demote(&state, &mut session, &target, body.orphans).await?;
+        let plan = demotion(
+            &state,
+            &mut session,
+            &forest,
+            &actor,
+            &target.id,
+            body.orphans,
+        )
+        .await?;
         return Ok(Json(SetAdminResponse {
             id: target.id,
             is_admin: false,
             promoted_by: None,
-            demoted,
-            reparented: reparented.len() as u64,
+            demoted: plan.demoted.len() as u64,
+            reparented: plan.moved(),
         }));
     }
     let parent = parent_for(
         &state,
         &mut session,
+        &forest,
         &actor,
         &target,
         body.promoted_by.as_deref(),
     )
     .await?;
-    users::grant_admin(&state.db, &mut session, &target.id, &parent).await?;
+    users::apply(
+        &state.db,
+        &mut session,
+        &chain::promote_under(&parent, std::slice::from_ref(&target.id)),
+        state.config.orphan_grace_days,
+    )
+    .await?;
     Ok(Json(SetAdminResponse {
         id: target.id,
         is_admin: true,
@@ -229,32 +240,19 @@ pub async fn delete_user(
     Query(params): Query<DeleteUserParams>,
 ) -> Result<Json<DeleteUserResponse>, AppError> {
     let mut session = session(&state).await?;
-    let target = target_user(&state, &mut session, &actor, &id).await?;
-    let (demoted, reparented) = match params.orphans {
-        // The count includes the target, which is being deleted, not demoted.
-        AdminOrphans::Demote => (
-            users::revoke_admin(&state.db, &mut session, &target.id)
-                .await?
-                .saturating_sub(1),
-            0,
-        ),
-        AdminOrphans::Reparent => (
-            0,
-            users::reparent_children(
-                &state.db,
-                &mut session,
-                &target.id,
-                target.promoted_by.as_deref(),
-            )
-            .await?
-            .len() as u64,
-        ),
-    };
-    let links = users::delete_with_cascade(
+    let forest = users::admin_forest(&state.db, &mut session).await?;
+    let target = target_user(&state, &mut session, &forest, &actor, &id).await?;
+    let plan = chain::plan(
+        &forest,
+        &actor.id,
+        std::slice::from_ref(&target.id),
+        BulkAction::Delete,
+        params.orphans,
+    );
+    let links = users::apply(
         &state.db,
         &mut session,
-        &target.id,
-        LinkDisposition::Orphan,
+        &plan,
         state.config.orphan_grace_days,
     )
     .await?;
@@ -264,8 +262,9 @@ pub async fn delete_user(
         orphaned: links.orphaned,
         links_deleted: links.deleted,
         grace_days: state.config.orphan_grace_days,
-        demoted,
-        reparented,
+        // The account is being removed, not demoted, so only the branch counts.
+        demoted: plan.demoted_below,
+        reparented: plan.moved(),
     }))
 }
 
@@ -277,9 +276,17 @@ const BULK_MAX: usize = 100;
 async fn bulk_targets(
     state: &AppState,
     session: &mut ClientSession,
+    forest: &Forest,
     actor: &User,
     ids: &[String],
 ) -> Result<Vec<User>, AppError> {
+    let found: std::collections::HashMap<String, User> =
+        users::find_many_in(&state.db, session, ids)
+            .await?
+            .into_iter()
+            .map(|user| (user.id.clone(), user))
+            .collect();
+
     // Deduplicated: a repeat would inflate the counts and delete twice.
     let mut seen = std::collections::HashSet::new();
     let mut targets = Vec::with_capacity(ids.len());
@@ -288,10 +295,23 @@ async fn bulk_targets(
         if !seen.insert(id.as_str()) {
             continue;
         }
-        // The same check the single-account routes make, refusal and all.
-        match target_user(state, &mut *session, actor, id).await {
-            Ok(target) => targets.push(target),
-            Err(err) => rejected.push(RejectedId {
+        // The same checks the single-account routes make, refusals and all.
+        let refusal = if actor.id == *id {
+            Some(AppError::validation(
+                "you cannot do that to your own account",
+            ))
+        } else if !found.contains_key(id) {
+            Some(AppError::not_found("no such user"))
+        } else if !forest.may_manage(&actor.id, id) {
+            Some(AppError::forbidden(
+                "that admin is not in your part of the chain, so you cannot change their account",
+            ))
+        } else {
+            None
+        };
+        match refusal {
+            None => targets.push(found[id].clone()),
+            Some(err) => rejected.push(RejectedId {
                 id: id.clone(),
                 code: err.code.to_string(),
                 message: err.message,
@@ -324,88 +344,30 @@ pub async fn bulk_users(
     let mut session = session(&state).await?;
     session.start_transaction().await?;
     // Inside the transaction: no promotion slips between check and write.
-    let mut targets = bulk_targets(&state, &mut session, &actor, &body.ids).await?;
+    let forest = users::admin_forest(&state.db, &mut session).await?;
+    let targets: Vec<String> = bulk_targets(&state, &mut session, &forest, &actor, &body.ids)
+        .await?
+        .into_iter()
+        .map(|target| target.id)
+        .collect();
 
-    if body.action != BulkAction::Promote {
-        // Depth is the number of admins above them, so the deepest sort first.
-        let mut depths = Vec::with_capacity(targets.len());
-        for target in &targets {
-            depths.push(
-                users::ancestor_ids(&state.db, &mut session, &target.id)
-                    .await?
-                    .len(),
-            );
-        }
-        let mut ordered: Vec<(usize, User)> = depths.into_iter().zip(targets).collect();
-        ordered.sort_by_key(|(depth, _)| std::cmp::Reverse(*depth));
-        targets = ordered.into_iter().map(|(_, target)| target).collect();
-    }
-
-    let mut result = BulkUsersResponse {
-        grace_days: state.config.orphan_grace_days,
-        ..Default::default()
-    };
-    // Who kept the flag: one admin climbing twice is not two admins.
-    let mut kept: std::collections::HashSet<String> = std::collections::HashSet::new();
-    for target in &targets {
-        // Re-read: an earlier row in this request may have moved them.
-        let Some(current) = users::find_by_id_in(&state.db, &mut session, &target.id).await? else {
-            continue;
-        };
-        match body.action {
-            BulkAction::Promote => {
-                let parent = parent_for(&state, &mut session, &actor, &current, None).await?;
-                users::grant_admin(&state.db, &mut session, &current.id, &parent).await?;
-            }
-            BulkAction::Demote => {
-                // A cascade may already have taken it; that is still success.
-                if current.is_admin {
-                    let (demoted, reparented) =
-                        demote(&state, &mut session, &current, body.orphans).await?;
-                    // `demote` counts the target, which `affected` reports.
-                    result.demoted += demoted.saturating_sub(1);
-                    kept.extend(reparented);
-                }
-            }
-            BulkAction::Delete => {
-                if current.is_admin {
-                    match body.orphans {
-                        AdminOrphans::Demote => {
-                            result.demoted +=
-                                users::revoke_admin(&state.db, &mut session, &current.id)
-                                    .await?
-                                    .saturating_sub(1);
-                        }
-                        AdminOrphans::Reparent => {
-                            kept.extend(
-                                users::reparent_children(
-                                    &state.db,
-                                    &mut session,
-                                    &current.id,
-                                    current.promoted_by.as_deref(),
-                                )
-                                .await?,
-                            );
-                        }
-                    }
-                }
-                // Never `Delete`: not an admin's call to break shared URLs.
-                let links = users::delete_with_cascade(
-                    &state.db,
-                    &mut session,
-                    &current.id,
-                    LinkDisposition::Orphan,
-                    state.config.orphan_grace_days,
-                )
-                .await?;
-                result.orphaned += links.orphaned;
-            }
-        }
-        result.affected += 1;
-    }
+    let plan = chain::plan(&forest, &actor.id, &targets, body.action, body.orphans);
+    let links = users::apply(
+        &state.db,
+        &mut session,
+        &plan,
+        state.config.orphan_grace_days,
+    )
+    .await?;
     session.commit_transaction().await?;
-    result.reparented = kept.len() as u64;
-    Ok(Json(result))
+
+    Ok(Json(BulkUsersResponse {
+        affected: targets.len() as u64,
+        demoted: plan.demoted_below,
+        reparented: plan.moved(),
+        orphaned: links.orphaned,
+        grace_days: state.config.orphan_grace_days,
+    }))
 }
 
 /// `RootAdmin`, not `AdminUser`: see the extractor for why the sign-in

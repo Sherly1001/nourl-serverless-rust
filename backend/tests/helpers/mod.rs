@@ -1,6 +1,7 @@
 #![allow(dead_code)] // each integration-test binary uses a subset of these helpers
 
 use std::sync::Arc;
+use std::sync::atomic::AtomicUsize;
 
 use backend::app::{AppState, build_app};
 use backend::config::Config;
@@ -24,7 +25,16 @@ pub async fn test_app_with_providers(
     providers: Providers,
 ) -> (axum::Router, mongodb::Database) {
     let db = test_db().await;
-    backend::db::ensure_indexes(&db).await.unwrap();
+    (app_for(&db, fallback, providers).await, db)
+}
+
+/// The router over an existing database, for the callers that build their own.
+async fn app_for(
+    db: &mongodb::Database,
+    fallback: Option<&str>,
+    providers: Providers,
+) -> axum::Router {
+    backend::db::ensure_indexes(db).await.unwrap();
     let config = Config {
         mongo_url: String::new(), // handlers never reconnect; only the pool in `db` is used
         db_name: db.name().to_string(),
@@ -37,14 +47,35 @@ pub async fn test_app_with_providers(
         // The production default, so tests assert on a real deployment's number.
         orphan_grace_days: 7,
     };
-    (
-        build_app(AppState {
-            db: db.clone(),
-            config,
-            providers: Arc::new(providers),
-        }),
-        db,
-    )
+    build_app(AppState {
+        db: db.clone(),
+        config,
+        providers: Arc::new(providers),
+    })
+}
+
+/// A router whose driver reports every command it sends against its own
+/// database, for the tests that are about how many. Transactions are commanded
+/// against `admin`, so what the counter holds is the request's own work.
+pub async fn counting_app() -> (axum::Router, mongodb::Database, Arc<AtomicUsize>) {
+    let url = std::env::var("MONGO_URL").unwrap_or_else(|_| "mongodb://127.0.0.1:27017".into());
+    let name = format!("nourl_test_{}", uuid::Uuid::new_v4().simple());
+    let counted = Arc::new(AtomicUsize::new(0));
+
+    let mut options = mongodb::options::ClientOptions::parse(&url).await.unwrap();
+    let (seen, against) = (counted.clone(), name.clone());
+    options.command_event_handler = Some(mongodb::event::EventHandler::callback(move |event| {
+        if let mongodb::event::command::CommandEvent::Started(started) = event
+            && started.db == against
+        {
+            seen.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }));
+    let db = mongodb::Client::with_options(options)
+        .unwrap()
+        .database(&name);
+    let app = app_for(&db, Some(FALLBACK), Providers::production()).await;
+    (app, db, counted)
 }
 
 /// The router with the real providers. Nothing in the suite drives a flow
