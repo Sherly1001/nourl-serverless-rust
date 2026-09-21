@@ -16,11 +16,8 @@ use crate::query::UserListParams;
 use crate::settings;
 use crate::users::{self, User};
 
-/// The account tree, in two parts.
-///
-/// Every admin comes back whole so the client can draw the chain, and the
-/// accounts with no flag are paged and searched underneath it. `AdminUser` is
-/// the whole authorisation check — see `auth::extract::AdminUser`.
+/// The account tree: every admin whole so the client can draw the chain, and
+/// the unflagged accounts paged underneath it.
 pub async fn list_users(
     State(state): State<AppState>,
     AdminUser(_): AdminUser,
@@ -37,13 +34,9 @@ pub async fn list_users(
     }))
 }
 
-/// A root is an admin nobody promoted — the one seeded directly in the
-/// database. Nothing sits above them, so nothing can restore what they give up.
-/// A session for one request's worth of work on the chain.
-///
-/// Every helper below takes one so that a caller which needs a transaction can
-/// start one on it. On its own it changes nothing: a session without a
-/// transaction reads and writes exactly as the bare database did.
+/// A session for one request's work on the chain. Every helper takes one so a
+/// caller can start a transaction on it; without one it reads and writes
+/// exactly as the bare database did.
 async fn session(state: &AppState) -> Result<ClientSession, AppError> {
     Ok(state.db.client().start_session().await?)
 }
@@ -52,10 +45,9 @@ fn is_root(user: &User) -> bool {
     user.is_admin && user.promoted_by.is_none()
 }
 
-/// Refuses acting on your own account. Resigning is the one exception and is
-/// handled separately in [`set_user_admin`]: everything else here — promoting
-/// yourself, moving yourself somewhere you were not put — is a way to change
-/// your own standing, which is exactly what the chain exists to prevent.
+/// Refuses acting on your own account: anything else would be a way to change
+/// your own standing. Resigning is the exception, handled in
+/// [`set_user_admin`].
 fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
     if actor.id == target_id {
         return Err(AppError::validation(
@@ -65,17 +57,9 @@ fn not_yourself(actor: &User, target_id: &str) -> Result<(), AppError> {
     Ok(())
 }
 
-/// Giving up your own flag.
-///
-/// Allowed, because an admin who no longer wants the responsibility should not
-/// have to ask permission for it, and whoever promoted them can put it back.
-/// The cascade applies as it does to any demotion: the branch below was vouched
-/// for through this account, so it goes too.
-///
-/// A root is refused. Nobody is above them to restore anything, so a root
-/// resigning would demote every admin on the system at once and leave the admin
-/// pages unreachable — recoverable only by editing the collection, which is
-/// where the root came from in the first place.
+/// Giving up your own flag, which needs nobody's permission — whoever granted
+/// it can grant it again. The branch below goes too, as in any demotion. A
+/// root is refused: it would demote everyone and lock the admin pages.
 async fn resign(
     state: &AppState,
     session: &mut ClientSession,
@@ -97,12 +81,9 @@ async fn resign(
     }))
 }
 
-/// Takes the flag off `target`, and does with the branch below them whatever
-/// `orphans` says. Returns how many lost the flag and how many kept it by
-/// moving up.
-///
-/// Re-parenting runs first: once the children hang from the target's own
-/// parent, revoking finds nothing below and takes only the target itself.
+/// Takes the flag off `target` and disposes of the branch per `orphans`.
+/// Re-parenting runs first: once the children hang elsewhere, revoking finds
+/// nothing below and takes only the target.
 async fn demote(
     state: &AppState,
     session: &mut ClientSession,
@@ -125,9 +106,8 @@ async fn demote(
     Ok((demoted, reparented))
 }
 
-/// Loads the target and checks the actor is allowed to touch it. Ordered so a
-/// typo'd id reads as "no such user" rather than a silent no-op reported as
-/// success, and so no write happens before every check has passed.
+/// Loads the target and checks the actor may touch it. Ordered so a typo reads
+/// as "no such user" and no write happens before every check has passed.
 async fn target_user(
     state: &AppState,
     session: &mut ClientSession,
@@ -146,25 +126,9 @@ async fn target_user(
     Ok(target)
 }
 
-/// Which admin `target` will hang under, and whether the actor is allowed to
-/// put them there. Returns the parent's id.
-///
-/// An omitted parent means *leave them where they are*: for someone who is
-/// already an admin that is their current parent, and for everyone else it is
-/// the caller, which is the ordinary promotion. Defaulting to the caller in
-/// both cases would make a bare `{"is_admin": true}` quietly re-parent an
-/// existing admin — and their whole branch — onto whoever sent it, so a stray
-/// toggle of an admin switch would restructure the tree. Moving is worth
-/// asking for explicitly.
-///
-/// Naming a parent is that explicit move, and moves are the operation that can
-/// break the tree, so each way of breaking it is refused separately:
-///
-/// - under an ordinary account, which would leave an admin outside the chain;
-/// - under themselves, or under one of their own descendants, which would cut
-///   the whole subtree loose from the root;
-/// - under an admin the caller does not control, which would either graft the
-///   target somewhere unreachable or quietly hand it to a stranger.
+/// Which admin `target` hangs under, and whether the actor may put them there.
+/// Omitting a parent leaves an existing admin where they are, so a bare
+/// `{"is_admin": true}` cannot restructure the tree by accident.
 async fn parent_for(
     state: &AppState,
     session: &mut ClientSession,
@@ -214,8 +178,7 @@ async fn parent_for(
     Ok(parent.id)
 }
 
-/// Grants, moves, or revokes — all three are one write to the parent pointer,
-/// because "who vouches for them" is the only thing the chain stores.
+/// One write to the parent pointer, since that is all the chain stores.
 pub async fn set_user_admin(
     State(state): State<AppState>,
     AdminUser(actor): AdminUser,
@@ -256,17 +219,9 @@ pub async fn set_user_admin(
     }))
 }
 
-/// Removes the account, orphaning its links rather than destroying them.
-///
-/// An admin never gets the choice the account's owner gets: someone may be
-/// following those links, and taking a stranger's account off the system is not
-/// a reason to break every URL they ever shared. Only the owner may ask for
-/// [`LinkDisposition::Delete`], via `DELETE /api/auth/me`.
-///
-/// The demotion runs first and for a stronger reason than it does on its own:
-/// the account those admins hang from is about to stop existing, so leaving
-/// `promoted_by` pointing at it would strand the whole branch outside the tree,
-/// where nothing walking upward could reach them again.
+/// Removes the account, orphaning its links: only the owner may ask for
+/// [`LinkDisposition::Delete`]. The demotion runs first, or `promoted_by`
+/// would point at an account that no longer exists.
 pub async fn delete_user(
     State(state): State<AppState>,
     AdminUser(actor): AdminUser,
@@ -276,8 +231,7 @@ pub async fn delete_user(
     let mut session = session(&state).await?;
     let target = target_user(&state, &mut session, &actor, &id).await?;
     let (demoted, reparented) = match params.orphans {
-        // Counts the target as well, but the target is being deleted rather
-        // than demoted, so only the branch below them is worth reporting.
+        // The count includes the target, which is being deleted, not demoted.
         AdminOrphans::Demote => (
             users::revoke_admin(&state.db, &mut session, &target.id)
                 .await?
@@ -315,25 +269,18 @@ pub async fn delete_user(
     }))
 }
 
-/// The cap on one request. The list endpoint never returns more than a hundred
-/// rows in its paged half, so a longer selection is not something anybody
-/// ticked by hand — the admin half can be larger, and a client that ticks all
-/// of it sends more than one request.
+/// The cap on one request; a client ticking more than this sends several.
 const BULK_MAX: usize = 100;
 
-/// Resolves every named account, collecting the refusals rather than stopping
-/// at the first.
-///
-/// A selection is judged as a unit, so naming only the first bad id would have
-/// the caller fixing them one round trip at a time.
+/// Resolves every named account, collecting refusals rather than stopping at
+/// the first — otherwise the caller fixes them one round trip at a time.
 async fn bulk_targets(
     state: &AppState,
     session: &mut ClientSession,
     actor: &User,
     ids: &[String],
 ) -> Result<Vec<User>, AppError> {
-    // Deduplicated, so a repeated id cannot make the counts claim more than
-    // happened — and cannot try to delete the same account twice.
+    // Deduplicated: a repeat would inflate the counts and delete twice.
     let mut seen = std::collections::HashSet::new();
     let mut targets = Vec::with_capacity(ids.len());
     let mut rejected = Vec::new();
@@ -341,8 +288,7 @@ async fn bulk_targets(
         if !seen.insert(id.as_str()) {
             continue;
         }
-        // The same check the single-account routes make, refusal and all: own
-        // account, unknown id, someone else's branch.
+        // The same check the single-account routes make, refusal and all.
         match target_user(state, &mut *session, actor, id).await {
             Ok(target) => targets.push(target),
             Err(err) => rejected.push(RejectedId {
@@ -358,26 +304,9 @@ async fn bulk_targets(
     Err(AppError::validation("some of those accounts cannot be changed").on_rejected(rejected))
 }
 
-/// Promote, demote or delete a selection in one request.
-///
-/// The per-row alternative the Users page used to send had each call able to
-/// move the tree under the next one: demoting a parent takes its children with
-/// it, so the call for a child could arrive to find nothing left to demote and
-/// report a failure for work that was already done.
-///
-/// Two rules make that go away. The whole thing runs in one transaction — every
-/// id resolved and permission-checked before any write, and the writes
-/// committed together — so a selection is applied whole or not at all, and half
-/// an admin decision is not a state anybody has to reason about. And the
-/// targets are handled deepest-first, so a cascade never reaches a row still
-/// waiting its turn; that is about the *counts* rather than the outcome, since
-/// each row is re-read before it is acted on. Handling a parent first would
-/// have its re-parenting move children that the selection then demotes anyway,
-/// reporting rows the admin ticked as though they were collateral.
-///
-/// A transient abort surfaces as an error for the caller to retry. Bulk actions
-/// are rare and human-triggered, so "that failed, try again" is honest, and a
-/// retry loop is a concurrency primitive worth its own change.
+/// Promote, demote or delete a selection in one transaction: checked whole,
+/// written whole. Deepest-first, which decides the counts rather than the
+/// outcome — a parent first would report ticked rows as collateral.
 pub async fn bulk_users(
     State(state): State<AppState>,
     AdminUser(actor): AdminUser,
@@ -394,8 +323,7 @@ pub async fn bulk_users(
 
     let mut session = session(&state).await?;
     session.start_transaction().await?;
-    // Inside the transaction, so a concurrent promotion cannot slip between the
-    // check and the write it was meant to guard.
+    // Inside the transaction: no promotion slips between check and write.
     let mut targets = bulk_targets(&state, &mut session, &actor, &body.ids).await?;
 
     if body.action != BulkAction::Promote {
@@ -433,14 +361,11 @@ pub async fn bulk_users(
                 users::grant_admin(&state.db, &mut session, &current.id, &parent).await?;
             }
             BulkAction::Demote => {
-                // A cascade from higher in the selection may already have taken
-                // the flag. Nothing left to do is success: the state the admin
-                // asked for is the state it is in.
+                // A cascade may already have taken it; that is still success.
                 if current.is_admin {
                     let (demoted, reparented) =
                         demote(&state, &mut session, &current, body.orphans).await?;
-                    // `demote` counts the target itself, which `affected`
-                    // already reports.
+                    // `demote` counts the target, which `affected` reports.
                     result.demoted += demoted.saturating_sub(1);
                     kept.extend(reparented);
                 }
@@ -467,8 +392,7 @@ pub async fn bulk_users(
                         }
                     }
                 }
-                // Never `LinkDisposition::Delete`: an admin removing somebody
-                // else's account does not get to break every URL they shared.
+                // Never `Delete`: not an admin's call to break shared URLs.
                 let links = users::delete_with_cascade(
                     &state.db,
                     &mut session,
@@ -496,15 +420,13 @@ pub async fn get_settings(
     Ok(Json(settings::load(&state.db).await?.to_admin_view()))
 }
 
-/// Writes the settings and answers with the same view `get_settings` returns,
-/// so the page re-renders from what was stored rather than from what it sent.
+/// Answers with `get_settings`'s view, so the page re-renders from storage.
 pub async fn update_settings(
     State(state): State<AppState>,
     RootAdmin(_): RootAdmin,
     AppJson(body): AppJson<UpdateSettingsRequest>,
 ) -> Result<Json<AdminSettings>, AppError> {
-    // Merged against what is stored, because the request cannot carry the
-    // secrets — see `MethodConfig::merged`.
+    // The request cannot carry the secrets — see `MethodConfig::merged`.
     let merged = settings::load(&state.db).await?.merged(&body);
     settings::save(&state.db, &merged).await?;
     Ok(Json(merged.to_admin_view()))

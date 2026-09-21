@@ -39,8 +39,7 @@ pub async fn register(
     validate_username(&body.username).map_err(|e| AppError::validation(e).on_field("username"))?;
     validate_password(&body.password).map_err(|e| AppError::validation(e).on_field("password"))?;
 
-    // Friendlier than waiting for the unique index to reject it; the index is
-    // still what actually prevents a race between two simultaneous signups.
+    // Friendlier than the index, which is still what settles a race.
     if users::find_by_username(&state.db, &body.username)
         .await?
         .is_some()
@@ -48,8 +47,7 @@ pub async fn register(
         return Err(AppError::conflict("that username is already taken").on_field("username"));
     }
 
-    // password::hash is the only thing that hashes; users::create stores
-    // whatever it is handed, verbatim.
+    // `users::create` stores whatever it is handed, verbatim.
     let hash = password::hash(&body.password)?;
     let user = users::create(&state.db, NewUser::with_password_hash(&body.username, hash)).await?;
     logged_in(&state, jar, &user)
@@ -64,8 +62,7 @@ pub async fn login(
         return Err(AppError::forbidden("password login is disabled"));
     }
 
-    // One message for both "no such user" and "wrong password", so the
-    // endpoint cannot be used to enumerate accounts.
+    // One message for both, so this cannot enumerate accounts.
     let invalid = || AppError::unauthorized("incorrect username or password");
     let user = users::find_by_username(&state.db, &body.username)
         .await?
@@ -82,16 +79,15 @@ pub async fn me(CurrentUser(user): CurrentUser) -> Json<UserInfo> {
     Json(user.to_info())
 }
 
-/// `username` is editable, but unlike the free-text fields it has to clear the
-/// same validation and uniqueness bar as registration. A rename does not touch
-/// `token_version`: sessions are keyed on the user id, so they stay valid.
+/// `username` must clear registration's bar. A rename leaves `token_version`
+/// alone: sessions key on the id, so they stay valid.
 pub async fn update_me(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     AppJson(mut body): AppJson<UpdateProfileRequest>,
 ) -> Result<Json<UserInfo>, AppError> {
     match body.username.as_deref() {
-        // Re-sending the current username is a no-op rather than a self-collision.
+        // Re-sending the current username is a no-op, not a self-collision.
         Some(name) if name == user.username => body.username = None,
         Some(name) => {
             validate_username(name).map_err(|e| AppError::validation(e).on_field("username"))?;
@@ -103,10 +99,7 @@ pub async fn update_me(
         }
         None => {}
     }
-    // Both are echoed back to other people — the avatar into an `<img src>` on
-    // the admin list, the email into the rules that decide which account an
-    // OAuth identity joins — so neither is taken on trust from the page that
-    // happens to be checking them too.
+    // Both are echoed to other people, so neither is taken on trust.
     if let Some(email) = body.email.as_deref().filter(|value| !value.is_empty()) {
         validate_email(email).map_err(|e| AppError::validation(e).on_field("email"))?;
     }
@@ -121,9 +114,8 @@ pub async fn update_me(
     Ok(Json(reloaded.to_info()))
 }
 
-/// Clears the cookie *and* bumps `token_version`, so tokens already handed out
-/// — on other devices, or copied out of a browser — stop working too. With a
-/// 60-day expiry, clearing the cookie alone would revoke nothing.
+/// Clears the cookie and bumps `token_version`: with a 60-day expiry, clearing
+/// the cookie alone would revoke nothing.
 pub async fn logout(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -134,13 +126,9 @@ pub async fn logout(
     Ok((jar, Json(serde_json::json!({"logged_out": true}))).into_response())
 }
 
-/// Sets or rotates the password, revoking every outstanding token, then
-/// immediately re-authenticates the caller so the device doing the change stays
-/// signed in while other devices are logged out.
-///
-/// An account with no password yet — created through an OAuth provider — sets
-/// its first one here with no `current_password`: there is no secret to prove,
-/// and the session cookie already proves ownership.
+/// Rotates the password, revoking outstanding tokens, then re-authenticates
+/// this device so only the others are logged out. A provider-only account sets
+/// its first password here with no `current_password` to prove.
 pub async fn change_password(
     State(state): State<AppState>,
     jar: CookieJar,
@@ -168,37 +156,22 @@ pub async fn change_password(
     logged_in(&state, jar, &reloaded)
 }
 
-/// Public: the login page needs to know which buttons to render before anyone
-/// is authenticated.
+/// Public: the login page renders from it before anyone is authenticated.
 pub async fn methods(State(state): State<AppState>) -> Result<Json<AuthMethods>, AppError> {
     Ok(Json(settings::load(&state.db).await?.methods()))
 }
 
-/// Closes the caller's own account.
-///
-/// The one place [`LinkDisposition::Delete`] is allowed: only the person who
-/// made the links gets to decide that nobody should be able to follow them any
-/// more. An admin deleting someone else always orphans them instead.
-///
-/// Refused while the account holds the admin flag. Deleting an admin cascades
-/// the demotion down their branch, and doing that on the way out gives nobody a
-/// chance to notice. Resign first — `PUT /api/admin/users/{own id}` with
-/// `is_admin: false` — and then close the account, or have another admin do
-/// both. A root cannot resign either, so for them the flag comes off in the
-/// database, which is where it went on.
+/// The one place [`LinkDisposition::Delete`] is allowed: only the author may
+/// decide nobody should follow their links again. Refused while the account
+/// holds the admin flag — resign first, so the cascade is nobody's surprise.
 pub async fn delete_me(
     State(state): State<AppState>,
     jar: CookieJar,
     CurrentUser(user): CurrentUser,
     AppJson(body): AppJson<DeleteAccountRequest>,
 ) -> Result<Response, AppError> {
-    // Before anything else, including the check below. Holding the session is
-    // not enough for something irreversible, and a caller who cannot prove who
-    // they are gets told that and nothing else — not what standing the account
-    // has, nor what it would have to give up first.
-    //
-    // An account with no password has nothing to prove, so for those the
-    // session is the whole check, exactly as in [`change_password`].
+    // Before the admin check: someone who cannot prove who they are learns
+    // nothing about the account's standing.
     if let Some(stored) = user.hash_passwd.as_deref() {
         let current = body.current_password.as_deref().ok_or_else(|| {
             AppError::unauthorized("current password is required").on_field("current_password")

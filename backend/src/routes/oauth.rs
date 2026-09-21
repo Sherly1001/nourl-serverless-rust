@@ -1,9 +1,5 @@
-//! The two ends of an OAuth sign-in: away to the provider, and back again.
-//!
-//! Both answer with a redirect whatever happens. The browser is mid-navigation
-//! through a chain the provider started, and an error document rendered into
-//! that navigation is a dead end — the login page is the only place with
-//! anything useful to say.
+//! Both ends of an OAuth sign-in, always answering with a redirect: the
+//! browser is mid-navigation, where an error document is a dead end.
 
 use axum::Json;
 use axum::extract::{Path, Query, State};
@@ -33,12 +29,10 @@ pub struct CallbackQuery {
     pub error: Option<String>,
 }
 
-/// Everything that can go wrong on the way in, as the code the login page
-/// knows how to word. The provider's own message is never forwarded: it is not
-/// ours to show, and it has been known to echo request parameters back.
+/// Failures as codes the login page words itself. A provider's own message is
+/// never forwarded — it has been known to echo request parameters back.
 fn refuse(jar: CookieJar, config: &crate::config::Config, code: &str) -> Response {
-    // Only when there is one to clear. A browser that never started a flow has
-    // no reason to be handed a `Set-Cookie` for a cookie it does not hold.
+    // No `Set-Cookie` for a browser that never started a flow.
     let jar = match jar.get(state::COOKIE) {
         Some(_) => jar.add(state::cleared(config)),
         None => jar,
@@ -46,13 +40,9 @@ fn refuse(jar: CookieJar, config: &crate::config::Config, code: &str) -> Respons
     (jar, found(&format!("/#/login?error={code}"))).into_response()
 }
 
-/// The session, if the cookie names a live one.
-///
-/// A rejected session — revoked, expired, or naming an account that is gone —
-/// reads as anonymous here rather than as a 401. Elsewhere that downgrade
-/// would be wrong, but this flow can only ever reach the provider identity's
-/// own account: without a session there is nothing to link *to*, so the worst
-/// it can do is sign somebody in as themselves.
+/// A rejected session reads as anonymous rather than 401. Safe only here:
+/// without one there is nothing to link to, so the worst this can do is sign
+/// somebody in as themselves.
 fn session_of(session: Result<OptionalUser, AppError>) -> Option<User> {
     session.ok().and_then(|OptionalUser(user)| user)
 }
@@ -74,9 +64,8 @@ pub async fn start(
     if !usable(&cfg) {
         return refuse(jar, &app.config, "oauth_disabled");
     }
-    // The flag rides in the signed cookie rather than the query string: it is
-    // what decides between "sign me in" and "attach this identity to the
-    // account I am holding", and a caller must not get to choose.
+    // In the signed cookie, not the query: a caller must not choose between
+    // signing in and attaching an identity to the account they hold.
     let link = session_of(session).is_some();
     let Ok((nonce, cookie)) = state::issue(&app.config, link) else {
         return refuse(jar, &app.config, "oauth_disabled");
@@ -124,8 +113,7 @@ pub async fn callback(
 
     let client = app.providers.get(kind);
     let redirect_uri = redirect_uri(&app, kind);
-    // The access token lives for the rest of this function and is never
-    // stored, never logged, and never sent anywhere but the provider.
+    // Never stored, logged, or sent anywhere but the provider.
     let Ok(token) = client.exchange(&cfg, &redirect_uri, code).await else {
         return refuse(jar, &app.config, "oauth_exchange");
     };
@@ -147,9 +135,8 @@ pub async fn callback(
     }
 }
 
-/// Which account this profile belongs to, creating one if it belongs to
-/// nobody. The rule itself is [`decide`]; this only does the lookups it needs
-/// and the writes it asks for.
+/// Which account this profile belongs to, creating one if none. [`decide`]
+/// holds the rule; this only does the lookups and writes it asks for.
 async fn resolve(
     app: &AppState,
     kind: ProviderKind,
@@ -160,8 +147,7 @@ async fn resolve(
     let existing = users::find_by_provider(&app.db, kind, &profile.id)
         .await
         .map_err(|_| "oauth_exchange")?;
-    // Only a verified address may be matched: an unverified one is a claim
-    // anybody could make about somebody else's inbox.
+    // Unverified is a claim anybody could make about somebody else's inbox.
     let by_email = match (profile.email_verified, profile.email.as_deref()) {
         (true, Some(email)) => users::find_by_email(&app.db, email)
             .await
@@ -189,10 +175,8 @@ async fn resolve(
     }
 }
 
-/// The unique index on the provider field is the last word on who holds an
-/// identity: two callbacks racing to claim the same one both pass [`decide`],
-/// and the loser is told the same thing it would have been told a moment
-/// later.
+/// The unique index has the last word: two callbacks racing both pass
+/// [`decide`], and the loser hears what it would have heard a moment later.
 async fn link_identity(
     app: &AppState,
     id: &str,
@@ -210,11 +194,8 @@ async fn link_identity(
         })
 }
 
-/// A brand-new account, under the first derived username nobody has taken.
-///
-/// Running out of candidates is a refusal rather than a panic: fifty names
-/// derived from the same handle are all taken only if something is very wrong,
-/// and the browser still has to be sent somewhere.
+/// A new account under the first free derived username. Running out is a
+/// refusal, not a panic — the browser still has to be sent somewhere.
 async fn create(
     app: &AppState,
     kind: ProviderKind,
@@ -234,8 +215,7 @@ async fn create(
     Err("oauth_exchange")
 }
 
-/// Re-read after the write, so the session is minted from what is actually
-/// stored rather than from what we believe we stored.
+/// Re-read after the write, so the session is minted from what is stored.
 async fn reload(app: &AppState, id: &str) -> Result<User, &'static str> {
     users::find_by_id(&app.db, id)
         .await
@@ -243,8 +223,7 @@ async fn reload(app: &AppState, id: &str) -> Result<User, &'static str> {
         .ok_or("oauth_exchange")
 }
 
-/// The same session cookie a password login issues, so revocation, expiry and
-/// `token_version` all keep working unchanged.
+/// The same cookie a password login issues, so revocation still works.
 fn sign_in(app: &AppState, jar: CookieJar, user: &User) -> Result<Response, AppError> {
     let token = jwt::encode(
         &app.config.jwt_secret,
@@ -252,9 +231,7 @@ fn sign_in(app: &AppState, jar: CookieJar, user: &User) -> Result<Response, AppE
         user.token_version,
         app.config.session_days,
     )?;
-    // `/#/`, not `/`: Facebook hangs a `#_=_` fragment on the callback URL, and
-    // a redirect naming no fragment of its own leaves it in place — where the
-    // router reads it as a route nobody has and renders the 404 page.
+    // `/#/`, not `/`: Facebook's `#_=_` fragment survives and routes to 404.
     Ok((jar.add(cookie::session(&app.config, token)), found("/#/")).into_response())
 }
 
@@ -266,20 +243,15 @@ fn method(settings: &settings::AuthSettings, kind: ProviderKind) -> MethodConfig
     }
 }
 
-/// Enabled is not enough: without both halves of the credential the provider
-/// would answer the redirect with its own error page.
+/// Enabled is not enough: without credentials the provider shows its error.
 fn usable(cfg: &MethodConfig) -> bool {
     cfg.enabled
         && cfg.client_id.as_deref().is_some_and(|v| !v.is_empty())
         && cfg.client_secret.as_deref().is_some_and(|v| !v.is_empty())
 }
 
-/// Configured rather than taken from the request: the value has to match what
-/// was registered at the provider, and a `Host` header is not ours to trust.
-///
-/// The fallback is production, not localhost. An unset `PUBLIC_BASE_URL` is a
-/// misconfiguration either way, and the one that sends live users to a
-/// callback on someone's laptop is the worse of the two.
+/// Configured, not taken from `Host`, which is not ours to trust. The fallback
+/// is production: an unset value that sends live users to a laptop is worse.
 fn redirect_uri(app: &AppState, kind: ProviderKind) -> String {
     let base = app
         .config
@@ -293,14 +265,9 @@ fn redirect_uri(app: &AppState, kind: ProviderKind) -> String {
     )
 }
 
-/// `DELETE /api/auth/{provider}` — takes an identity off the caller's account.
-///
-/// Refused when it is the last way in: the account would still exist, with
-/// links attached and nobody able to reach it. The same lockout rule the
-/// settings page enforces for login methods.
-///
-/// Answers with JSON, unlike the two routes above — it is called by `fetch`,
-/// so there is no navigation to land anywhere.
+/// Takes an identity off the caller's account, refused when it is the last way
+/// in — the account would outlive anyone's ability to reach it. JSON, not a
+/// redirect: this one is called by `fetch`.
 pub async fn disconnect(
     State(app): State<AppState>,
     CurrentUser(user): CurrentUser,

@@ -14,9 +14,8 @@ pub fn found(location: &str) -> Response {
         .into_response()
 }
 
-/// Not-found redirect target: explicit NOTFOUND_FALLBACK_URL override, else
-/// the request's own host — x-forwarded-host (viewer host, set by a
-/// CloudFront Function) before host (rewritten by API Gateway).
+/// `NOTFOUND_FALLBACK_URL`, else the request's own host — `x-forwarded-host`
+/// (the viewer's) before `host` (rewritten by API Gateway).
 pub fn fallback_url(config: &Config, headers: &HeaderMap) -> String {
     if let Some(url) = &config.notfound_fallback_url {
         return url.clone();

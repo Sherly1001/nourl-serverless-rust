@@ -14,11 +14,8 @@ use crate::extract::AppJson;
 use crate::query::ListParams;
 use crate::users::{self, User};
 
-/// What a request says about a link's expiry.
-///
-/// Three answers rather than two, because `Option<String>` on the wire cannot
-/// tell "I am not talking about the expiry" from "remove it" — and the row
-/// editor, which sends every field on every save, needs both.
+/// Three answers, not two: `Option<String>` cannot tell "not talking about the
+/// expiry" from "remove it", and the row editor sends every field every save.
 #[derive(Debug)]
 enum Expiry {
     /// The field was absent: whatever is stored stays.
@@ -45,18 +42,9 @@ fn parse_expiry(raw: Option<&str>) -> Result<Expiry, AppError> {
     Ok(Expiry::At(bson::DateTime::from_millis(millis)))
 }
 
-/// Whether `user` may take `existing` off whoever has it.
-///
-/// Unowned is nobody's, so any admin may claim it. A link that belongs to
-/// somebody is theirs, and taking it is reaching into their affairs — allowed
-/// only where an admin's reach already runs, which is their own branch of the
-/// chain. That is the same rule [`crate::users::may_manage`] enforces for the
-/// accounts themselves, and claiming is the one place a link could otherwise
-/// escape it.
-///
-/// An owner id pointing at an account that no longer exists reads as unowned:
-/// deleting an account orphans its links, so this can only be a document left
-/// behind by something else, and nobody is wronged by taking it.
+/// Whether `user` may take `existing` off whoever has it. Unowned is anyone's;
+/// an owned link follows [`crate::users::may_manage`], so an admin reaches only
+/// down their own branch. An owner id pointing nowhere reads as unowned.
 async fn may_claim(
     state: &AppState,
     session: &mut mongodb::ClientSession,
@@ -75,8 +63,7 @@ async fn may_claim(
     users::may_manage(&state.db, session, user, &owner).await
 }
 
-/// Legacy documents can carry an explicit `owner: null`, which means unowned
-/// just as an absent field does.
+/// A legacy `owner: null` means unowned, as an absent field does.
 fn owner_id(doc: &Document) -> Option<&str> {
     match doc.get("owner") {
         Some(Bson::String(id)) => Some(id.as_str()),
@@ -84,8 +71,7 @@ fn owner_id(doc: &Document) -> Option<&str> {
     }
 }
 
-/// Someone else's code. The message must stay generic — revealing the target
-/// url here would turn the shortener into a lookup service for private links.
+/// Stays generic: naming the url would make this a lookup service.
 fn owned_error(code: &str) -> AppError {
     AppError::forbidden(format!(
         "code '{code}' is already taken by a registered user"
@@ -93,18 +79,9 @@ fn owned_error(code: &str) -> AppError {
     .on_field("code")
 }
 
-/// A code that is taken, by someone the caller is allowed to write over: their
-/// own link, or — for an admin — anyone's.
-///
-/// The whole link rides along rather than just its url, because a client
-/// offering to replace it has to show what is being replaced, and who it
-/// belongs to. Only ever reached after [`may_write`] has passed, which is what
-/// keeps it out of the answer someone gets for a link that is not theirs to
-/// see.
-///
-/// The message names the flag because it is read by API callers alone — the
-/// web UI reads `conflict` and asks the question in a dialog — and an
-/// unchanged request sent again returns this same error.
+/// A taken code, reached only after [`may_write`] passes — which is what keeps
+/// the attached link out of an answer the caller may not see. The message names
+/// the flag because only API callers read it, and a repeat returns this again.
 fn code_in_use(entry: UrlEntry, yours: bool) -> AppError {
     let message = if yours {
         format!(
@@ -122,8 +99,7 @@ fn code_in_use(entry: UrlEntry, yours: bool) -> AppError {
         .on_conflict(entry)
 }
 
-/// Who may write to an existing document: nobody owns it, the caller owns it,
-/// or the caller is an admin.
+/// Nobody owns it, the caller owns it, or the caller is an admin.
 fn may_write(existing: &Document, user: Option<&User>) -> bool {
     match owner_id(existing) {
         None => true,
@@ -151,9 +127,8 @@ async fn fetch_entry(state: &AppState, code: &str) -> Result<UrlEntry, AppError>
     bson::from_document(doc).map_err(AppError::internal)
 }
 
-/// `conflict_on_own` separates "create" from "edit": re-creating a code you
-/// already own is a mistake worth a 409, while a PUT at that same code is the
-/// edit itself.
+/// `conflict_on_own` separates create from edit: re-creating a code you own is
+/// a mistake worth a 409, while a PUT at it is the edit itself.
 async fn upsert(
     state: &AppState,
     code: &str,
@@ -174,14 +149,11 @@ async fn upsert(
         .as_ref()
         .and_then(|doc| owner_id(doc).map(str::to_string));
     if let Some(existing) = &existing {
-        // Permission first, so a link that is not the caller's to touch answers
-        // 403 with nothing in it rather than a 409 describing it.
+        // Permission first: not-yours answers 403 with nothing in it.
         if !may_write(existing, user) {
             return Err(owned_error(code));
         }
-        // Writing to a link and taking it are different powers: `may_write`
-        // lets any admin fix a broken destination, but the owner has to be
-        // somebody the caller actually manages before it changes hands.
+        // Writing and taking are different powers; only the second needs this.
         if claiming {
             let mut session = state.db.client().start_session().await?;
             let allowed = match user {
@@ -195,9 +167,7 @@ async fn upsert(
                 .on_field("claim"));
             }
         }
-        // Creating over a link that already exists replaces it, which is worth
-        // asking about — but only when someone owns it. A link nobody owns is
-        // already deletable by anyone, so the question would be rhetorical.
+        // Only worth asking when someone owns it; an unowned link is anyone's.
         if conflict_on_own && !overwrite && existing_owner.is_some() {
             let yours = existing_owner.as_deref() == user.map(|u| u.id.as_str());
             return Err(code_in_use(fetch_entry(state, code).await?, yours));
@@ -234,18 +204,15 @@ async fn upsert(
         }
     }
 
-    // Stamped on every write, including the one that creates the link, so an
-    // edit is always distinguishable from the original.
+    // Stamped on creation too, so an edit is distinguishable from the original.
     let mut set = doc! {
         "code": &body.code,
         "url": &body.url,
         "updated_at": bson::DateTime::now(),
     };
-    // `$unset` rather than a stored null: the TTL index is partial on
-    // `expires_at` existing, and a null in it is a date the reaper cannot read.
+    // `$unset`, not null: the TTL index is partial on the field existing.
     let mut unset = Document::new();
-    // The last visit goes with the count it belongs to — a date with no visits
-    // behind it describes nothing.
+    // The last visit goes with the count it belongs to.
     if body.reset_hits.unwrap_or(false) {
         set.insert("hits", 0);
         unset.insert("last_hit_at", "");
@@ -259,21 +226,12 @@ async fn upsert(
             set.insert("expires_at", at);
         }
     }
-    // Ownership. A brand new link always belongs to whoever made it, which
-    // `$setOnInsert` covers. *Creating* over a link nobody owns claims it as
-    // well — `$setOnInsert` does not fire when the document already exists, so
-    // without this the author would overwrite the link and then not find it in
-    // their own list. Editing (PUT) never reassigns ownership, so an admin
-    // fixing someone's link does not take it over, and an anonymous write
-    // leaves `owner` absent so unowned links stay freely mutable.
-    //
-    // `owner` must appear in at most one of the two operators: naming it in
-    // both makes Mongo reject the update for a conflicting path.
+    // `$setOnInsert` covers a new link but does not fire over an existing one,
+    // so creating over an unowned link claims it here instead. Editing never
+    // reassigns. `owner` may appear in only one operator, or Mongo refuses.
     let mut on_insert = doc! {"created_at": bson::DateTime::now()};
     if let Some(user) = user {
-        // `claim` is the third way to become the owner, and the only one that
-        // takes a link off somebody: it is asked for explicitly, and only
-        // reached once `may_write` has allowed the write at all.
+        // The only way that takes a link off somebody, so it is asked for.
         if claiming || (conflict_on_own && existing_owner.is_none()) {
             set.insert("owner", &user.id);
         } else {
@@ -328,18 +286,9 @@ pub async fn delete_url(
     }))
 }
 
-/// Takes ownership of a link.
-///
-/// Unowned is nobody's: any admin may claim one, and the deadline comes off
-/// with the same write. An orphaned code carries an expiry only because its
-/// owner's account went away — the grace period exists so somebody can rescue
-/// it, and leaving the deadline on a link that has just been rescued would let
-/// it die anyway. A deliberate expiry on an anonymous link is lost the same
-/// way: `delete_with_cascade` stores the two as one field, so there is nothing
-/// here to tell them apart.
-///
-/// A link that has an owner is taken off them, which [`may_claim`] allows only
-/// inside the caller's own branch of the chain.
+/// Takes ownership. Claiming an unowned link clears its expiry — that deadline
+/// is what an orphan is dying of, and a deliberate one is indistinguishable.
+/// An owned link is taken off somebody, which [`may_claim`] governs.
 pub async fn claim_url(
     State(state): State<AppState>,
     AdminUser(user): AdminUser,
@@ -378,10 +327,8 @@ pub async fn list_urls(
     Query(params): Query<std::collections::HashMap<String, String>>,
 ) -> Result<Json<UrlListResponse>, AppError> {
     let parsed = ListParams::from_query(&params)?;
-    // Admins see every link; everyone else sees only their own. `mine=true`
-    // asks for the ordinary view regardless, which is what the account page
-    // needs: closing an account takes its owner's links with it, and for an
-    // admin the unscoped total is the whole site's.
+    // Admins see every link. `mine=true` asks for the ordinary view anyway,
+    // which is what the account page needs.
     let mine = params.get("mine").is_some_and(|v| v == "true");
     let owner = (!user.is_admin || mine).then_some(user.id.as_str());
     let filter = parsed.filter(owner);
