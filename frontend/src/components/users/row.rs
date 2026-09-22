@@ -11,6 +11,7 @@ use crate::components::avatar::{Avatar, usable_url};
 use crate::components::tooltip::Tooltip;
 use crate::dropdown::dismiss_on_outside_click;
 use crate::list::short_datetime;
+use crate::router::with_query;
 
 use super::tree::{may_manage, may_move_under, may_resign};
 
@@ -24,6 +25,30 @@ pub fn row_key(user: &AdminUserInfo, branching: bool, matched: bool) -> String {
         user.admin_level.unwrap_or(-1),
         user.promoted_by.as_deref().unwrap_or(""),
     )
+}
+
+/// The hash carries the username rather than the id, so the chip renders before
+/// any lookup.
+pub fn links_link(username: &str) -> String {
+    with_query("#/urls", &[("owner".to_string(), username.to_string())])
+}
+
+/// Zero stays plain text: a link to a guaranteed-empty table is a dead end.
+fn links_cell(username: String, count: u64) -> impl IntoView {
+    let href = (count > 0).then(|| links_link(&username));
+    view! {
+        {match href {
+            Some(href) => {
+                view! {
+                    <a class="link link-primary" href=href>
+                        {count}
+                    </a>
+                }
+                    .into_any()
+            }
+            None => view! { <span class="opacity-70">{count}</span> }.into_any(),
+        }}
+    }
 }
 
 /// Whether a chevron-less row still reserves the width. Every admin does, or a
@@ -384,7 +409,7 @@ pub fn UserRow(
                         .collect_view()}
                 </span>
             </td>
-            <td>{user.url_count}</td>
+            <td>{links_cell(user.username.clone(), user.url_count)}</td>
             <td class="whitespace-nowrap opacity-70">{short_datetime(user.created_at.as_ref())}</td>
             <td>
                 <span class="flex gap-2 items-center">
@@ -552,6 +577,13 @@ mod tests {
         );
         // And a row that starts or stops answering the search.
         assert_ne!(row_key(&parent, true, false), row_key(&parent, true, true));
+    }
+
+    /// The owner filter is the whole query, so arriving clears the rest.
+    #[test]
+    fn a_link_count_addresses_that_owners_links_and_nothing_else() {
+        assert_eq!(links_link("ann"), "#/urls?owner=ann");
+        assert_eq!(links_link("a-b_c"), "#/urls?owner=a-b_c");
     }
 
     #[test]
