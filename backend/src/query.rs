@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use mongodb::bson::{Document, doc};
 
 use crate::error::AppError;
@@ -27,6 +25,29 @@ const USER_SORTABLE: &[&str] = &["username", "created_at", "url_count"];
 /// The one sortable field that does not exist until after the `$lookup`.
 const JOINED_SORT_FIELD: &str = "url_count";
 
+/// Every pair the query string carried, in order: a map keeps one value per
+/// key, and a filter names the same key once per value it accepts.
+pub struct QueryPairs(Vec<(String, String)>);
+
+impl QueryPairs {
+    pub fn new(pairs: Vec<(String, String)>) -> Self {
+        Self(pairs)
+    }
+
+    pub fn first(&self, key: &str) -> Option<&String> {
+        self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
+    }
+
+    /// Blank values drop out, so an empty input does not filter on nothing.
+    pub fn all(&self, key: &str) -> Vec<&str> {
+        self.0
+            .iter()
+            .filter(|(k, v)| k == key && !v.trim().is_empty())
+            .map(|(_, v)| v.trim())
+            .collect()
+    }
+}
+
 pub struct ListParams {
     pub limit: i64,
     pub skip: i64,
@@ -45,11 +66,11 @@ fn number(raw: Option<&String>, field: &str) -> Result<Option<i64>, AppError> {
 }
 
 /// `limit` and `skip` mean the same thing for every collection.
-fn paging(params: &HashMap<String, String>) -> Result<(i64, i64), AppError> {
-    let limit = number(params.get("limit"), "limit")?
+fn paging(params: &QueryPairs) -> Result<(i64, i64), AppError> {
+    let limit = number(params.first("limit"), "limit")?
         .unwrap_or(DEFAULT_LIMIT)
         .clamp(1, MAX_LIMIT);
-    let skip = number(params.get("skip"), "skip")?.unwrap_or(0);
+    let skip = number(params.first("skip"), "skip")?.unwrap_or(0);
     if skip < 0 {
         return Err(AppError::validation("skip must not be negative"));
     }
@@ -59,7 +80,7 @@ fn paging(params: &HashMap<String, String>) -> Result<(i64, i64), AppError> {
 /// Parses `field,dir,…` against `allowed`. Every sort ends with `_id` so it is
 /// total: without it, rows sharing a timestamp reshuffle between page loads.
 fn sort_doc(
-    params: &HashMap<String, String>,
+    params: &QueryPairs,
     allowed: &[&str],
     default: Document,
 ) -> Result<Document, AppError> {
@@ -69,7 +90,7 @@ fn sort_doc(
         }
         sort
     };
-    let Some(raw) = params.get("sort") else {
+    let Some(raw) = params.first("sort") else {
         return Ok(tiebreak(default));
     };
     let fields: Vec<&str> = raw.split(',').collect();
@@ -94,9 +115,9 @@ fn sort_doc(
     Ok(tiebreak(sort))
 }
 
-fn search_term(params: &HashMap<String, String>) -> Option<String> {
+fn search_term(params: &QueryPairs) -> Option<String> {
     params
-        .get("q")
+        .first("q")
         .map(|s| s.trim().to_string())
         .filter(|s| !s.is_empty())
 }
@@ -112,7 +133,7 @@ fn any_field_matches(q: &str, fields: &[&str]) -> Document {
 }
 
 impl ListParams {
-    pub fn from_query(params: &HashMap<String, String>) -> Result<Self, AppError> {
+    pub fn from_query(params: &QueryPairs) -> Result<Self, AppError> {
         let (limit, skip) = paging(params)?;
 
         // Missing sorts last under `-1`, so legacy rows settle at the bottom.
@@ -150,7 +171,7 @@ pub struct UserListParams {
 }
 
 impl UserListParams {
-    pub fn from_query(params: &HashMap<String, String>) -> Result<Self, AppError> {
+    pub fn from_query(params: &QueryPairs) -> Result<Self, AppError> {
         let (limit, skip) = paging(params)?;
         // A directory to look somebody up in, not a feed of recent signups.
         let sort = sort_doc(params, USER_SORTABLE, doc! {"username": 1})?;
@@ -185,13 +206,22 @@ impl UserListParams {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::collections::HashMap;
 
-    fn params(pairs: &[(&str, &str)]) -> HashMap<String, String> {
-        pairs
-            .iter()
-            .map(|(k, v)| (k.to_string(), v.to_string()))
-            .collect()
+    fn params(pairs: &[(&str, &str)]) -> QueryPairs {
+        QueryPairs::new(
+            pairs
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        )
+    }
+
+    #[test]
+    fn a_repeated_key_keeps_every_value() {
+        let params = params(&[("owner", "ann"), ("owner", " "), ("owner", "bob")]);
+        assert_eq!(params.all("owner"), vec!["ann", "bob"]);
+        // Single-valued readers take the first, so paging is unaffected.
+        assert_eq!(params.first("owner").map(String::as_str), Some("ann"));
     }
 
     #[test]

@@ -1,5 +1,6 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
+use axum_extra::extract::Query;
 use shared::{
     AdminOrphans, AdminSettings, AdminUserListResponse, BulkAction, BulkUsersRequest,
     BulkUsersResponse, DeleteUserParams, DeleteUserResponse, RejectedId, SetAdminRequest,
@@ -13,7 +14,7 @@ use crate::auth::extract::{AdminUser, RootAdmin};
 use crate::chain::{self, Forest, Plan};
 use crate::error::AppError;
 use crate::extract::AppJson;
-use crate::query::UserListParams;
+use crate::query::{QueryPairs, UserListParams};
 use crate::settings;
 use crate::users::{self, User};
 
@@ -22,9 +23,9 @@ use crate::users::{self, User};
 pub async fn list_users(
     State(state): State<AppState>,
     AdminUser(_): AdminUser,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<AdminUserListResponse>, AppError> {
-    let parsed = UserListParams::from_query(&params)?;
+    let parsed = UserListParams::from_query(&QueryPairs::new(pairs))?;
     let admins = users::admins(&state.db, &parsed).await?;
     let items = users::list(&state.db, &parsed).await?;
     let total = users::count(&state.db, parsed.filter()).await?;

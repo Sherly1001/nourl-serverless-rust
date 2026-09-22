@@ -1,5 +1,6 @@
 use axum::Json;
-use axum::extract::{Path, Query, State};
+use axum::extract::{Path, State};
+use axum_extra::extract::Query;
 use futures::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 use shared::{
@@ -12,7 +13,7 @@ use crate::auth::extract::{AdminUser, CurrentUser, OptionalUser};
 use crate::db::url_aggregate_pipeline;
 use crate::error::AppError;
 use crate::extract::AppJson;
-use crate::query::ListParams;
+use crate::query::{ListParams, QueryPairs};
 use crate::users::{self, User};
 
 /// Three answers, not two: `Option<String>` cannot tell "not talking about the
@@ -591,11 +592,12 @@ pub async fn bulk_urls(
 pub async fn list_urls(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
-    Query(params): Query<std::collections::HashMap<String, String>>,
+    Query(pairs): Query<Vec<(String, String)>>,
 ) -> Result<Json<UrlListResponse>, AppError> {
+    let params = QueryPairs::new(pairs);
     let parsed = ListParams::from_query(&params)?;
     // Admins see every link; `mine=true` asks for the ordinary view anyway.
-    let mine = params.get("mine").is_some_and(|v| v == "true");
+    let mine = params.first("mine").is_some_and(|v| v == "true");
     let owner = (!user.is_admin || mine).then_some(user.id.as_str());
     let filter = parsed.filter(owner);
 

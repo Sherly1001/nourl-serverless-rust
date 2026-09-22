@@ -5,7 +5,7 @@ version.workspace = true
 
 [dependencies]
 axum = "0.8"
-axum-extra = { version = "0.12", features = ["cookie"] }
+axum-extra = { version = "0.12", features = ["cookie", "query"] }
 jsonwebtoken = { version = "11", default-features = false, features = ["rust_crypto"] }
 argon2 = { version = "0.5", features = ["std"] }
 time = "0.3"
