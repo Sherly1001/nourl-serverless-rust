@@ -465,6 +465,20 @@ pub async fn find_many_in(
     Ok(found)
 }
 
+/// Bounded by what was typed, since `username` is uniquely indexed.
+pub async fn ids_by_username(db: &Database, names: &[String]) -> Result<Vec<String>, AppError> {
+    let rows: Vec<Document> = collection(db)
+        .find(doc! {"username": {"$in": names}})
+        .projection(doc! {"_id": 0, "id": 1})
+        .await?
+        .try_collect()
+        .await?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|row| row.get_str("id").ok().map(str::to_string))
+        .collect())
+}
+
 /// Every account above each of `ids`, in one `$graphLookup` rather than the one
 /// per id a selection would otherwise cost. Ids with nothing above them are
 /// absent rather than empty.

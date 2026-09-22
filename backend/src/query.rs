@@ -122,6 +122,153 @@ fn search_term(params: &QueryPairs) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
+/// The browser resolves its own zone and closes the day it means, so this parses.
+fn instant(raw: Option<&String>, field: &str) -> Result<Option<bson::DateTime>, AppError> {
+    let Some(value) = raw.map(|v| v.trim()).filter(|v| !v.is_empty()) else {
+        return Ok(None);
+    };
+    chrono::DateTime::parse_from_rfc3339(value)
+        .map(|parsed| Some(bson::DateTime::from_millis(parsed.timestamp_millis())))
+        .map_err(|_| AppError::validation(format!("{field} must be an RFC3339 timestamp")))
+}
+
+fn date_range(
+    params: &QueryPairs,
+    field: &str,
+    from_key: &str,
+    to_key: &str,
+) -> Result<Option<Document>, AppError> {
+    let from = instant(params.first(from_key), from_key)?;
+    let to = instant(params.first(to_key), to_key)?;
+    let mut range = Document::new();
+    if let Some(from) = from {
+        range.insert("$gte", from);
+    }
+    if let Some(to) = to {
+        range.insert("$lte", to);
+    }
+    Ok((!range.is_empty()).then(|| doc! {field: range}))
+}
+
+fn substring_any(field: &str, values: &[&str]) -> Option<Document> {
+    let branches: Vec<Document> = values
+        .iter()
+        .map(|value| doc! {field: {"$regex": regex::escape(value), "$options": "i"}})
+        .collect();
+    match branches.len() {
+        0 => None,
+        1 => branches.into_iter().next(),
+        _ => Some(doc! {"$or": branches}),
+    }
+}
+
+pub enum OwnerFilter {
+    Any,
+    Unowned,
+    Usernames(Vec<String>),
+}
+
+/// The filter modal's items. Values within an item are `OR`, items are `AND`
+/// with each other and with the search box.
+pub struct UrlFilters {
+    owner: OwnerFilter,
+    clauses: Vec<Document>,
+}
+
+impl UrlFilters {
+    pub fn from_query(params: &QueryPairs) -> Result<Self, AppError> {
+        let named: Vec<String> = params.all("owner").iter().map(|v| v.to_string()).collect();
+        let owner = match params.first("owner_state").map(String::as_str) {
+            Some("unowned") => OwnerFilter::Unowned,
+            Some(other) => {
+                return Err(AppError::validation(format!(
+                    "unknown owner state '{other}'"
+                )));
+            }
+            None if named.is_empty() => OwnerFilter::Any,
+            None => OwnerFilter::Usernames(named),
+        };
+
+        let mut clauses = Vec::new();
+        if matches!(owner, OwnerFilter::Unowned) {
+            // Absent once the grace period `$unset`s it, or null from the old app.
+            clauses.push(doc! {"owner": {"$not": {"$type": "string"}}});
+        }
+
+        match params.first("expiry").map(String::as_str) {
+            Some("never") => clauses.push(doc! {"expires_at": {"$exists": false}}),
+            Some(other) => {
+                return Err(AppError::validation(format!("unknown expiry '{other}'")));
+            }
+            None => {
+                if let Some(range) = date_range(params, "expires_at", "expires_from", "expires_to")?
+                {
+                    clauses.push(range);
+                }
+            }
+        }
+
+        if let Some(hits) = hits_range(params)? {
+            clauses.push(hits);
+        }
+        if let Some(range) = date_range(params, "created_at", "created_from", "created_to")? {
+            clauses.push(range);
+        }
+        if let Some(range) = date_range(params, "updated_at", "updated_from", "updated_to")? {
+            clauses.push(range);
+        }
+        if let Some(codes) = substring_any("code", &params.all("code")) {
+            clauses.push(codes);
+        }
+        if let Some(urls) = substring_any("url", &params.all("url")) {
+            clauses.push(urls);
+        }
+
+        Ok(Self { owner, clauses })
+    }
+
+    pub fn owner_names(&self) -> &[String] {
+        match &self.owner {
+            OwnerFilter::Usernames(names) => names,
+            _ => &[],
+        }
+    }
+
+    /// Folded into `filter`'s `$and`, so the search box's own `$or` survives
+    /// beside an item that needs one.
+    pub fn apply(&self, mut filter: Document, owner_ids: &[String]) -> Document {
+        let mut clauses = self.clauses.clone();
+        if matches!(self.owner, OwnerFilter::Usernames(_)) {
+            clauses.push(doc! {"owner": {"$in": owner_ids}});
+        }
+        if !clauses.is_empty() {
+            filter.insert("$and", clauses);
+        }
+        filter
+    }
+}
+
+fn hits_range(params: &QueryPairs) -> Result<Option<Document>, AppError> {
+    let min = number(params.first("hits_min"), "hits_min")?;
+    let max = number(params.first("hits_max"), "hits_max")?;
+    if min.is_none() && max.is_none() {
+        return Ok(None);
+    }
+    let mut range = Document::new();
+    if let Some(min) = min {
+        range.insert("$gte", min);
+    }
+    if let Some(max) = max {
+        range.insert("$lte", max);
+    }
+    let stored = doc! {"hits": range};
+    Ok(Some(if min.unwrap_or(0) <= 0 {
+        doc! {"$or": [{"hits": {"$exists": false}}, stored]}
+    } else {
+        stored
+    }))
+}
+
 /// Case-insensitive substring match, escaped so "a.b" is not a wildcard.
 fn any_field_matches(q: &str, fields: &[&str]) -> Document {
     let pattern = regex::escape(q);

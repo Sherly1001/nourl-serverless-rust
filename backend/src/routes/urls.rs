@@ -13,7 +13,7 @@ use crate::auth::extract::{AdminUser, CurrentUser, OptionalUser};
 use crate::db::url_aggregate_pipeline;
 use crate::error::AppError;
 use crate::extract::AppJson;
-use crate::query::{ListParams, QueryPairs};
+use crate::query::{ListParams, QueryPairs, UrlFilters};
 use crate::users::{self, User};
 
 /// Three answers, not two: `Option<String>` cannot tell "not talking about the
@@ -596,10 +596,15 @@ pub async fn list_urls(
 ) -> Result<Json<UrlListResponse>, AppError> {
     let params = QueryPairs::new(pairs);
     let parsed = ListParams::from_query(&params)?;
+    let filters = UrlFilters::from_query(&params)?;
     // Admins see every link; `mine=true` asks for the ordinary view anyway.
     let mine = params.first("mine").is_some_and(|v| v == "true");
     let owner = (!user.is_admin || mine).then_some(user.id.as_str());
-    let filter = parsed.filter(owner);
+    let owner_ids = match filters.owner_names() {
+        [] => Vec::new(),
+        names => users::ids_by_username(&state.db, names).await?,
+    };
+    let filter = filters.apply(parsed.filter(owner), &owner_ids);
 
     let urls = state.db.collection::<Document>("urls");
     let total = urls.count_documents(filter.clone()).await?;

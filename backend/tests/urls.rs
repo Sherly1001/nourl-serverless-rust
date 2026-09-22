@@ -5,7 +5,7 @@ use axum::http::{Request, StatusCode, header};
 use helpers::{
     authed_get, authed_request, body_json, json_request, request, session_cookie, test_app,
 };
-use mongodb::bson::doc;
+use mongodb::bson::{self, doc};
 use serde_json::json;
 use tower::ServiceExt;
 
@@ -2181,5 +2181,194 @@ async fn a_listed_link_says_whether_it_may_be_edited_or_taken() {
         "yours, and not yours to take"
     );
 
+    db.drop().await.unwrap();
+}
+
+/// Two owners, one orphan, and one link predating `created_at` and `hits`.
+async fn filterable(app: &axum::Router, db: &mongodb::Database) -> (String, String) {
+    let admin = account(app, "filter-admin").await;
+    make_admin(db, "filter-admin", None).await;
+    let ann = account(app, "ann").await;
+    account(app, "bob").await;
+    let ann_id = user_id(db, "ann").await;
+    let bob_id = user_id(db, "bob").await;
+
+    let urls = db.collection::<mongodb::bson::Document>("urls");
+    urls.insert_many(vec![
+        doc! {"code": "ann-one", "url": "https://ann.example/promo", "owner": &ann_id,
+        "hits": 5, "created_at": bson::DateTime::from_millis(1_700_000_000_000),
+        "updated_at": bson::DateTime::now()},
+        doc! {"code": "ann-two", "url": "https://ann.example/other", "owner": &ann_id,
+        "hits": 0, "created_at": bson::DateTime::from_millis(1_800_000_000_000),
+        "updated_at": bson::DateTime::now(),
+        "expires_at": bson::DateTime::from_millis(4_000_000_000_000)},
+        doc! {"code": "bob-one", "url": "https://bob.example/promo", "owner": &bob_id,
+        "hits": 9, "created_at": bson::DateTime::from_millis(1_900_000_000_000),
+        "updated_at": bson::DateTime::now()},
+        // The shape most of the live data has.
+        doc! {"code": "legacy", "url": "https://old.example/thing",
+        "updated_at": bson::DateTime::now()},
+    ])
+    .await
+    .unwrap();
+    (admin, ann)
+}
+
+async fn codes_for(app: &axum::Router, query: &str, cookie: &str) -> Vec<String> {
+    let response = app
+        .clone()
+        .oneshot(authed_get(query, cookie))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK, "query: {query}");
+    let body = body_json(response).await;
+    body["items"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|item| item["code"].as_str().unwrap().to_string())
+        .collect()
+}
+
+#[tokio::test]
+async fn an_owner_filter_names_accounts_and_repeats_for_several() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let mut ann = codes_for(&app, "/api/urls?owner=ann&sort=code,1", &admin).await;
+    ann.sort();
+    assert_eq!(ann, ["ann-one", "ann-two"]);
+
+    let both = codes_for(&app, "/api/urls?owner=ann&owner=bob&sort=code,1", &admin).await;
+    assert_eq!(both, ["ann-one", "ann-two", "bob-one"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_owner_nobody_answers_to_matches_nothing_rather_than_failing() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    assert!(
+        codes_for(&app, "/api/urls?owner=nobody", &admin)
+            .await
+            .is_empty()
+    );
+    let found = codes_for(&app, "/api/urls?owner=nobody&owner=bob", &admin).await;
+    assert_eq!(found, ["bob-one"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn the_owner_item_also_asks_for_the_links_nobody_owns() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let orphans = codes_for(&app, "/api/urls?owner_state=unowned", &admin).await;
+    assert_eq!(orphans, ["legacy"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_hits_floor_of_zero_includes_a_link_that_was_never_hit() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let mut none_or_more = codes_for(&app, "/api/urls?hits_min=0", &admin).await;
+    none_or_more.sort();
+    assert_eq!(none_or_more, ["ann-one", "ann-two", "bob-one", "legacy"]);
+
+    let mut hit = codes_for(&app, "/api/urls?hits_min=1", &admin).await;
+    hit.sort();
+    assert_eq!(hit, ["ann-one", "bob-one"]);
+
+    let middling = codes_for(&app, "/api/urls?hits_min=1&hits_max=5", &admin).await;
+    assert_eq!(middling, ["ann-one"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn expiry_separates_never_from_a_range() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let mut never = codes_for(&app, "/api/urls?expiry=never", &admin).await;
+    never.sort();
+    assert_eq!(never, ["ann-one", "bob-one", "legacy"]);
+
+    let dated = codes_for(
+        &app,
+        "/api/urls?expires_from=2096-01-01T00:00:00Z&expires_to=2097-01-01T00:00:00Z",
+        &admin,
+    )
+    .await;
+    assert_eq!(dated, ["ann-two"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_date_range_matches_only_links_that_carry_the_date() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    // Covers ann-one and ann-two, stops short of bob-one; `legacy` has no date.
+    let dated = codes_for(
+        &app,
+        "/api/urls?created_from=2023-11-01T00:00:00Z&created_to=2027-02-01T00:00:00Z&sort=code,1",
+        &admin,
+    )
+    .await;
+    assert_eq!(dated, ["ann-one", "ann-two"]);
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn values_or_within_an_item_and_items_and_across() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let either = codes_for(&app, "/api/urls?code=ann-one&code=bob&sort=code,1", &admin).await;
+    assert_eq!(either, ["ann-one", "bob-one"]);
+
+    let narrowed = codes_for(
+        &app,
+        "/api/urls?code=ann-one&code=bob&url=bob.example",
+        &admin,
+    )
+    .await;
+    assert_eq!(narrowed, ["bob-one"]);
+
+    let searched = codes_for(&app, "/api/urls?q=promo&owner=ann&owner=bob", &admin).await;
+    assert_eq!(searched.len(), 2, "both promo links, neither of the others");
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn an_unreadable_filter_is_refused_rather_than_ignored() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    for bad in [
+        "/api/urls?created_from=yesterday",
+        "/api/urls?hits_min=lots",
+        "/api/urls?expiry=soon",
+        "/api/urls?owner_state=mine",
+    ] {
+        let response = app.clone().oneshot(authed_get(bad, &admin)).await.unwrap();
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST, "query: {bad}");
+    }
+    db.drop().await.unwrap();
+}
+
+#[tokio::test]
+async fn a_filter_narrows_an_ordinary_users_own_links_too() {
+    let (app, db) = test_app().await;
+    let (_, ann) = filterable(&app, &db).await;
+
+    let mine = codes_for(&app, "/api/urls?hits_min=0&sort=code,1", &ann).await;
+    assert_eq!(mine, ["ann-one", "ann-two"]);
+
+    let refused = codes_for(&app, "/api/urls?owner=bob", &ann).await;
+    assert!(refused.is_empty(), "a filter cannot widen what you may see");
     db.drop().await.unwrap();
 }
