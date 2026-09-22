@@ -56,7 +56,6 @@ fn TextItem(
     }
 }
 
-/// Empty renders nothing, so an unused item takes no height.
 #[component]
 fn Chips(values: Signal<Vec<String>>, set_values: Callback<Vec<String>>) -> impl IntoView {
     view! {
@@ -98,8 +97,7 @@ fn DateRangeItem(
     label: &'static str,
     range: Signal<DateRange>,
     set_range: Callback<DateRange>,
-    /// One per picker. A shared signal would open every calendar at once, and
-    /// the dialog reads them to keep Escape from closing it under an open one.
+    /// One per picker: a shared signal opens every calendar at once.
     popovers: (RwSignal<bool>, RwSignal<bool>),
     /// What is wrong with the range, which paints both fields and says so.
     #[prop(into)]

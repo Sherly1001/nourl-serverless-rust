@@ -38,7 +38,6 @@ impl QueryPairs {
         self.0.iter().find(|(k, _)| k == key).map(|(_, v)| v)
     }
 
-    /// Blank values drop out, so an empty input does not filter on nothing.
     pub fn all(&self, key: &str) -> Vec<&str> {
         self.0
             .iter()
@@ -122,7 +121,6 @@ fn search_term(params: &QueryPairs) -> Option<String> {
         .filter(|s| !s.is_empty())
 }
 
-/// The browser resolves its own zone and closes the day it means, so this parses.
 fn instant(raw: Option<&String>, field: &str) -> Result<Option<bson::DateTime>, AppError> {
     let Some(value) = raw.map(|v| v.trim()).filter(|v| !v.is_empty()) else {
         return Ok(None);
@@ -370,7 +368,6 @@ mod tests {
     fn a_repeated_key_keeps_every_value() {
         let params = params(&[("owner", "ann"), ("owner", " "), ("owner", "bob")]);
         assert_eq!(params.all("owner"), vec!["ann", "bob"]);
-        // Single-valued readers take the first, so paging is unaffected.
         assert_eq!(params.first("owner").map(String::as_str), Some("ann"));
     }
 

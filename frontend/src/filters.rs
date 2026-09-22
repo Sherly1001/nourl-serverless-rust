@@ -16,7 +16,6 @@ pub enum ExpiryChoice {
     #[default]
     Any,
     Never,
-    /// `yyyy-mm-dd`, either side optional.
     Between(DateRange),
 }
 
