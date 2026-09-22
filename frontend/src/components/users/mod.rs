@@ -16,8 +16,9 @@ use crate::auth::use_auth;
 use crate::components::confirm::ConfirmDialog;
 use crate::list::{
     GHOST_DELAY, GHOST_ROWS, GhostRow, LOAD_MORE_MARGIN, SEARCH_DEBOUNCE, Sort, SortHeader,
-    all_selected, list_params,
+    USER_SORT_FIELDS, all_selected, list_params, parse_sort, sort_param,
 };
+use crate::router::{replace_query, use_hash_query};
 use crate::toast::use_toasts;
 
 use row::{UserRow, row_key};
@@ -54,6 +55,44 @@ pub fn Users() -> impl IntoView {
     let (debounced, set_debounced) = signal(String::new());
     let (keystroke, set_keystroke) = signal(0u32);
     let sort: RwSignal<Option<Sort>> = RwSignal::new(None);
+
+    // `hydrated`, so the writer below cannot overwrite an incoming query.
+    let hash_query = use_hash_query();
+    let hydrated = RwSignal::new(false);
+    Effect::new(move |_| {
+        let pairs = hash_query.get();
+        let typed = pairs
+            .iter()
+            .find(|(key, _)| key == "q")
+            .map(|(_, value)| value.clone())
+            .unwrap_or_default();
+        let wanted = pairs
+            .iter()
+            .find(|(key, _)| key == "sort")
+            .and_then(|(_, value)| parse_sort(value, USER_SORT_FIELDS));
+        if search.get_untracked() != typed {
+            set_search.set(typed.clone());
+            set_debounced.set(typed);
+        }
+        if sort.get_untracked() != wanted {
+            sort.set(wanted);
+        }
+        hydrated.set(true);
+    });
+    Effect::new(move |_| {
+        if !hydrated.get() {
+            return;
+        }
+        let mut pairs = Vec::new();
+        let typed = debounced.get();
+        if !typed.trim().is_empty() {
+            pairs.push(("q".to_string(), typed.trim().to_string()));
+        }
+        if let Some(sort) = sort.get() {
+            pairs.push(("sort".to_string(), sort_param(sort)));
+        }
+        replace_query(&pairs);
+    });
 
     // Here, not in a row: a drag and a branch both span several rows.
     let collapsed: RwSignal<HashSet<String>> = RwSignal::new(HashSet::new());
