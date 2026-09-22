@@ -201,6 +201,18 @@ pub fn today_local() -> (i64, i64, i64) {
     civil_from_days(minutes.div_euclid(1440))
 }
 
+/// The visitor's clock as `YYYY-MM-DDTHH:MM`, for comparing against a field.
+pub fn now_local() -> String {
+    let minutes = (js_sys::Date::now() as i64 / 60_000) + local_offset_minutes() as i64;
+    let (year, month, day) = civil_from_days(minutes.div_euclid(1440));
+    let clock = minutes.rem_euclid(1440);
+    format!(
+        "{year:04}-{month:02}-{day:02}T{:02}:{:02}",
+        clock / 60,
+        clock % 60
+    )
+}
+
 /// Days since 1970-01-01, by Howard Hinnant's civil-calendar algorithm — no
 /// leap-year special case to forget.
 fn days_from_civil(year: i64, month: i64, day: i64) -> i64 {

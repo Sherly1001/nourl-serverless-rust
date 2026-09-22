@@ -12,4 +12,5 @@ pub mod settings;
 pub mod shorten;
 pub mod toasts;
 pub mod tooltip;
+pub mod url_filters;
 pub mod users;

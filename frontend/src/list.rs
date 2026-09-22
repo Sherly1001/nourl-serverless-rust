@@ -41,17 +41,17 @@ pub fn cycled(current: Option<Sort>, field: &'static str) -> Option<Sort> {
 /// One page as query parameters; an unset sort is left out so the server
 /// applies its own. Pairs, not a finished string: `gloo_net` assembles the URL
 /// itself and would leave a trailing `&` on every request.
-pub fn list_params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(&'static str, String)> {
+pub fn list_params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(String, String)> {
     let mut params = vec![
-        ("limit", PAGE_SIZE.to_string()),
-        ("skip", (page * PAGE_SIZE).to_string()),
+        ("limit".to_string(), PAGE_SIZE.to_string()),
+        ("skip".to_string(), (page * PAGE_SIZE).to_string()),
     ];
     if let Some(sort) = sort {
         let direction = if sort.desc { -1 } else { 1 };
-        params.push(("sort", format!("{},{direction}", sort.field)));
+        params.push(("sort".to_string(), format!("{},{direction}", sort.field)));
     }
     if !search.trim().is_empty() {
-        params.push(("q", search.trim().to_string()));
+        params.push(("q".to_string(), search.trim().to_string()));
     }
     params
 }
@@ -134,7 +134,7 @@ mod tests {
         desc: false,
     };
 
-    fn params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(&'static str, String)> {
+    fn params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(String, String)> {
         list_params(page, search, sort)
     }
 
@@ -142,19 +142,25 @@ mod tests {
     fn the_query_carries_paging_sort_and_only_a_real_search() {
         assert_eq!(
             params(0, "", None),
-            [("limit", "20".to_string()), ("skip", "0".to_string())]
+            [
+                ("limit".to_string(), "20".to_string()),
+                ("skip".to_string(), "0".to_string())
+            ]
         );
         // Whitespace is not a search.
         assert_eq!(
             params(2, "   ", None),
-            [("limit", "20".to_string()), ("skip", "40".to_string())]
+            [
+                ("limit".to_string(), "20".to_string()),
+                ("skip".to_string(), "40".to_string())
+            ]
         );
         assert_eq!(
             params(0, "", Some(BY_CODE)),
             [
-                ("limit", "20".to_string()),
-                ("skip", "0".to_string()),
-                ("sort", "code,1".to_string())
+                ("limit".to_string(), "20".to_string()),
+                ("skip".to_string(), "0".to_string()),
+                ("sort".to_string(), "code,1".to_string())
             ]
         );
         assert_eq!(
@@ -167,10 +173,10 @@ mod tests {
                 })
             ),
             [
-                ("limit", "20".to_string()),
-                ("skip", "20".to_string()),
-                ("sort", "hits,-1".to_string()),
-                ("q", "needle".to_string())
+                ("limit".to_string(), "20".to_string()),
+                ("skip".to_string(), "20".to_string()),
+                ("sort".to_string(), "hits,-1".to_string()),
+                ("q".to_string(), "needle".to_string())
             ]
         );
     }

@@ -5,6 +5,7 @@ pub mod clipboard;
 pub mod components;
 pub mod datetime;
 pub mod dropdown;
+pub mod filters;
 pub mod linkform;
 pub mod list;
 pub mod router;

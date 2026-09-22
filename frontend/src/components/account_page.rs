@@ -114,9 +114,9 @@ pub fn AccountPage() -> impl IntoView {
             return;
         }
         spawn_local(async move {
-            let scoped = vec![("limit", "1".to_string()), ("mine", "true".to_string())];
-            if let Ok(page) = api::list_urls(scoped, None).await {
-                link_count.try_set(page.total);
+            let scoped = vec![("mine".to_string(), "true".to_string())];
+            if let Ok(counted) = api::count_urls(scoped, None).await {
+                link_count.try_set(counted.total);
             }
         });
     });

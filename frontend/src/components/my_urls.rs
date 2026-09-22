@@ -13,9 +13,11 @@ use crate::components::confirm::ConfirmDialog;
 use crate::components::conflict::other_owner;
 use crate::components::edit_link::EditLinkDialog;
 use crate::components::tooltip::Tooltip;
+use crate::components::url_filters::FilterDialog;
 use crate::datetime::{
     from_display, from_rfc3339, is_future, local_offset_minutes, to_display, to_rfc3339,
 };
+use crate::filters::Filters;
 use crate::list::{
     GHOST_DELAY, GHOST_ROWS, GhostRow, LOAD_MORE_MARGIN, SEARCH_DEBOUNCE, Sort, SortHeader,
     all_selected, list_params, short_datetime,
@@ -89,6 +91,8 @@ pub fn MyUrls() -> impl IntoView {
     let (debounced, set_debounced) = signal(String::new());
     let (keystroke, set_keystroke) = signal(0u32);
     let sort = RwSignal::new(Some(DEFAULT_SORT));
+    let filters = RwSignal::new(Filters::default());
+    let filter_open = RwSignal::new(false);
     let selected = RwSignal::new(HashSet::<String>::new());
     // Keyed by the code editing began with: a rename changes it.
     let editing = RwSignal::new(Option::<String>::None);
@@ -120,7 +124,8 @@ pub fn MyUrls() -> impl IntoView {
         if auth.user.get_untracked().is_none() {
             return;
         }
-        let params = list_params(index, &debounced.get_untracked(), sort.get_untracked());
+        let mut params = list_params(index, &debounced.get_untracked(), sort.get_untracked());
+        params.extend(filters.get_untracked().to_params(local_offset_minutes()));
 
         // Cancel whatever is still in flight: the answer is about to be wrong.
         inflight.update_value(|slot| {
@@ -177,6 +182,7 @@ pub fn MyUrls() -> impl IntoView {
         auth.user.get();
         debounced.get();
         sort.get();
+        filters.get();
         editing.set(None);
         // A tick against a row no longer listed would delete it unseen.
         selected.set(HashSet::new());
@@ -218,6 +224,16 @@ pub fn MyUrls() -> impl IntoView {
             SEARCH_DEBOUNCE,
         );
     };
+
+    let active_filters = move || filters.get().active();
+    let base_query = Signal::derive(move || {
+        let typed = debounced.get();
+        if typed.trim().is_empty() {
+            Vec::new()
+        } else {
+            vec![("q".to_string(), typed.trim().to_string())]
+        }
+    });
 
     // Clearing skips the debounce: there is nothing more to type.
     let clear_search = move |_| {
@@ -527,6 +543,18 @@ pub fn MyUrls() -> impl IntoView {
                                 </button>
                             </Show>
                         </div>
+                        <button
+                            class="relative gap-2 btn btn-text"
+                            aria-label="Filter links"
+                            on:click=move |_| filter_open.set(true)
+                        >
+                            <span class="icon-[tabler--filter] size-7"></span>
+                            <Show when=move || { active_filters() > 0 }>
+                                <span class="absolute top-0 right-0 badge badge-primary badge-xs">
+                                    {active_filters}
+                                </span>
+                            </Show>
+                        </button>
                     </div>
                 </div>
 
@@ -790,6 +818,13 @@ pub fn MyUrls() -> impl IntoView {
                     }}
                 </span>
             </div>
+
+            <FilterDialog
+                open=filter_open
+                filters=filters
+                is_admin=Signal::derive(move || auth.is_admin())
+                base=base_query
+            />
 
             <ConfirmDialog
                 open=claim_open

@@ -6,8 +6,18 @@ use shared::{
     BulkAction, BulkUrlsRequest, BulkUrlsResponse, BulkUsersRequest, BulkUsersResponse,
     ChangePasswordRequest, DeleteAccountRequest, DeleteUserResponse, LoginRequest, RegisterRequest,
     SetAdminRequest, SetAdminResponse, UpdateProfileRequest, UpdateSettingsRequest, UrlBulkAction,
-    UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
+    UrlCountResponse, UrlEntry, UrlListResponse, UrlUpsertRequest, UserInfo,
 };
+
+const COUNT_ONLY: &str = "count_only";
+
+/// The query builder borrows, and a filter item carries as many values as given.
+fn pairs(params: &[(String, String)]) -> Vec<(&str, &str)> {
+    params
+        .iter()
+        .map(|(key, value)| (key.as_str(), value.as_str()))
+        .collect()
+}
 
 fn net_err(err: impl std::fmt::Display) -> ApiErrorBody {
     ApiErrorBody {
@@ -94,11 +104,28 @@ pub async fn claim_url(code: &str) -> Result<UrlEntry, ApiErrorBody> {
 /// The abort signal matters because the search box refires on every pause: a
 /// slow early request would otherwise land after a newer one.
 pub async fn list_urls(
-    params: Vec<(&'static str, String)>,
+    mut params: Vec<(String, String)>,
     signal: Option<&web_sys::AbortSignal>,
 ) -> Result<UrlListResponse, ApiErrorBody> {
+    params.retain(|(key, _)| key != COUNT_ONLY);
     let resp = Request::get("/api/urls")
-        .query(params)
+        .query(pairs(&params))
+        .abort_signal(signal)
+        .send()
+        .await
+        .map_err(net_err)?;
+    read(resp).await
+}
+
+/// How many links a filter matches, without the rows.
+pub async fn count_urls(
+    mut params: Vec<(String, String)>,
+    signal: Option<&web_sys::AbortSignal>,
+) -> Result<UrlCountResponse, ApiErrorBody> {
+    params.retain(|(key, _)| key != COUNT_ONLY);
+    params.push((COUNT_ONLY.to_string(), "true".to_string()));
+    let resp = Request::get("/api/urls")
+        .query(pairs(&params))
         .abort_signal(signal)
         .send()
         .await
@@ -156,9 +183,9 @@ pub async fn disconnect_provider(provider: &str) -> Result<UserInfo, ApiErrorBod
 /// `params` page the ordinary accounts only; the admins come back whole, since
 /// paging a tree loses its interior nodes.
 pub async fn admin_users(
-    params: Vec<(&'static str, String)>,
+    params: Vec<(String, String)>,
 ) -> Result<AdminUserListResponse, ApiErrorBody> {
-    read_json(Request::get("/api/admin/users").query(params)).await
+    read_json(Request::get("/api/admin/users").query(pairs(&params))).await
 }
 
 /// Promote, demote or move: one write to the parent pointer. `None` for
