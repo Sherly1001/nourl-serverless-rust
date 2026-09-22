@@ -73,7 +73,6 @@ pub fn as_iso_string(field: &str) -> Document {
     ]}
 }
 
-/// Mirrors the Node implementation, plus stripping `token_version` and `_id`.
 pub fn url_aggregate_pipeline(
     filter: Document,
     limit: i64,
@@ -81,10 +80,8 @@ pub fn url_aggregate_pipeline(
     sort: Document,
 ) -> Vec<Document> {
     vec![
-        // Before the join, so `owner` is still an id and `code` can use its index.
+        // Before the join, so `owner` is an id and `code` can use its index.
         doc! {"$match": filter},
-        doc! {"$lookup": {"from": "users", "localField": "owner", "foreignField": "id", "as": "owner"}},
-        doc! {"$set": {"owner": {"$ifNull": [{"$first": "$owner"}, null]}}},
         // Before the sort: fixed-width UTC, so lexicographic is chronological.
         doc! {"$set": {
             "created_at": as_iso_string("created_at"),
@@ -96,6 +93,9 @@ pub fn url_aggregate_pipeline(
         doc! {"$sort": sort},
         doc! {"$skip": skip},
         doc! {"$limit": limit},
+        // After the page: nothing sortable comes out of the join.
+        doc! {"$lookup": {"from": "users", "localField": "owner", "foreignField": "id", "as": "owner"}},
+        doc! {"$set": {"owner": {"$ifNull": [{"$first": "$owner"}, null]}}},
         // Outlives the `$unset` below, for permissions; `UrlEntry` ignores it.
         doc! {"$set": {"owner_id": {"$ifNull": ["$owner.id", null]}}},
         // Last, because `$sort` above needs the `_id` this drops.
@@ -105,4 +105,43 @@ pub fn url_aggregate_pipeline(
             "owner.token_version", "owner.email", "owner.created_at"
         ]},
     ]
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A stage moved back above the page costs the collection, and fails nothing.
+    #[test]
+    fn the_owner_is_joined_only_once_there_is_a_page_to_join() {
+        let stages = url_aggregate_pipeline(doc! {"code": "x"}, 20, 0, doc! {"_id": 1});
+        let at = |name: &str| {
+            stages
+                .iter()
+                .position(|stage| stage.contains_key(name))
+                .unwrap_or_else(|| panic!("no {name} stage"))
+        };
+        assert!(at("$match") < at("$sort"), "filter before sorting");
+        assert!(at("$sort") < at("$limit"), "sort the match, not the page");
+        assert!(at("$limit") < at("$lookup"), "join the page, not the match");
+    }
+
+    /// Normalised above `$sort`, or a legacy string leads every date.
+    #[test]
+    fn dates_are_normalised_before_the_sort() {
+        let stages = url_aggregate_pipeline(Document::new(), 20, 0, doc! {"created_at": 1});
+        let normalising = stages
+            .iter()
+            .position(|stage| {
+                stage
+                    .get_document("$set")
+                    .is_ok_and(|set| set.contains_key("created_at"))
+            })
+            .expect("no normalising stage");
+        let sorting = stages
+            .iter()
+            .position(|stage| stage.contains_key("$sort"))
+            .expect("no sort");
+        assert!(normalising < sorting);
+    }
 }
