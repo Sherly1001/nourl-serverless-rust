@@ -1,11 +1,12 @@
 use axum::Json;
 use axum::extract::{Path, State};
+use axum::response::IntoResponse;
 use axum_extra::extract::Query;
 use futures::TryStreamExt;
 use mongodb::bson::{Bson, Document, doc};
 use shared::{
-    BulkUrlsRequest, BulkUrlsResponse, DeleteResponse, RejectedId, UrlBulkAction, UrlEntry,
-    UrlListResponse, UrlUpsertRequest, validate_code, validate_url,
+    BulkUrlsRequest, BulkUrlsResponse, DeleteResponse, RejectedId, UrlBulkAction, UrlCountResponse,
+    UrlEntry, UrlListResponse, UrlUpsertRequest, validate_code, validate_url,
 };
 
 use crate::app::AppState;
@@ -593,7 +594,7 @@ pub async fn list_urls(
     State(state): State<AppState>,
     CurrentUser(user): CurrentUser,
     Query(pairs): Query<Vec<(String, String)>>,
-) -> Result<Json<UrlListResponse>, AppError> {
+) -> Result<axum::response::Response, AppError> {
     let params = QueryPairs::new(pairs);
     let parsed = ListParams::from_query(&params)?;
     let filters = UrlFilters::from_query(&params)?;
@@ -608,6 +609,9 @@ pub async fn list_urls(
 
     let urls = state.db.collection::<Document>("urls");
     let total = urls.count_documents(filter.clone()).await?;
+    if params.first("count_only").is_some_and(|v| v == "true") {
+        return Ok(Json(UrlCountResponse { total }).into_response());
+    }
     let rows: Vec<Document> = urls
         .aggregate(url_aggregate_pipeline(
             filter,
@@ -620,7 +624,7 @@ pub async fn list_urls(
         .await?;
     let items = into_entries(&state, Some(&user), rows).await?;
 
-    Ok(Json(UrlListResponse { items, total }))
+    Ok(Json(UrlListResponse { items, total }).into_response())
 }
 
 #[cfg(test)]

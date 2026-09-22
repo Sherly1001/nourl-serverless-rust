@@ -364,6 +364,13 @@ pub struct UrlListResponse {
     pub total: u64,
 }
 
+/// What `count_only=true` answers: [`UrlListResponse::total`] without the rows
+/// or the owner join.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UrlCountResponse {
+    pub total: u64,
+}
+
 /// A user as an admin sees them. Never a password hash, and providers are
 /// reduced to names so no id is exposed.
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]

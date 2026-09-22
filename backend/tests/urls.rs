@@ -2372,3 +2372,30 @@ async fn a_filter_narrows_an_ordinary_users_own_links_too() {
     assert!(refused.is_empty(), "a filter cannot widen what you may see");
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_count_only_request_answers_the_total_without_the_rows() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+
+    let response = app
+        .clone()
+        .oneshot(authed_get("/api/urls?count_only=true&owner=ann", &admin))
+        .await
+        .unwrap();
+    assert_eq!(response.status(), StatusCode::OK);
+    let counted = body_json(response).await;
+    assert_eq!(counted["total"], 2);
+    assert!(
+        counted.get("items").is_none(),
+        "count-only carries no rows, so nothing can read an empty page as a miss"
+    );
+
+    let listed = app
+        .clone()
+        .oneshot(authed_get("/api/urls?owner=ann", &admin))
+        .await
+        .unwrap();
+    assert_eq!(body_json(listed).await["total"], 2);
+    db.drop().await.unwrap();
+}
