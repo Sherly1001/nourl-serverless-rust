@@ -16,6 +16,7 @@ web-sys = { version = "0.3", features = [
   "AbortSignal",
   "Window",
   "Location",
+  "History",
   "Navigator",
   "Clipboard",
   "Document",

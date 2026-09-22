@@ -38,6 +38,34 @@ pub fn cycled(current: Option<Sort>, field: &'static str) -> Option<Sort> {
     }
 }
 
+/// What the URL table offers as a sort, for reading one back out of a hash.
+pub const URL_SORT_FIELDS: &[&str] = &[
+    "code",
+    "url",
+    "hits",
+    "last_hit_at",
+    "expires_at",
+    "created_at",
+    "updated_at",
+];
+
+pub const USER_SORT_FIELDS: &[&str] = &["username", "created_at", "url_count"];
+
+/// The field must be one of `allowed`, whose entries outlive the parse.
+pub fn parse_sort(raw: &str, allowed: &[&'static str]) -> Option<Sort> {
+    let (field, direction) = raw.split_once(',')?;
+    let field = allowed.iter().copied().find(|known| *known == field)?;
+    match direction {
+        "1" => Some(Sort { field, desc: false }),
+        "-1" => Some(Sort { field, desc: true }),
+        _ => None,
+    }
+}
+
+pub fn sort_param(sort: Sort) -> String {
+    format!("{},{}", sort.field, if sort.desc { -1 } else { 1 })
+}
+
 /// One page as query parameters; an unset sort is left out so the server
 /// applies its own. Pairs, not a finished string: `gloo_net` assembles the URL
 /// itself and would leave a trailing `&` on every request.
@@ -47,8 +75,7 @@ pub fn list_params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(String, 
         ("skip".to_string(), (page * PAGE_SIZE).to_string()),
     ];
     if let Some(sort) = sort {
-        let direction = if sort.desc { -1 } else { 1 };
-        params.push(("sort".to_string(), format!("{},{direction}", sort.field)));
+        params.push(("sort".to_string(), sort_param(sort)));
     }
     if !search.trim().is_empty() {
         params.push(("q".to_string(), search.trim().to_string()));
@@ -136,6 +163,23 @@ mod tests {
 
     fn params(page: u64, search: &str, sort: Option<Sort>) -> Vec<(String, String)> {
         list_params(page, search, sort)
+    }
+
+    #[test]
+    fn a_sort_survives_the_address_bar_only_as_a_column_that_exists() {
+        assert_eq!(parse_sort("code,1", URL_SORT_FIELDS), Some(BY_CODE));
+        assert_eq!(
+            parse_sort("hits,-1", URL_SORT_FIELDS),
+            Some(Sort {
+                field: "hits",
+                desc: true
+            })
+        );
+        assert_eq!(parse_sort("hash_passwd,1", URL_SORT_FIELDS), None);
+        assert_eq!(parse_sort("hits,1", USER_SORT_FIELDS), None);
+        assert_eq!(parse_sort("code,sideways", URL_SORT_FIELDS), None);
+        assert_eq!(parse_sort("code", URL_SORT_FIELDS), None);
+        assert_eq!(sort_param(BY_CODE), "code,1");
     }
 
     #[test]
