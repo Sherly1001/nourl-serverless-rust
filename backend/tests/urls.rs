@@ -2399,3 +2399,25 @@ async fn a_count_only_request_answers_the_total_without_the_rows() {
     assert_eq!(body_json(listed).await["total"], 2);
     db.drop().await.unwrap();
 }
+
+#[tokio::test]
+async fn a_last_hit_range_matches_only_links_that_have_been_hit() {
+    let (app, db) = test_app().await;
+    let (admin, _) = filterable(&app, &db).await;
+    db.collection::<mongodb::bson::Document>("urls")
+        .update_one(
+            doc! {"code": "ann-one"},
+            doc! {"$set": {"last_hit_at": bson::DateTime::from_millis(1_800_000_000_000)}},
+        )
+        .await
+        .unwrap();
+
+    let hit = codes_for(
+        &app,
+        "/api/urls?last_hit_from=2027-01-01T00:00:00Z&last_hit_to=2027-02-01T00:00:00Z",
+        &admin,
+    )
+    .await;
+    assert_eq!(hit, ["ann-one"]);
+    db.drop().await.unwrap();
+}

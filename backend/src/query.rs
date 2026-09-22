@@ -211,6 +211,9 @@ impl UrlFilters {
         if let Some(hits) = hits_range(params)? {
             clauses.push(hits);
         }
+        if let Some(range) = date_range(params, "last_hit_at", "last_hit_from", "last_hit_to")? {
+            clauses.push(range);
+        }
         if let Some(range) = date_range(params, "created_at", "created_from", "created_to")? {
             clauses.push(range);
         }
